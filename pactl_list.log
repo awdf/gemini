@@ -1,0 +1,851 @@
+Module #1
+	Name: libpipewire-module-rt
+	Argument: {
+            nice.level    = -11
+            rt.prio       = 88
+            #rt.time.soft = -1
+            #rt.time.hard = -1
+            #uclamp.min = 0
+            #uclamp.max = 1024
+        }
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-rt"
+		object.id = "1"
+		object.serial = "1"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Use realtime thread scheduling, falling back to RTKit"
+		module.usage = "( nice.level=<priority: default 20(don't change)> ) ( rt.prio=<priority: default 83> ) ( rt.time.soft=<in usec: default -1> ) ( rt.time.hard=<in usec: default -1> ) ( rlimits.enabled=<default true> ) ( rtportal.enabled=<default true> ) ( rtkit.enabled=<default true> ) ( uclamp.min=<default 0> ) ( uclamp.max=<default 1024> )"
+		module.version = "1.2.6"
+		nice.level = "-11"
+		rt.prio = "88"
+
+Module #2
+	Name: libpipewire-module-protocol-native
+	Argument: {
+            # List of server Unix sockets, and optionally permissions
+            #sockets = [ { name = "pipewire-0" }, { name = "pipewire-0-manager" } ]
+        }
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-protocol-native"
+		object.id = "2"
+		object.serial = "2"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Native protocol using unix sockets"
+		module.version = "1.2.6"
+
+Module #4
+	Name: libpipewire-module-profiler
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-profiler"
+		object.id = "4"
+		object.serial = "4"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Generate Profiling data"
+		module.version = "1.2.6"
+
+Module #6
+	Name: libpipewire-module-metadata
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-metadata"
+		object.id = "6"
+		object.serial = "6"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Allow clients to create metadata store"
+		module.version = "1.2.6"
+
+Module #8
+	Name: libpipewire-module-spa-device-factory
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-spa-device-factory"
+		object.id = "8"
+		object.serial = "8"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Provide a factory to make SPA devices"
+		module.version = "1.2.6"
+
+Module #10
+	Name: libpipewire-module-spa-node-factory
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-spa-node-factory"
+		object.id = "10"
+		object.serial = "10"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Provide a factory to make SPA nodes"
+		module.version = "1.2.6"
+
+Module #12
+	Name: libpipewire-module-client-node
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-client-node"
+		object.id = "12"
+		object.serial = "12"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Allow clients to create and control remote nodes"
+		module.version = "1.2.6"
+
+Module #14
+	Name: libpipewire-module-client-device
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-client-device"
+		object.id = "14"
+		object.serial = "14"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Allow clients to create and control remote devices"
+		module.version = "1.2.6"
+
+Module #16
+	Name: libpipewire-module-portal
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-portal"
+		object.id = "16"
+		object.serial = "16"
+
+Module #17
+	Name: libpipewire-module-access
+	Argument: {
+            # Socket-specific access permissions
+            #access.socket = { pipewire-0 = "default", pipewire-0-manager = "unrestricted" }
+
+            # Deprecated legacy mode (not socket-based),
+            # for now enabled by default if access.socket is not specified
+            #access.legacy = true
+        }
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-access"
+		object.id = "17"
+		object.serial = "17"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Perform access check"
+		module.usage = "( access.socket={ <socket>=<access>, ... } ) ( access.legacy=true ) "
+		module.version = "1.2.6"
+
+Module #18
+	Name: libpipewire-module-adapter
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-adapter"
+		object.id = "18"
+		object.serial = "18"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Manage adapter nodes"
+		module.version = "1.2.6"
+
+Module #20
+	Name: libpipewire-module-link-factory
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-link-factory"
+		object.id = "20"
+		object.serial = "20"
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Allow clients to create links"
+		module.usage = "( allow.link.passive=<bool, default false> ) "
+		module.version = "1.2.6"
+
+Module #22
+	Name: libpipewire-module-session-manager
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-session-manager"
+		object.id = "22"
+		object.serial = "22"
+		module.author = "George Kiagiadakis <george.kiagiadakis@collabora.com>"
+		module.description = "Implements objects for session management"
+		module.version = "1.2.6"
+
+Module #29
+	Name: libpipewire-module-jackdbus-detect
+	Argument: {
+            #jack.library     = libjack.so.0
+            #jack.server      = null
+            #jack.client-name = PipeWire
+            #jack.connect     = true
+            #tunnel.mode      = duplex  # source|sink|duplex
+            source.props = {
+                #audio.channels = 2
+		#midi.ports = 1
+                #audio.position = [ FL FR ]
+                # extra sink properties
+            }
+            sink.props = {
+                #audio.channels = 2
+		#midi.ports = 1
+                #audio.position = [ FL FR ]
+                # extra sink properties
+            }
+        }
+	Usage counter: n/a
+	Properties:
+		module.name = "libpipewire-module-jackdbus-detect"
+		object.id = "29"
+		object.serial = "29"
+
+Module #536870912
+	Name: module-always-sink
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.author = "Pauli Virtanen <pav@iki.fi>"
+		module.description = "Always keeps at least one sink loaded even if it's a null one"
+		module.usage = "sink_name=<name of sink>"
+		module.version = "1.2.6"
+
+Module #536870913
+	Name: module-device-manager
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Keep track of devices (and their descriptions) both past and present and prioritise by role"
+		module.usage = "do_routing=<Automatically route streams based on a priority list (unique per-role)?> on_hotplug=<When new device becomes available, recheck streams?> on_rescue=<When device becomes unavailable, recheck streams?>"
+		module.version = "1.2.6"
+
+Module #536870914
+	Name: module-device-restore
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Automatically restore the volume/mute state of devices"
+		module.usage = "restore_port=<Save/restore port?> restore_volume=<Save/restore volumes?> restore_muted=<Save/restore muted states?> restore_formats=<Save/restore saved formats?>"
+		module.version = "1.2.6"
+
+Module #536870915
+	Name: module-stream-restore
+	Argument: 
+	Usage counter: n/a
+	Properties:
+		module.author = "Wim Taymans <wim.taymans@gmail.com>"
+		module.description = "Automatically restore the volume/mute/device state of streams"
+		module.usage = "restore_device=<Save/restore sinks/sources?> restore_volume=<Save/restore volumes?> restore_muted=<Save/restore muted states?> on_hotplug=<This argument is obsolete, please remove it from configuration> on_rescue=<This argument is obsolete, please remove it from configuration> fallback_table=<filename>"
+		module.version = "1.2.6"
+
+Sink #53
+	State: RUNNING
+	Name: alsa_output.pci-0000_00_1f.3.analog-stereo
+	Description: Built-in Audio Analog Stereo
+	Driver: PipeWire
+	Sample Specification: s32le 2ch 48000Hz
+	Channel Map: front-left,front-right
+	Owner Module: 4294967295
+	Mute: no
+	Volume: front-left: 65536 / 100% / 0,00 dB,   front-right: 65536 / 100% / 0,00 dB
+	        balance 0,00
+	Base Volume: 65536 / 100% / 0,00 dB
+	Monitor Source: alsa_output.pci-0000_00_1f.3.analog-stereo.monitor
+	Latency: 0 usec, configured 0 usec
+	Flags: HARDWARE HW_MUTE_CTRL HW_VOLUME_CTRL DECIBEL_VOLUME LATENCY 
+	Properties:
+		alsa.card = "0"
+		alsa.card_name = "HDA Intel PCH"
+		alsa.class = "generic"
+		alsa.components = "HDA:10ec1168,10438723,00100101 HDA:8086280b,80860101,00100000"
+		alsa.device = "0"
+		alsa.driver_name = "snd_hda_intel"
+		alsa.id = "ALC1220 Analog"
+		alsa.long_card_name = "HDA Intel PCH at 0x4000110000 irq 155"
+		alsa.mixer_name = "Realtek ALC1220"
+		alsa.name = "ALC1220 Analog"
+		alsa.resolution_bits = "16"
+		alsa.subclass = "generic-mix"
+		alsa.subdevice = "0"
+		alsa.subdevice_name = "subdevice #0"
+		alsa.sync.id = "00000000:00000000:00000000:00000000"
+		api.alsa.card.longname = "HDA Intel PCH at 0x4000110000 irq 155"
+		api.alsa.card.name = "HDA Intel PCH"
+		api.alsa.path = "front:0"
+		api.alsa.pcm.card = "0"
+		api.alsa.pcm.stream = "playback"
+		audio.channels = "2"
+		audio.position = "FL,FR"
+		card.profile.device = "8"
+		device.api = "alsa"
+		device.class = "sound"
+		device.id = "50"
+		device.profile.description = "Analog Stereo"
+		device.profile.name = "analog-stereo"
+		device.routes = "2"
+		factory.name = "api.alsa.pcm.sink"
+		media.class = "Audio/Sink"
+		device.description = "Built-in Audio"
+		node.name = "alsa_output.pci-0000_00_1f.3.analog-stereo"
+		node.nick = "ALC1220 Analog"
+		node.pause-on-idle = "false"
+		object.path = "alsa:acp:PCH:8:playback"
+		port.group = "playback"
+		priority.driver = "1009"
+		priority.session = "1009"
+		factory.id = "19"
+		clock.quantum-limit = "8192"
+		client.id = "36"
+		node.driver = "true"
+		node.loop.name = "data-loop.0"
+		library.name = "audioconvert/libspa-audioconvert"
+		object.id = "53"
+		object.serial = "53"
+		node.max-latency = "16384/48000"
+		api.alsa.period-size = "1024"
+		api.alsa.period-num = "32"
+		api.alsa.headroom = "0"
+		api.acp.auto-port = "false"
+		api.acp.auto-profile = "false"
+		api.alsa.card = "0"
+		api.alsa.use-acp = "true"
+		api.dbus.ReserveDevice1 = "Audio0"
+		device.bus = "pci"
+		device.bus_path = "pci-0000:00:1f.3"
+		device.enum.api = "udev"
+		device.form_factor = "internal"
+		device.icon_name = "audio-card-analog-pci"
+		device.name = "alsa_card.pci-0000_00_1f.3"
+		device.nick = "HDA Intel PCH"
+		device.plugged.usec = "5900461"
+		device.product.id = "0xa348"
+		device.product.name = "Cannon Lake PCH cAVS"
+		device.subsystem = "sound"
+		sysfs.path = "/devices/pci0000:00/0000:00:1f.3/sound/card0"
+		device.vendor.id = "0x8086"
+		device.vendor.name = "Intel Corporation"
+		device.string = "0"
+	Ports:
+		analog-output-lineout: Line Out (type: Line, priority: 9000, availability group: Legacy 4, available)
+		analog-output-headphones: Headphones (type: Headphones, priority: 9900, availability group: Legacy 5, not available)
+	Active Port: analog-output-lineout
+	Formats:
+		pcm
+
+Source #53
+	State: RUNNING
+	Name: alsa_output.pci-0000_00_1f.3.analog-stereo.monitor
+	Description: Monitor of Built-in Audio Analog Stereo
+	Driver: PipeWire
+	Sample Specification: s32le 2ch 48000Hz
+	Channel Map: front-left,front-right
+	Owner Module: 4294967295
+	Mute: no
+	Volume: front-left: 65536 / 100% / 0,00 dB,   front-right: 65536 / 100% / 0,00 dB
+	        balance 0,00
+	Base Volume: 65536 / 100% / 0,00 dB
+	Monitor of Sink: alsa_output.pci-0000_00_1f.3.analog-stereo
+	Latency: 0 usec, configured 0 usec
+	Flags: HARDWARE DECIBEL_VOLUME LATENCY 
+	Properties:
+		alsa.card = "0"
+		alsa.card_name = "HDA Intel PCH"
+		alsa.class = "generic"
+		alsa.components = "HDA:10ec1168,10438723,00100101 HDA:8086280b,80860101,00100000"
+		alsa.device = "0"
+		alsa.driver_name = "snd_hda_intel"
+		alsa.id = "ALC1220 Analog"
+		alsa.long_card_name = "HDA Intel PCH at 0x4000110000 irq 155"
+		alsa.mixer_name = "Realtek ALC1220"
+		alsa.name = "ALC1220 Analog"
+		alsa.resolution_bits = "16"
+		alsa.subclass = "generic-mix"
+		alsa.subdevice = "0"
+		alsa.subdevice_name = "subdevice #0"
+		alsa.sync.id = "00000000:00000000:00000000:00000000"
+		api.alsa.card.longname = "HDA Intel PCH at 0x4000110000 irq 155"
+		api.alsa.card.name = "HDA Intel PCH"
+		api.alsa.path = "front:0"
+		api.alsa.pcm.card = "0"
+		api.alsa.pcm.stream = "playback"
+		audio.channels = "2"
+		audio.position = "FL,FR"
+		card.profile.device = "8"
+		device.api = "alsa"
+		device.class = "monitor"
+		device.id = "50"
+		device.profile.description = "Analog Stereo"
+		device.profile.name = "analog-stereo"
+		device.routes = "2"
+		factory.name = "api.alsa.pcm.sink"
+		media.class = "Audio/Sink"
+		device.description = "Built-in Audio"
+		node.name = "alsa_output.pci-0000_00_1f.3.analog-stereo"
+		node.nick = "ALC1220 Analog"
+		node.pause-on-idle = "false"
+		object.path = "alsa:acp:PCH:8:playback"
+		port.group = "playback"
+		priority.driver = "1009"
+		priority.session = "1009"
+		factory.id = "19"
+		clock.quantum-limit = "8192"
+		client.id = "36"
+		node.driver = "true"
+		node.loop.name = "data-loop.0"
+		library.name = "audioconvert/libspa-audioconvert"
+		object.id = "53"
+		object.serial = "53"
+		node.max-latency = "16384/48000"
+		api.alsa.period-size = "1024"
+		api.alsa.period-num = "32"
+		api.alsa.headroom = "0"
+		api.acp.auto-port = "false"
+		api.acp.auto-profile = "false"
+		api.alsa.card = "0"
+		api.alsa.use-acp = "true"
+		api.dbus.ReserveDevice1 = "Audio0"
+		device.bus = "pci"
+		device.bus_path = "pci-0000:00:1f.3"
+		device.enum.api = "udev"
+		device.form_factor = "internal"
+		device.icon_name = "audio-card-analog-pci"
+		device.name = "alsa_card.pci-0000_00_1f.3"
+		device.nick = "HDA Intel PCH"
+		device.plugged.usec = "5900461"
+		device.product.id = "0xa348"
+		device.product.name = "Cannon Lake PCH cAVS"
+		device.subsystem = "sound"
+		sysfs.path = "/devices/pci0000:00/0000:00:1f.3/sound/card0"
+		device.vendor.id = "0x8086"
+		device.vendor.name = "Intel Corporation"
+		device.string = "0"
+	Ports:
+		analog-output-lineout: Line Out (type: Line, priority: 9000, availability group: Legacy 4, available)
+		analog-output-headphones: Headphones (type: Headphones, priority: 9900, availability group: Legacy 5, not available)
+	Active Port: analog-output-lineout
+	Formats:
+		pcm
+
+Source #54
+	State: SUSPENDED
+	Name: alsa_input.pci-0000_00_1f.3.analog-stereo
+	Description: Built-in Audio Analog Stereo
+	Driver: PipeWire
+	Sample Specification: s32le 2ch 48000Hz
+	Channel Map: front-left,front-right
+	Owner Module: 4294967295
+	Mute: no
+	Volume: front-left: 65536 / 100% / 0,00 dB,   front-right: 65536 / 100% / 0,00 dB
+	        balance 0,00
+	Base Volume: 6554 /  10% / -60,00 dB
+	Monitor of Sink: n/a
+	Latency: 0 usec, configured 0 usec
+	Flags: HARDWARE HW_MUTE_CTRL HW_VOLUME_CTRL DECIBEL_VOLUME LATENCY 
+	Properties:
+		alsa.card = "0"
+		alsa.card_name = "HDA Intel PCH"
+		alsa.class = "generic"
+		alsa.components = "HDA:10ec1168,10438723,00100101 HDA:8086280b,80860101,00100000"
+		alsa.device = "0"
+		alsa.driver_name = "snd_hda_intel"
+		alsa.id = "ALC1220 Analog"
+		alsa.long_card_name = "HDA Intel PCH at 0x4000110000 irq 155"
+		alsa.mixer_name = "Realtek ALC1220"
+		alsa.name = "ALC1220 Analog"
+		alsa.resolution_bits = "16"
+		alsa.subclass = "generic-mix"
+		alsa.subdevice = "0"
+		alsa.subdevice_name = "subdevice #0"
+		alsa.sync.id = "00000000:00000000:00000000:00000000"
+		api.alsa.card.longname = "HDA Intel PCH at 0x4000110000 irq 155"
+		api.alsa.card.name = "HDA Intel PCH"
+		api.alsa.path = "front:0"
+		api.alsa.pcm.card = "0"
+		api.alsa.pcm.stream = "capture"
+		audio.channels = "2"
+		audio.position = "FL,FR"
+		card.profile.device = "0"
+		device.api = "alsa"
+		device.class = "sound"
+		device.id = "50"
+		device.profile.description = "Analog Stereo"
+		device.profile.name = "analog-stereo"
+		device.routes = "3"
+		factory.name = "api.alsa.pcm.source"
+		media.class = "Audio/Source"
+		device.description = "Built-in Audio"
+		node.name = "alsa_input.pci-0000_00_1f.3.analog-stereo"
+		node.nick = "ALC1220 Analog"
+		node.pause-on-idle = "false"
+		object.path = "alsa:acp:PCH:0:capture"
+		port.group = "capture"
+		priority.driver = "2009"
+		priority.session = "2009"
+		factory.id = "19"
+		clock.quantum-limit = "8192"
+		client.id = "36"
+		node.driver = "true"
+		node.loop.name = "data-loop.0"
+		library.name = "audioconvert/libspa-audioconvert"
+		object.id = "54"
+		object.serial = "54"
+		api.acp.auto-port = "false"
+		api.acp.auto-profile = "false"
+		api.alsa.card = "0"
+		api.alsa.use-acp = "true"
+		api.dbus.ReserveDevice1 = "Audio0"
+		device.bus = "pci"
+		device.bus_path = "pci-0000:00:1f.3"
+		device.enum.api = "udev"
+		device.form_factor = "internal"
+		device.icon_name = "audio-card-analog-pci"
+		device.name = "alsa_card.pci-0000_00_1f.3"
+		device.nick = "HDA Intel PCH"
+		device.plugged.usec = "5900461"
+		device.product.id = "0xa348"
+		device.product.name = "Cannon Lake PCH cAVS"
+		device.subsystem = "sound"
+		sysfs.path = "/devices/pci0000:00/0000:00:1f.3/sound/card0"
+		device.vendor.id = "0x8086"
+		device.vendor.name = "Intel Corporation"
+		device.string = "0"
+	Ports:
+		analog-input-front-mic: Front Microphone (type: Mic, priority: 8500, availability group: Legacy 1, not available)
+		analog-input-rear-mic: Rear Microphone (type: Mic, priority: 8200, availability group: Legacy 2, available)
+		analog-input-linein: Line In (type: Line, priority: 8100, availability group: Legacy 3, not available)
+	Active Port: analog-input-rear-mic
+	Formats:
+		pcm
+
+Sink Input #446
+	Driver: PipeWire
+	Owner Module: n/a
+	Client: n/a
+	Sink: 53
+	Sample Specification: float32le 2ch 48000Hz
+	Channel Map: front-left,front-right
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "48000"  format.channels = "2"  format.channel_map = "\"front-left,front-right\""
+	Corked: no
+	Mute: no
+	Volume: front-left: 65536 / 100% / 0,00 dB,   front-right: 65536 / 100% / 0,00 dB
+	        balance 0,00
+	Buffer Latency: 0 usec
+	Sink Latency: 0 usec
+	Resample method: PipeWire
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "Google Chrome"
+		application.process.id = "3775"
+		application.process.user = "awdf"
+		application.process.host = "awdf-pc"
+		application.process.binary = "chrome"
+		application.language = "en_US.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "fa2cd0034b994f2cab4d286dd1850287"
+		application.process.session_id = "3"
+		application.icon_name = "google-chrome"
+		media.name = "Playback"
+		node.rate = "1/48000"
+		node.latency = "1024/48000"
+		stream.is-live = "true"
+		node.name = "Google Chrome"
+		node.want-driver = "true"
+		node.autoconnect = "true"
+		media.class = "Stream/Output/Audio"
+		port.group = "stream.0"
+		adapt.follower.spa-node = ""
+		object.register = "false"
+		factory.id = "7"
+		clock.quantum-limit = "8192"
+		node.loop.name = "data-loop.0"
+		library.name = "audioconvert/libspa-audioconvert"
+		client.id = "73"
+		object.id = "74"
+		object.serial = "446"
+		pulse.attr.maxlength = "4194304"
+		pulse.attr.tlength = "16384"
+		pulse.attr.prebuf = "12296"
+		pulse.attr.minreq = "4096"
+		node.driver-id = "53"
+		module-stream-restore.id = "sink-input-by-application-name:Google Chrome"
+
+Client #555
+	Driver: PipeWire
+	Owner Module: 2
+	Properties:
+		pipewire.protocol = "protocol-native"
+		core.name = "pipewire-awdf-1818"
+		pipewire.sec.socket = "pipewire-0"
+		pipewire.sec.pid = "1818"
+		pipewire.sec.uid = "1000"
+		pipewire.sec.gid = "1000"
+		pipewire.sec.label = "unconfined"
+		module.id = "2"
+		object.id = "80"
+		object.serial = "555"
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		pipewire.snap.id = "code"
+		pipewire.snap.audio.playback = "true"
+		pipewire.snap.audio.record = "true"
+		application.process.id = "39468"
+		application.process.user = "awdf"
+		application.process.host = "awdf-pc"
+		application.process.binary = "pactl"
+		application.name = "pactl"
+		application.language = "en_US.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "fa2cd0034b994f2cab4d286dd1850287"
+		application.process.session_id = "3"
+		config.name = "pipewire-pulse.conf"
+		cpu.max-align = "32"
+		default.clock.rate = "48000"
+		default.clock.quantum = "1024"
+		default.clock.min-quantum = "32"
+		default.clock.max-quantum = "2048"
+		default.clock.quantum-limit = "8192"
+		default.clock.quantum-floor = "4"
+		default.video.width = "640"
+		default.video.height = "480"
+		default.video.rate.num = "25"
+		default.video.rate.denom = "1"
+		log.level = "2"
+		clock.power-of-two-quantum = "true"
+		link.max-buffers = "64"
+		mem.warn-mlock = "false"
+		mem.allow-mlock = "true"
+		settings.check-quantum = "false"
+		settings.check-rate = "false"
+		core.version = "1.2.6"
+		pipewire.access = "unrestricted"
+
+Sample #0
+	Name: audio-volume-change
+	Sample Specification: s16le 2ch 48000Hz
+	Channel Map: front-left,front-right
+	Volume: front-left: 65536 / 100% / 0,00 dB,   front-right: 65536 / 100% / 0,00 dB
+	        balance 0,00
+	Duration: 0,3s
+	Size: 56,4 KiB
+	Lazy: no
+	Filename: n/a
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "libcanberra"
+		application.version = "0.30"
+		application.id = "org.freedesktop.libcanberra"
+		application.process.id = "2079"
+		application.process.user = "awdf"
+		application.process.host = "awdf-pc"
+		application.process.binary = "plasmashell"
+		application.language = "en_US.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "fa2cd0034b994f2cab4d286dd1850287"
+		application.process.session_id = "3"
+		media.role = "alert"
+		event.id = "audio-volume-change"
+		event.description = "Volume Control Feedback Sound"
+		media.name = "audio-volume-change"
+		media.filename = "/usr/share/sounds/ocean/stereo/audio-volume-change.oga"
+
+Card #49
+	Name: alsa_card.usb-Vimicro_Corp._Gmix_USB_Webcam-02
+	Driver: alsa
+	Owner Module: n/a
+	Properties:
+		api.acp.auto-port = "false"
+		api.acp.auto-profile = "false"
+		api.alsa.card = "1"
+		api.alsa.card.longname = "Vimicro Corp. Gmix USB Webcam at usb-0000:00:14.0-2, high speed"
+		api.alsa.card.name = "Gmix USB Webcam"
+		api.alsa.path = "hw:1"
+		api.alsa.use-acp = "true"
+		api.dbus.ReserveDevice1 = "Audio1"
+		device.api = "alsa"
+		device.bus = "usb"
+		device.bus-id = "usb-Vimicro_Corp._Gmix_USB_Webcam-02"
+		device.bus_path = "pci-0000:00:14.0-usb-0:2:1.2"
+		device.description = "Venus USB2.0 Camera"
+		device.enum.api = "udev"
+		device.form_factor = "webcam"
+		device.icon_name = "camera-web-analog-usb"
+		device.name = "alsa_card.usb-Vimicro_Corp._Gmix_USB_Webcam-02"
+		device.nick = "Gmix USB Webcam"
+		device.plugged.usec = "9827916"
+		device.product.id = "0x3420"
+		device.product.name = "Venus USB2.0 Camera"
+		device.serial = "Vimicro_Corp._Gmix_USB_Webcam"
+		device.subsystem = "sound"
+		sysfs.path = "/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.2/sound/card1"
+		device.vendor.id = "0x0ac8"
+		device.vendor.name = "Z-Star Microelectronics Corp."
+		media.class = "Audio/Device"
+		factory.id = "15"
+		client.id = "36"
+		object.id = "49"
+		object.serial = "49"
+		object.path = "alsa:acp:Webcam"
+		alsa.card = "1"
+		alsa.card_name = "Gmix USB Webcam"
+		alsa.long_card_name = "Vimicro Corp. Gmix USB Webcam at usb-0000:00:14.0-2, high speed"
+		alsa.driver_name = "snd_usb_audio"
+		alsa.mixer_name = "USB Mixer"
+		alsa.components = "USB0ac8:3420"
+		alsa.id = "Webcam"
+		device.string = "1"
+	Profiles:
+		off: Off (sinks: 0, sources: 0, priority: 0, available: yes)
+		pro-audio: Pro Audio (sinks: 0, sources: 1, priority: 1, available: yes)
+		input:mono-fallback: Mono Input (sinks: 0, sources: 1, priority: 1, available: yes)
+	Active Profile: off
+	Ports:
+		analog-input-mic: Microphone (type: Mic, priority: 8700, latency offset: 0 usec, availability unknown)
+			Properties:
+				port.type = "mic"
+				device.icon_name = "audio-input-microphone"
+				card.profile.port = "0"
+			Part of profile(s): input:mono-fallback
+
+Card #50
+	Name: alsa_card.pci-0000_00_1f.3
+	Driver: alsa
+	Owner Module: n/a
+	Properties:
+		api.acp.auto-port = "false"
+		api.acp.auto-profile = "false"
+		api.alsa.card = "0"
+		api.alsa.card.longname = "HDA Intel PCH at 0x4000110000 irq 155"
+		api.alsa.card.name = "HDA Intel PCH"
+		api.alsa.path = "hw:0"
+		api.alsa.use-acp = "true"
+		api.dbus.ReserveDevice1 = "Audio0"
+		device.api = "alsa"
+		device.bus = "pci"
+		device.bus_path = "pci-0000:00:1f.3"
+		device.description = "Built-in Audio"
+		device.enum.api = "udev"
+		device.form_factor = "internal"
+		device.icon_name = "audio-card-analog-pci"
+		device.name = "alsa_card.pci-0000_00_1f.3"
+		device.nick = "HDA Intel PCH"
+		device.plugged.usec = "5900461"
+		device.product.id = "0xa348"
+		device.product.name = "Cannon Lake PCH cAVS"
+		device.subsystem = "sound"
+		sysfs.path = "/devices/pci0000:00/0000:00:1f.3/sound/card0"
+		device.vendor.id = "0x8086"
+		device.vendor.name = "Intel Corporation"
+		media.class = "Audio/Device"
+		factory.id = "15"
+		client.id = "36"
+		object.id = "50"
+		object.serial = "50"
+		object.path = "alsa:acp:PCH"
+		alsa.card = "0"
+		alsa.card_name = "HDA Intel PCH"
+		alsa.long_card_name = "HDA Intel PCH at 0x4000110000 irq 155"
+		alsa.driver_name = "snd_hda_intel"
+		alsa.mixer_name = "Realtek ALC1220"
+		alsa.components = "HDA:10ec1168,10438723,00100101 HDA:8086280b,80860101,00100000"
+		alsa.id = "PCH"
+		device.string = "0"
+	Profiles:
+		off: Off (sinks: 0, sources: 0, priority: 0, available: yes)
+		output:analog-stereo+input:analog-stereo: Analog Stereo Duplex (sinks: 1, sources: 1, priority: 6565, available: yes)
+		output:analog-stereo: Analog Stereo Output (sinks: 1, sources: 0, priority: 6500, available: yes)
+		output:hdmi-stereo+input:analog-stereo: Digital Stereo (HDMI) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 5965, available: yes)
+		output:hdmi-stereo: Digital Stereo (HDMI) Output (sinks: 1, sources: 0, priority: 5900, available: yes)
+		output:hdmi-stereo-extra1+input:analog-stereo: Digital Stereo (HDMI 2) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 5765, available: no)
+		output:hdmi-stereo-extra2+input:analog-stereo: Digital Stereo (HDMI 3) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 5765, available: no)
+		output:hdmi-stereo-extra1: Digital Stereo (HDMI 2) Output (sinks: 1, sources: 0, priority: 5700, available: no)
+		output:hdmi-stereo-extra2: Digital Stereo (HDMI 3) Output (sinks: 1, sources: 0, priority: 5700, available: no)
+		output:iec958-stereo+input:analog-stereo: Digital Stereo (IEC958) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 5565, available: yes)
+		output:iec958-stereo: Digital Stereo (IEC958) Output (sinks: 1, sources: 0, priority: 5500, available: yes)
+		output:analog-surround-21+input:analog-stereo: Analog Surround 2.1 Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 1365, available: yes)
+		output:analog-surround-41+input:analog-stereo: Analog Surround 4.1 Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 1365, available: yes)
+		output:analog-surround-51+input:analog-stereo: Analog Surround 5.1 Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 1365, available: yes)
+		output:analog-surround-21: Analog Surround 2.1 Output (sinks: 1, sources: 0, priority: 1300, available: yes)
+		output:analog-surround-41: Analog Surround 4.1 Output (sinks: 1, sources: 0, priority: 1300, available: yes)
+		output:analog-surround-51: Analog Surround 5.1 Output (sinks: 1, sources: 0, priority: 1300, available: yes)
+		output:analog-surround-40+input:analog-stereo: Analog Surround 4.0 Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 1265, available: yes)
+		output:analog-surround-50+input:analog-stereo: Analog Surround 5.0 Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 1265, available: yes)
+		output:analog-surround-40: Analog Surround 4.0 Output (sinks: 1, sources: 0, priority: 1200, available: yes)
+		output:analog-surround-50: Analog Surround 5.0 Output (sinks: 1, sources: 0, priority: 1200, available: yes)
+		output:hdmi-surround-extra1+input:analog-stereo: Digital Surround 5.1 (HDMI 2) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 665, available: no)
+		output:hdmi-surround71-extra1+input:analog-stereo: Digital Surround 7.1 (HDMI 2) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 665, available: no)
+		output:hdmi-surround-extra2+input:analog-stereo: Digital Surround 5.1 (HDMI 3) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 665, available: no)
+		output:hdmi-surround71-extra2+input:analog-stereo: Digital Surround 7.1 (HDMI 3) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 665, available: no)
+		output:hdmi-surround-extra1: Digital Surround 5.1 (HDMI 2) Output (sinks: 1, sources: 0, priority: 600, available: no)
+		output:hdmi-surround71-extra1: Digital Surround 7.1 (HDMI 2) Output (sinks: 1, sources: 0, priority: 600, available: no)
+		output:hdmi-surround-extra2: Digital Surround 5.1 (HDMI 3) Output (sinks: 1, sources: 0, priority: 600, available: no)
+		output:hdmi-surround71-extra2: Digital Surround 7.1 (HDMI 3) Output (sinks: 1, sources: 0, priority: 600, available: no)
+		output:iec958-ac3-surround-51+input:analog-stereo: Digital Surround 5.1 (IEC958/AC3) Output + Analog Stereo Input (sinks: 1, sources: 1, priority: 365, available: yes)
+		output:iec958-ac3-surround-51: Digital Surround 5.1 (IEC958/AC3) Output (sinks: 1, sources: 0, priority: 300, available: yes)
+		input:analog-stereo: Analog Stereo Input (sinks: 0, sources: 1, priority: 65, available: yes)
+		pro-audio: Pro Audio (sinks: 5, sources: 2, priority: 1, available: yes)
+	Active Profile: output:analog-stereo+input:analog-stereo
+	Ports:
+		analog-input-front-mic: Front Microphone (type: Mic, priority: 8500, latency offset: 0 usec, availability group: Legacy 1, not available)
+			Properties:
+				port.type = "mic"
+				port.availability-group = "Legacy 1"
+				device.icon_name = "audio-input-microphone"
+				card.profile.port = "0"
+			Part of profile(s): input:analog-stereo, output:analog-stereo+input:analog-stereo, output:analog-surround-21+input:analog-stereo, output:analog-surround-40+input:analog-stereo, output:analog-surround-41+input:analog-stereo, output:analog-surround-50+input:analog-stereo, output:analog-surround-51+input:analog-stereo, output:iec958-stereo+input:analog-stereo, output:iec958-ac3-surround-51+input:analog-stereo, output:hdmi-stereo+input:analog-stereo, output:hdmi-stereo-extra1+input:analog-stereo, output:hdmi-surround-extra1+input:analog-stereo, output:hdmi-surround71-extra1+input:analog-stereo, output:hdmi-stereo-extra2+input:analog-stereo, output:hdmi-surround-extra2+input:analog-stereo, output:hdmi-surround71-extra2+input:analog-stereo
+		analog-input-rear-mic: Rear Microphone (type: Mic, priority: 8200, latency offset: 0 usec, availability group: Legacy 2, available)
+			Properties:
+				port.type = "mic"
+				port.availability-group = "Legacy 2"
+				device.icon_name = "audio-input-microphone"
+				card.profile.port = "1"
+			Part of profile(s): input:analog-stereo, output:analog-stereo+input:analog-stereo, output:analog-surround-21+input:analog-stereo, output:analog-surround-40+input:analog-stereo, output:analog-surround-41+input:analog-stereo, output:analog-surround-50+input:analog-stereo, output:analog-surround-51+input:analog-stereo, output:iec958-stereo+input:analog-stereo, output:iec958-ac3-surround-51+input:analog-stereo, output:hdmi-stereo+input:analog-stereo, output:hdmi-stereo-extra1+input:analog-stereo, output:hdmi-surround-extra1+input:analog-stereo, output:hdmi-surround71-extra1+input:analog-stereo, output:hdmi-stereo-extra2+input:analog-stereo, output:hdmi-surround-extra2+input:analog-stereo, output:hdmi-surround71-extra2+input:analog-stereo
+		analog-input-linein: Line In (type: Line, priority: 8100, latency offset: 0 usec, availability group: Legacy 3, not available)
+			Properties:
+				port.type = "line"
+				port.availability-group = "Legacy 3"
+				card.profile.port = "2"
+			Part of profile(s): input:analog-stereo, output:analog-stereo+input:analog-stereo, output:analog-surround-21+input:analog-stereo, output:analog-surround-40+input:analog-stereo, output:analog-surround-41+input:analog-stereo, output:analog-surround-50+input:analog-stereo, output:analog-surround-51+input:analog-stereo, output:iec958-stereo+input:analog-stereo, output:iec958-ac3-surround-51+input:analog-stereo, output:hdmi-stereo+input:analog-stereo, output:hdmi-stereo-extra1+input:analog-stereo, output:hdmi-surround-extra1+input:analog-stereo, output:hdmi-surround71-extra1+input:analog-stereo, output:hdmi-stereo-extra2+input:analog-stereo, output:hdmi-surround-extra2+input:analog-stereo, output:hdmi-surround71-extra2+input:analog-stereo
+		analog-output-lineout: Line Out (type: Line, priority: 9000, latency offset: 0 usec, availability group: Legacy 4, available)
+			Properties:
+				port.type = "line"
+				port.availability-group = "Legacy 4"
+				card.profile.port = "3"
+			Part of profile(s): output:analog-stereo, output:analog-stereo+input:analog-stereo, output:analog-surround-21, output:analog-surround-21+input:analog-stereo, output:analog-surround-40, output:analog-surround-40+input:analog-stereo, output:analog-surround-41, output:analog-surround-41+input:analog-stereo, output:analog-surround-50, output:analog-surround-50+input:analog-stereo, output:analog-surround-51, output:analog-surround-51+input:analog-stereo
+		analog-output-headphones: Headphones (type: Headphones, priority: 9900, latency offset: 0 usec, availability group: Legacy 5, not available)
+			Properties:
+				port.type = "headphones"
+				port.availability-group = "Legacy 5"
+				device.icon_name = "audio-headphones"
+				card.profile.port = "4"
+			Part of profile(s): output:analog-stereo, output:analog-stereo+input:analog-stereo
+		iec958-stereo-output: Digital Output (S/PDIF) (type: SPDIF, priority: 0, latency offset: 0 usec, availability unknown)
+			Properties:
+				port.type = "spdif"
+				card.profile.port = "5"
+			Part of profile(s): output:iec958-stereo, output:iec958-stereo+input:analog-stereo
+		hdmi-output-0: HDMI / DisplayPort (type: HDMI, priority: 5900, latency offset: 0 usec, availability group: Legacy 6, available)
+			Properties:
+				port.type = "hdmi"
+				port.availability-group = "Legacy 6"
+				device.icon_name = "video-display"
+				card.profile.port = "6"
+				device.product.name = "C34H89x"
+			Part of profile(s): output:hdmi-stereo, output:hdmi-stereo+input:analog-stereo
+		hdmi-output-1: HDMI / DisplayPort 2 (type: HDMI, priority: 5800, latency offset: 0 usec, availability group: Legacy 7, not available)
+			Properties:
+				port.type = "hdmi"
+				port.availability-group = "Legacy 7"
+				device.icon_name = "video-display"
+				card.profile.port = "7"
+			Part of profile(s): output:hdmi-stereo-extra1, output:hdmi-stereo-extra1+input:analog-stereo, output:hdmi-surround-extra1, output:hdmi-surround-extra1+input:analog-stereo, output:hdmi-surround71-extra1, output:hdmi-surround71-extra1+input:analog-stereo
+		hdmi-output-2: HDMI / DisplayPort 3 (type: HDMI, priority: 5700, latency offset: 0 usec, availability group: Legacy 8, not available)
+			Properties:
+				port.type = "hdmi"
+				port.availability-group = "Legacy 8"
+				device.icon_name = "video-display"
+				card.profile.port = "8"
+			Part of profile(s): output:hdmi-stereo-extra2, output:hdmi-stereo-extra2+input:analog-stereo, output:hdmi-surround-extra2, output:hdmi-surround-extra2+input:analog-stereo, output:hdmi-surround71-extra2, output:hdmi-surround71-extra2+input:analog-stereo
