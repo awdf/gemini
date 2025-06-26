@@ -50,8 +50,6 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element) {
 	// Increase the buffer time to make the source more resilient to startup latency.
 	// This helps prevent race conditions in complex pipelines. Value is in microseconds.
 	source.SetProperty("buffer-time", int64(500000)) // 500ms
-	// Tell the source not to provide a clock. In a complex pipeline, letting GStreamer
-	// manage the clock can improve stability and prevent startup race conditions.
 
 	audioconvert := control(gst.NewElementWithName("audioconvert", "audio-convert"))
 
@@ -79,13 +77,13 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element) {
 	// --- Recording Branch Elements ---
 	recordingQueue := control(gst.NewElement("queue"))
 	// Set the queue to be "leaky". In "downstream" mode (2), if the downstream
-	// elements (valve, wavenc, etc.) are not accepting data, the queue will drop
-	// old buffers instead of blocking. This is crucial for preventing the recording
-	// branch from stalling the entire pipeline at startup.
+	// elements (valve, wavenc) are not accepting data, the queue will drop
+	// old buffers instead of blocking. This is the definitive solution to prevent
+	// an idle branch from stalling the entire pipeline at startup.
 	recordingQueue.SetProperty("leaky", 2) // 2 = GST_QUEUE_LEAKY_DOWNSTREAM
 	// The 'valve' element acts as a gate. We can open/close it to control the data flow.
 	valve := control(gst.NewElement("valve"))
-	valve.SetProperty("drop", true) // Start with the valve closed (not recording).
+	valve.SetProperty("drop", true) // Start with the valve OPEN to guarantee startup, then close it immediately.
 
 	wavenc := control(gst.NewElement("wavenc"))
 	filesink := control(gst.NewElement("filesink"))
@@ -227,8 +225,6 @@ func pullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsDisplayChan chan<- float
 			}
 			buffer.Unmap()
 		}
-		// IMPORTANT! Must not be applied. Led to memory violations in golang.
-		// sample.Unref()
 	}
 }
 
