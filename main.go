@@ -35,12 +35,9 @@ const (
 // It uses a "tee" element to split the audio stream into two branches:
 // 1. Analysis Branch: -> queue -> appsink (for calculating RMS in Go)
 // 2. Recording Branch: -> queue -> valve -> wavenc -> filesink (for writing to a .wav file)
-func createVADPipeline() (*gst.Pipeline, *app.Sink) {
+func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element) {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
 	//Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
-
-	// Initialize GStreamer
-	gst.Init(nil)
 
 	// Create a new pipeline
 	pipeline := control(gst.NewPipeline("vad-recording-pipeline"))
@@ -50,6 +47,11 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink) {
 	// Reverting to pulsesrc as pipewiresrc is not working in this environment.
 	source := control(gst.NewElementWithName("pulsesrc", "pulse-source"))
 	source.SetProperty("device", "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor")
+	// Increase the buffer time to make the source more resilient to startup latency.
+	// This helps prevent race conditions in complex pipelines. Value is in microseconds.
+	source.SetProperty("buffer-time", int64(500000)) // 500ms
+	// Tell the source not to provide a clock. In a complex pipeline, letting GStreamer
+	// manage the clock can improve stability and prevent startup race conditions.
 
 	audioconvert := control(gst.NewElementWithName("audioconvert", "audio-convert"))
 
@@ -75,15 +77,22 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink) {
 	sink.SetMaxBuffers(10)
 
 	// --- Recording Branch Elements ---
-	// For debugging, we replace the entire recording branch with a simple fakesink.
-	// fakesink accepts and discards all data, and never blocks. This allows us to
-	// verify if the tee and analysis branch are working correctly without interference
-	// from the more complex recording logic (valve, wavenc, etc.).
 	recordingQueue := control(gst.NewElement("queue"))
-	fakesink := control(gst.NewElement("fakesink"))
+	// Set the queue to be "leaky". In "downstream" mode (2), if the downstream
+	// elements (valve, wavenc, etc.) are not accepting data, the queue will drop
+	// old buffers instead of blocking. This is crucial for preventing the recording
+	// branch from stalling the entire pipeline at startup.
+	recordingQueue.SetProperty("leaky", 2) // 2 = GST_QUEUE_LEAKY_DOWNSTREAM
+	// The 'valve' element acts as a gate. We can open/close it to control the data flow.
+	valve := control(gst.NewElement("valve"))
+	valve.SetProperty("drop", true) // Start with the valve closed (not recording).
+
+	wavenc := control(gst.NewElement("wavenc"))
+	filesink := control(gst.NewElement("filesink"))
+	filesink.SetProperty("location", OutputFilename)
 
 	// Add all elements to the pipeline
-	verify(pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, sink.Element, recordingQueue, fakesink))
+	verify(pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, sink.Element, recordingQueue, valve, wavenc, filesink))
 
 	// Link the common path
 	verify(gst.ElementLinkMany(source, audioconvert, audioresample, capsfilter, tee))
@@ -92,9 +101,9 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink) {
 	verify(gst.ElementLinkMany(tee, analysisQueue, sink.Element))
 
 	// Link the recording branch
-	verify(gst.ElementLinkMany(tee, recordingQueue, fakesink))
+	verify(gst.ElementLinkMany(tee, recordingQueue, valve, wavenc, filesink))
 
-	return pipeline, sink
+	return pipeline, sink, valve
 }
 
 // vadState represents the state of the Voice Activity Detector.
@@ -121,12 +130,16 @@ func (v *vadState) processAudioChunk(rms float64) {
 	isLoud := rms > SilenceThreshold
 
 	if isLoud {
+		// If we detect sound, and we are not currently recording, we need to start.
 		if !v.isRecording {
-			// NOTE: The VAD status messages will interrupt the RMS volume bar display.
-			// A more sophisticated UI would integrate status messages and the bar into a single display routine.
-			fmt.Printf("\n>>> Sound detected! Starting recording to %s...\n", OutputFilename)
-			v.valve.SetProperty("drop", false)
 			v.isRecording = true
+			// Schedule the GStreamer state change to happen on the main GLib thread.
+			// This is the safest way to modify a running pipeline from a goroutine.
+			glib.IdleAdd(func() bool {
+				fmt.Printf("\n>>> Sound detected! Starting recording to %s...\n", OutputFilename)
+				v.valve.SetProperty("drop", false)
+				return false // Do not call again
+			})
 		}
 		// If it's loud, we are not in a hangover period, so reset the timer.
 		v.silenceEndTime = time.Time{}
@@ -136,11 +149,13 @@ func (v *vadState) processAudioChunk(rms float64) {
 			v.silenceEndTime = time.Now().Add(HangoverDuration)
 		} else if time.Now().After(v.silenceEndTime) {
 			// Hangover period is over. Stop recording.
-			fmt.Println("\n<<< Silence detected. Stopping recording.")
-			v.valve.SetProperty("drop", true)
 			v.isRecording = false
-			// To save multiple clips, you would update the filesink's 'location' property here
-			// with a new filename before the next recording starts.
+			// Schedule the GStreamer state change to happen on the main GLib thread.
+			glib.IdleAdd(func() bool {
+				fmt.Println("\n<<< Silence detected. Stopping recording.")
+				v.valve.SetProperty("drop", true)
+				return false // Do not call again
+			})
 		}
 	}
 }
@@ -169,7 +184,7 @@ func vadController(wg *sync.WaitGroup, vad *vadState, vadControlChan <-chan floa
 // pullSamples is a dedicated goroutine that only pulls samples from the GStreamer pipeline.
 // It calculates the RMS and passes it to other goroutines for processing, but never
 // modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
-func pullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsChan chan float64, ctx context.Context) {
+func pullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsDisplayChan chan<- float64, vadControlChan chan<- float64, ctx context.Context) {
 	defer wg.Done()
 
 	for {
@@ -200,12 +215,19 @@ func pullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsChan chan float64, ctx c
 
 				// Send to display goroutine (non-blocking)
 				select {
-				case rmsChan <- normalizedRms:
+				case rmsDisplayChan <- normalizedRms:
+				default:
+				}
+
+				// Send to VAD controller goroutine (non-blocking)
+				select {
+				case vadControlChan <- normalizedRms:
 				default:
 				}
 			}
 			buffer.Unmap()
 		}
+		// IMPORTANT! Must not be applied. Led to memory violations in golang.
 		// sample.Unref()
 	}
 }
@@ -288,17 +310,24 @@ func displayRMS(rmsChan chan float64) {
 }
 
 func main() {
-	// Create a buffered channel to decouple the "hot" GStreamer loop from the "cold" I/O loop.
-	rmsChan := make(chan float64, 10)
+	// Initialize GStreamer. This should be called once per application.
+	gst.Init(nil)
+
+	// Create buffered channels to decouple the "hot" GStreamer loop from other goroutines.
+	rmsDisplayChan := make(chan float64, 10) // For the RMS volume bar
+	vadControlChan := make(chan float64, 10) // For the VAD logic
 
 	// Start a "cold" goroutine for printing the volume bar.
-	go displayRMS(rmsChan)
+	go displayRMS(rmsDisplayChan)
 
 	// Use a WaitGroup to ensure our goroutines shut down cleanly.
 	var wg sync.WaitGroup
 
 	// Creation pipeline
-	pipeline, sink := createVADPipeline()
+	pipeline, sink, valve := createVADPipeline()
+
+	// Create the VAD state controller.
+	vad := newVAD(valve)
 
 	// Create a cancellable context to gracefully shut down the puller goroutine.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -324,9 +353,13 @@ func main() {
 		})
 	}()
 
+	// Start the VAD controller goroutine. This is the only goroutine allowed to change
+	// the pipeline's state (by controlling the valve).
+	wg.Add(1)
+	go vadController(&wg, vad, vadControlChan, ctx)
 	// Start the puller goroutine.
 	wg.Add(1)
-	go pullSamples(&wg, sink, rmsChan, ctx)
+	go pullSamples(&wg, sink, rmsDisplayChan, vadControlChan, ctx)
 
 	// Start the pipeline
 	verify(pipeline.SetState(gst.StatePlaying))
@@ -338,7 +371,8 @@ func main() {
 	mainLoop.Run()
 
 	// Clean up
-	close(rmsChan)
+	close(rmsDisplayChan)
+	close(vadControlChan)
 	fmt.Println("Stopping pipeline...")
 	// Set the pipeline to NULL state. This is a blocking call that will tear down
 	// the pipeline and cause sink.PullSample() to unblock and return nil.
