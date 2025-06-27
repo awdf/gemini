@@ -1,4 +1,4 @@
-// This example shows how to use the appsink element.
+// sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-good1.0-dev
 package main
 
 import (
@@ -23,23 +23,16 @@ const (
 	// HangoverDuration is the amount of time to continue recording after the audio level
 	// drops below the silence threshold. This prevents cutting off recordings prematurely.
 	HangoverDuration = 2 * time.Second
-
-	// OutputFilename is the name of the file where the recording will be saved.
-	// In this example, it's overwritten on each new recording session.
-	OutputFilename = "recording.wav"
 )
 
 // createVADPipeline sets up a GStreamer pipeline that listens to an audio source,
 // analyzes its volume, and records it to a file only when sound is detected.
 // It uses a "tee" element to split the audio stream into two branches:
 // 1. Analysis Branch: -> queue -> appsink (for calculating RMS in Go)
-// 2. Recording Branch: -> queue -> valve -> wavenc -> filesink (for writing to a .wav file)
-func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element) {
+// 2. Recording Branch: -> queue -> valve -> wavenc -> appsink (for writing to a file in Go)
+func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element, *app.Sink) {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
 	//Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
-
-	//Remove old recording.
-	os.Remove(OutputFilename)
 
 	// Create a new pipeline
 	pipeline := control(gst.NewPipeline("vad-recording-pipeline"))
@@ -91,14 +84,14 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element) {
 	//WAV format stream encoding
 	wavenc := control(gst.NewElement("wavenc"))
 
-	//Result stored to file
-	filesink := control(gst.NewElement("filesink"))
-	filesink.SetProperty("location", OutputFilename)
-	filesink.SetProperty("append", false)
-	filesink.SetProperty("file-mode", 3) // 3 - overwrite
+	// Use a second appsink for the recording branch. This allows Go to handle
+	// file I/O, giving us the flexibility to create new files on the fly.
+	recordingSink := control(app.NewAppSink())
+	recordingSink.SetProperty("sync", false)
+	recordingSink.SetDrop(true) // Drop data if the file writer can't keep up
 
 	// Add all elements to the pipeline
-	verify(pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, vadsink.Element, recordingQueue, valve, wavenc, filesink))
+	verify(pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, vadsink.Element, recordingQueue, valve, wavenc, recordingSink.Element))
 
 	// Link the common path
 	verify(gst.ElementLinkMany(source, audioconvert, audioresample, capsfilter, tee))
@@ -107,23 +100,26 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element) {
 	verify(gst.ElementLinkMany(tee, analysisQueue, vadsink.Element))
 
 	// Link the recording branch
-	verify(gst.ElementLinkMany(tee, recordingQueue, valve, wavenc, filesink))
+	verify(gst.ElementLinkMany(tee, recordingQueue, valve, wavenc, recordingSink.Element))
 
-	return pipeline, vadsink, valve
+	return pipeline, vadsink, valve, recordingSink
 }
 
 // vadState represents the state of the Voice Activity Detector.
 type vadState struct {
-	mu             sync.Mutex
-	valve          *gst.Element
-	isRecording    bool
-	silenceEndTime time.Time
+	mu              sync.Mutex
+	valve           *gst.Element
+	isRecording     bool
+	silenceEndTime  time.Time
+	fileCounter     int
+	fileControlChan chan<- string
 }
 
 // newVAD creates a new VAD controller.
-func newVAD(valve *gst.Element) *vadState {
+func newVAD(valve *gst.Element, fileControlChan chan<- string) *vadState {
 	return &vadState{
-		valve: valve,
+		valve:           valve,
+		fileControlChan: fileControlChan,
 	}
 }
 
@@ -139,10 +135,14 @@ func (v *vadState) processAudioChunk(rms float64) {
 		// If we detect sound, and we are not currently recording, we need to start.
 		if !v.isRecording {
 			v.isRecording = true
+			v.fileCounter++
+			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
+
+			v.fileControlChan <- "START:" + newFilename
 			// Schedule the GStreamer state change to happen on the main GLib thread.
 			// This is the safest way to modify a running pipeline from a goroutine.
 			glib.IdleAdd(func() bool {
-				fmt.Printf("\n>>> Sound detected! Starting recording to %s...\n", OutputFilename)
+				fmt.Printf("\n>>> Sound detected! Starting recording...\n")
 				v.valve.SetProperty("drop", false)
 				return false // Do not call again
 			})
@@ -156,12 +156,74 @@ func (v *vadState) processAudioChunk(rms float64) {
 		} else if time.Now().After(v.silenceEndTime) {
 			// Hangover period is over. Stop recording.
 			v.isRecording = false
+
+			v.fileControlChan <- "STOP"
 			// Schedule the GStreamer state change to happen on the main GLib thread.
 			glib.IdleAdd(func() bool {
 				fmt.Println("\n<<< Silence detected. Stopping recording.")
 				v.valve.SetProperty("drop", true)
 				return false // Do not call again
 			})
+		}
+	}
+}
+
+// fileWriter is a dedicated goroutine for writing encoded audio data to files.
+// It listens for control messages to start new files and finalize (and potentially delete) old ones.
+func fileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string) {
+	defer wg.Done()
+
+	var f *os.File
+	var err error
+	var currentFilename string
+	var isWriting = false
+
+	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case cmd, ok := <-controlChan:
+			if !ok { // Channel closed, shutdown.
+				if f != nil {
+					f.Close()
+				}
+				return
+			}
+
+			if strings.HasPrefix(cmd, "START:") {
+				if f != nil { // Close previous file if it exists
+					f.Close()
+				}
+				currentFilename = strings.TrimPrefix(cmd, "START:")
+				f, err = os.Create(currentFilename)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error creating file %s: %v\n", currentFilename, err)
+					f = nil
+					isWriting = false
+				} else {
+					fmt.Printf("Created new recording file: %s\n", currentFilename)
+					isWriting = true
+				}
+			} else if cmd == "STOP" {
+				if f != nil {
+					f.Close()
+					isWriting = false
+					// Conditionally remove the file. If it's very small, it was likely just noise.
+					info, err := os.Stat(currentFilename)
+					if err == nil && info.Size() < 1024 {
+						fmt.Printf("Recording %s is very short (%d bytes), deleting.\n", currentFilename, info.Size())
+						os.Remove(currentFilename)
+					} else {
+						fmt.Printf("Finished recording to %s\n", currentFilename)
+					}
+					f = nil
+				}
+			}
+
+		case <-ticker.C:
+			pullAndWriteSamples(sink, f, &isWriting)
 		}
 	}
 }
@@ -173,6 +235,30 @@ func vadController(wg *sync.WaitGroup, vad *vadState, vadControlChan <-chan floa
 	defer wg.Done()
 	for rms := range vadControlChan {
 		vad.processAudioChunk(rms)
+	}
+}
+
+// pullAndWriteSamples pulls all available samples from the sink and writes them to the file.
+func pullAndWriteSamples(sink *app.Sink, f *os.File, isWriting *bool) {
+	if f == nil || !*isWriting {
+		return
+	}
+
+	// Pull all available samples from the queue to avoid backlog.
+	for {
+		sample := sink.TryPullSample(0)
+		if sample == nil {
+			break // No more samples in queue.
+		}
+
+		buffer := sample.GetBuffer()
+		if buffer != nil {
+			if _, err := f.Write(buffer.Bytes()); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing to file: %v\n", err)
+				*isWriting = false // Stop writing on error.
+			}
+		}
+		buffer.Unref()
 	}
 }
 
@@ -301,14 +387,15 @@ func main() {
 	rmsDisplayChan := make(chan float64, 10) // For the RMS volume bar
 	vadControlChan := make(chan float64, 10) // For the VAD logic
 
+	// Creation pipeline
+	pipeline, vadsink, valve, recordingSink := createVADPipeline()
+
 	// Start a "cold" goroutine for printing the volume bar.
 	go displayRMS(rmsDisplayChan)
 
-	// Creation pipeline
-	pipeline, vadsink, valve := createVADPipeline()
-
 	// Create the VAD state controller.
-	vad := newVAD(valve)
+	fileControlChan := make(chan string, 5)
+	vad := newVAD(valve, fileControlChan)
 
 	// Create a GLib Main Loop to handle GStreamer bus messages.
 	mainLoop := mainLoop(pipeline)
@@ -319,8 +406,7 @@ func main() {
 	go func() {
 		<-c
 		fmt.Println("\nInterrupt received, initiating shutdown...")
-		// 1. Signal all worker goroutines to stop immediately. This prevents
-		// them from accessing the pipeline during shutdown.
+		// 1. Signal to end pipline work
 		pipeline.SendEvent(gst.NewEOSEvent())
 		// 2. Schedule MainLoop.Quit() to be called from the main GStreamer thread.
 		// This is the safest way to interact with the pipeline from a different
@@ -340,12 +426,15 @@ func main() {
 	// Start the puller goroutine.
 	wg.Add(1)
 	go pullSamples(&wg, vadsink, rmsDisplayChan, vadControlChan)
+	// Start the file writer goroutine.
+	wg.Add(1)
+	go fileWriter(&wg, recordingSink, fileControlChan)
 
 	// Start the pipeline
 	verify(pipeline.SetState(gst.StatePlaying))
 
 	fmt.Println("Listening for audio... Recording will start when sound is detected.")
-	fmt.Printf("Recordings will be saved to %s. Press Ctrl+C to exit.\n", OutputFilename)
+	fmt.Println("Each utterance will be saved to a new file (e.g., recording-1.wav). Press Ctrl+C to exit.")
 
 	// Block until the pipeline's bus signals EOS or an error.
 	mainLoop.Run()
@@ -354,6 +443,7 @@ func main() {
 	// Clean up
 	close(rmsDisplayChan)
 	close(vadControlChan)
+	close(fileControlChan)
 	// Set the pipeline to NULL state. This is a blocking call that will tear down
 	// the pipeline and cause sink.PullSample() to unblock and return nil.
 	pipeline.SetState(gst.StateNull)
