@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"os"
@@ -23,6 +24,17 @@ const (
 	// HangoverDuration is the amount of time to continue recording after the audio level
 	// drops below the silence threshold. This prevents cutting off recordings prematurely.
 	HangoverDuration = 2 * time.Second
+)
+
+// Constants for WAV header based on the pipeline's capsfilter:
+// audio/x-raw, format=S16LE, layout=interleaved, channels=2, rate=48000
+const (
+	WAV_HEADER_SIZE     = 44 // Standard WAV header size
+	WAV_CHANNELS        = 2
+	WAV_SAMPLE_RATE     = 48000
+	WAV_BITS_PER_SAMPLE = 16
+	WAV_BYTE_RATE       = WAV_SAMPLE_RATE * WAV_CHANNELS * (WAV_BITS_PER_SAMPLE / 8) // 192000 bytes/sec
+	WAV_BLOCK_ALIGN     = WAV_CHANNELS * (WAV_BITS_PER_SAMPLE / 8)                   // 4 bytes per sample frame
 )
 
 // createVADPipeline sets up a GStreamer pipeline that listens to an audio source,
@@ -75,23 +87,21 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element, *app.Sink) {
 	// elements (valve, wavenc) are not accepting data, the queue will drop
 	// old buffers instead of blocking. This is the definitive solution to prevent
 	// an idle branch from stalling the entire pipeline at startup.
-	recordingQueue.SetProperty("leaky", 2) // 2 = GST_QUEUE_LEAKY_DOWNSTREAM
+	// Changed to 0 (no leak) to ensure all data is passed for recording integrity.
+	recordingQueue.SetProperty("leaky", 0) // 0 = No leak
 	// The 'valve' element acts as a gate. We can open/close it to control the data flow.
 	valve := control(gst.NewElement("valve"))
 	valve.SetProperty("drop-mode", 1) // Allow pass pipeline events, other drop
 	valve.SetProperty("drop", false)  // Start with the valve OPEN to guarantee startup, then close it immediately.
 
-	//WAV format stream encoding
-	wavenc := control(gst.NewElement("wavenc"))
-
 	// Use a second appsink for the recording branch. This allows Go to handle
 	// file I/O, giving us the flexibility to create new files on the fly.
 	recordingSink := control(app.NewAppSink())
 	recordingSink.SetProperty("sync", false)
-	recordingSink.SetDrop(true) // Drop data if the file writer can't keep up
+	recordingSink.SetDrop(false) // Do not drop data; ensure all samples are received for recording.
 
 	// Add all elements to the pipeline
-	verify(pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, vadsink.Element, recordingQueue, valve, wavenc, recordingSink.Element))
+	verify(pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, vadsink.Element, recordingQueue, valve, recordingSink.Element))
 
 	// Link the common path
 	verify(gst.ElementLinkMany(source, audioconvert, audioresample, capsfilter, tee))
@@ -100,7 +110,7 @@ func createVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element, *app.Sink) {
 	verify(gst.ElementLinkMany(tee, analysisQueue, vadsink.Element))
 
 	// Link the recording branch
-	verify(gst.ElementLinkMany(tee, recordingQueue, valve, wavenc, recordingSink.Element))
+	verify(gst.ElementLinkMany(tee, recordingQueue, valve, recordingSink.Element))
 
 	return pipeline, vadsink, valve, recordingSink
 }
@@ -176,6 +186,7 @@ func fileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string) {
 	var f *os.File
 	var err error
 	var currentFilename string
+	var bytesWritten int64 // Track bytes written to the current file
 	var isWriting = false
 
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
@@ -203,13 +214,24 @@ func fileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string) {
 					f = nil
 					isWriting = false
 				} else {
-					fmt.Printf("Created new recording file: %s\n", currentFilename)
+					// Write placeholder WAV header
+					if err := writeWAVHeader(f); err != nil {
+						fmt.Fprintf(os.Stderr, "Error writing WAV header to %s: %v\n", currentFilename, err)
+						f.Close()
+						f = nil
+					} else {
+						fmt.Printf("Created new recording file: %s\n", currentFilename)
+					}
 					isWriting = true
 				}
 			} else if cmd == "STOP" {
 				if f != nil {
 					f.Close()
 					isWriting = false
+					// Update WAV header with actual sizes
+					if err := updateWAVHeader(currentFilename, bytesWritten); err != nil {
+						fmt.Fprintf(os.Stderr, "Error updating WAV header for %s: %v\n", currentFilename, err)
+					}
 					// Conditionally remove the file. If it's very small, it was likely just noise.
 					info, err := os.Stat(currentFilename)
 					if err == nil && info.Size() < 1024 {
@@ -219,11 +241,12 @@ func fileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string) {
 						fmt.Printf("Finished recording to %s\n", currentFilename)
 					}
 					f = nil
+					bytesWritten = 0 // Reset for next recording
 				}
 			}
 
 		case <-ticker.C:
-			pullAndWriteSamples(sink, f, &isWriting)
+			pullAndWriteSamples(sink, f, &isWriting, &bytesWritten)
 		}
 	}
 }
@@ -238,13 +261,65 @@ func vadController(wg *sync.WaitGroup, vad *vadState, vadControlChan <-chan floa
 	}
 }
 
+// writeWAVHeader writes a placeholder WAV header to the file.
+// The dataSize and fileSize will need to be updated later.
+func writeWAVHeader(f *os.File) error {
+	header := make([]byte, WAV_HEADER_SIZE)
+
+	// RIFF chunk
+	copy(header[0:4], []byte("RIFF"))
+	binary.LittleEndian.PutUint32(header[4:8], 0) // Placeholder for ChunkSize (total file size - 8)
+	copy(header[8:12], []byte("WAVE"))
+
+	// FMT sub-chunk
+	copy(header[12:16], []byte("fmt "))
+	binary.LittleEndian.PutUint32(header[16:20], 16) // Subchunk1Size (16 for PCM)
+	binary.LittleEndian.PutUint16(header[20:22], 1)  // AudioFormat (1 for PCM)
+	binary.LittleEndian.PutUint16(header[22:24], WAV_CHANNELS)
+	binary.LittleEndian.PutUint32(header[24:28], WAV_SAMPLE_RATE)
+	binary.LittleEndian.PutUint32(header[28:32], WAV_BYTE_RATE)
+	binary.LittleEndian.PutUint16(header[32:34], WAV_BLOCK_ALIGN)
+	binary.LittleEndian.PutUint16(header[34:36], WAV_BITS_PER_SAMPLE)
+
+	// DATA sub-chunk
+	copy(header[36:40], []byte("data"))
+	binary.LittleEndian.PutUint32(header[40:44], 0) // Placeholder for Subchunk2Size (data size)
+
+	_, err := f.Write(header)
+	return err
+}
+
+// updateWAVHeader updates the ChunkSize and Subchunk2Size in the WAV header.
+func updateWAVHeader(filename string, dataSize int64) error {
+	f, err := os.OpenFile(filename, os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s for header update: %w", filename, err)
+	}
+	defer f.Close()
+
+	// Update ChunkSize (total file size - 8)
+	binary.LittleEndian.PutUint32(make([]byte, 4), uint32(dataSize+WAV_HEADER_SIZE-8))
+	_, err = f.WriteAt(binary.LittleEndian.AppendUint32(nil, uint32(dataSize+WAV_HEADER_SIZE-8)), 4) // Write at offset 4
+	if err != nil {
+		return fmt.Errorf("failed to write RIFF chunk size: %w", err)
+	}
+
+	// Update Subchunk2Size (data size)
+	_, err = f.WriteAt(binary.LittleEndian.AppendUint32(nil, uint32(dataSize)), 40) // Write at offset 40
+	if err != nil {
+		return fmt.Errorf("failed to write data chunk size: %w", err)
+	}
+
+	return nil
+}
+
 // pullAndWriteSamples pulls all available samples from the sink and writes them to the file.
-func pullAndWriteSamples(sink *app.Sink, f *os.File, isWriting *bool) {
+func pullAndWriteSamples(sink *app.Sink, f *os.File, isWriting *bool, bytesWritten *int64) {
 	if f == nil || !*isWriting {
 		return
 	}
 
-	// Pull all available samples from the queue to avoid backlog.
+	// Pull all available samples from the sink.
 	for {
 		sample := sink.TryPullSample(0)
 		if sample == nil {
@@ -257,6 +332,7 @@ func pullAndWriteSamples(sink *app.Sink, f *os.File, isWriting *bool) {
 				fmt.Fprintf(os.Stderr, "Error writing to file: %v\n", err)
 				*isWriting = false // Stop writing on error.
 			}
+			*bytesWritten += int64(len(buffer.Bytes()))
 		}
 		buffer.Unref()
 	}
@@ -428,7 +504,7 @@ func main() {
 	go pullSamples(&wg, vadsink, rmsDisplayChan, vadControlChan)
 	// Start the file writer goroutine.
 	wg.Add(1)
-	go fileWriter(&wg, recordingSink, fileControlChan)
+	go fileWriter(&wg, recordingSink, fileControlChan) // Pass bytesWritten
 
 	// Start the pipeline
 	verify(pipeline.SetState(gst.StatePlaying))
