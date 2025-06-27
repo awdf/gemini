@@ -2,7 +2,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"os"
@@ -170,38 +169,20 @@ func (v *vadState) processAudioChunk(rms float64) {
 // vadController is a dedicated goroutine that listens for RMS values and controls the
 // recording valve. Isolating this GStreamer state change into its own goroutine
 // is critical for preventing deadlocks.
-func vadController(wg *sync.WaitGroup, vad *vadState, vadControlChan <-chan float64, ctx context.Context) {
+func vadController(wg *sync.WaitGroup, vad *vadState, vadControlChan <-chan float64) {
 	defer wg.Done()
-	for {
-		select {
-		case rms, ok := <-vadControlChan:
-			if !ok {
-				fmt.Println("\nVAD Controller goroutine: channel closed, exiting.")
-				return
-			}
-			// This is the only place (outside main) that modifies pipeline state.
-			vad.processAudioChunk(rms)
-		case <-ctx.Done():
-			fmt.Println("\nVAD Controller goroutine: context cancelled, exiting.")
-			return
-		}
+	for rms := range vadControlChan {
+		vad.processAudioChunk(rms)
 	}
 }
 
 // pullSamples is a dedicated goroutine that only pulls samples from the GStreamer pipeline.
 // It calculates the RMS and passes it to other goroutines for processing, but never
 // modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
-func pullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsDisplayChan chan<- float64, vadControlChan chan<- float64, ctx context.Context) {
+func pullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsDisplayChan chan<- float64, vadControlChan chan<- float64) {
 	defer wg.Done()
 
 	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("\nPuller goroutine: context cancelled, exiting.")
-			return
-		default:
-		}
-
 		sample := sink.PullSample()
 		if sample == nil {
 			fmt.Println("\nPuller goroutine: received nil sample, exiting.")
@@ -302,9 +283,7 @@ func displayRMS(rmsChan chan float64) {
 		select {
 		case rms, ok := <-rmsChan:
 			if !ok {
-				// Channel is closed.
-				fmt.Println() // Move to a new line for a clean exit
-				return
+				break // Channel is closed.
 			}
 			currentRMS = rms // Keep track of the latest RMS value.
 		case <-ticker.C:
@@ -331,9 +310,6 @@ func main() {
 	// Create the VAD state controller.
 	vad := newVAD(valve)
 
-	// Create a cancellable context to gracefully shut down the puller goroutine.
-	ctx, cancel := context.WithCancel(context.Background())
-
 	// Create a GLib Main Loop to handle GStreamer bus messages.
 	mainLoop := mainLoop(pipeline)
 
@@ -345,7 +321,7 @@ func main() {
 		fmt.Println("\nInterrupt received, initiating shutdown...")
 		// 1. Signal all worker goroutines to stop immediately. This prevents
 		// them from accessing the pipeline during shutdown.
-		cancel()
+		pipeline.SendEvent(gst.NewEOSEvent())
 		// 2. Schedule MainLoop.Quit() to be called from the main GStreamer thread.
 		// This is the safest way to interact with the pipeline from a different
 		// thread. This will cause mainLoop.Run() to return, allowing a clean shutdown.
@@ -360,10 +336,10 @@ func main() {
 	// Start the VAD controller goroutine. This is the only goroutine allowed to change
 	// the pipeline's state (by controlling the valve).
 	wg.Add(1)
-	go vadController(&wg, vad, vadControlChan, ctx)
+	go vadController(&wg, vad, vadControlChan)
 	// Start the puller goroutine.
 	wg.Add(1)
-	go pullSamples(&wg, vadsink, rmsDisplayChan, vadControlChan, ctx)
+	go pullSamples(&wg, vadsink, rmsDisplayChan, vadControlChan)
 
 	// Start the pipeline
 	verify(pipeline.SetState(gst.StatePlaying))
@@ -375,6 +351,9 @@ func main() {
 	mainLoop.Run()
 
 	fmt.Println("Stopping pipeline...")
+	// Clean up
+	close(rmsDisplayChan)
+	close(vadControlChan)
 	// Set the pipeline to NULL state. This is a blocking call that will tear down
 	// the pipeline and cause sink.PullSample() to unblock and return nil.
 	pipeline.SetState(gst.StateNull)
@@ -382,9 +361,6 @@ func main() {
 
 	// Now that the pipeline is stopped, wait for the processing goroutines to finish their cleanup.
 	wg.Wait()
-	// Clean up
-	close(rmsDisplayChan)
-	close(vadControlChan)
 	fmt.Println("All goroutines finished.")
 }
 
