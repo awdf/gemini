@@ -3,6 +3,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -126,4 +127,5 @@ func main() {
 
 	// Now that the pipeline is stopped, wait for the processing goroutines to finish their cleanup.
 	wg.Wait()
+	fmt.Println("All goroutines finished.")
 }

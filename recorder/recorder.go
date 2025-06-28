@@ -42,6 +42,9 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 		case cmd, ok := <-controlChan:
 			if !ok { // Channel closed, shutdown.
 				if f != nil {
+					// This is a final cleanup. If a file was open when the channel
+					// closed, finalize it before exiting the goroutine.
+					finalizeRecording(f, currentFilename, bytesWritten, fileChan)
 					f.Close()
 				}
 				log.Println("Recording is finished")
