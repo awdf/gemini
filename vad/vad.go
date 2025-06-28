@@ -2,6 +2,7 @@ package vad
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -60,7 +61,7 @@ func (v *State) ProcessAudioChunk(rms float64) {
 			// Schedule the GStreamer state change to happen on the main GLib thread.
 			// This is the safest way to modify a running pipeline from a goroutine.
 			glib.IdleAdd(func() bool {
-				fmt.Printf("\n>>> Sound detected! Starting recording...\n")
+				log.Println(">>> Sound detected! Starting recording...")
 				v.valve.SetProperty("drop", false)
 				return false // Do not call again
 			})
@@ -79,7 +80,7 @@ func (v *State) ProcessAudioChunk(rms float64) {
 			v.fileControlChan <- "STOP:" + newFilename
 			// Schedule the GStreamer state change to happen on the main GLib thread.
 			glib.IdleAdd(func() bool {
-				fmt.Println("\n<<< Silence detected. Stopping recording.")
+				log.Println("<<< Silence detected. Stopping recording.")
 				v.valve.SetProperty("drop", true)
 				return false // Do not call again
 			})
@@ -94,9 +95,9 @@ func Controller(wg *sync.WaitGroup, vad *State, vadControlChan <-chan float64) {
 	defer wg.Done()
 	for rms := range vadControlChan {
 		if DEBUG {
-			fmt.Println("VAD received RMS")
+			log.Println("VAD received RMS")
 		}
 		vad.ProcessAudioChunk(rms)
 	}
-	fmt.Println("VAD work finished")
+	log.Println("VAD work finished")
 }

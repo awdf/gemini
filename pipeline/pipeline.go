@@ -2,8 +2,8 @@ package pipeline
 
 import (
 	"fmt"
+	"log"
 	"math"
-	"os"
 	"sync"
 
 	"capgemini.com/audio" // Import the audio package for WAV constants
@@ -103,13 +103,13 @@ func MainLoop(pipeline *gst.Pipeline) *glib.MainLoop {
 	bus.AddWatch(func(msg *gst.Message) bool {
 		switch msg.Type() {
 		case gst.MessageEOS:
-			fmt.Println("End of stream.")
+			log.Println("End of stream.")
 			mainLoop.Quit()
 			return false // Stop watching
 		case gst.MessageError:
 			err := msg.ParseError()
-			fmt.Fprintf(os.Stderr, "Error from element %s: %s\n", msg.Source(), err.Error())
-			fmt.Fprintf(os.Stderr, "Debugging info: %s\n", err.DebugString())
+			log.Printf("ERROR: from element %s: %s", msg.Source(), err.Error())
+			log.Printf("DEBUG: %s", err.DebugString())
 			mainLoop.Quit()
 			return false // Stop watching
 		}
@@ -128,12 +128,12 @@ func PullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsDisplayChan chan<- float
 	for {
 		sample := sink.PullSample()
 		if sample == nil {
-			fmt.Println("Pipeline samplier work finished")
+			log.Println("Pipeline sampler work finished")
 			return
 		}
 
 		if DEBUG {
-			fmt.Println("Puller goroutine: received sample")
+			log.Println("Puller goroutine: received sample")
 		}
 
 		buffer := sample.GetBuffer()

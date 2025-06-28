@@ -2,6 +2,7 @@ package display
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -51,13 +52,13 @@ func DisplayRMS(wg *sync.WaitGroup, rmsChan <-chan float64) {
 
 	for {
 		if DEBUG {
-			fmt.Println("Display RMS")
+			log.Println("Display RMS")
 		}
 
 		select {
 		case rms, ok := <-rmsChan:
 			if !ok {
-				fmt.Println("Display work finished")
+				log.Println("Display work finished")
 				return // Channel is closed.
 			}
 			currentRMS = rms // Keep track of the latest RMS value.

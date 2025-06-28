@@ -2,7 +2,7 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -58,7 +58,7 @@ func main() {
 	signal.Notify(c, os.Interrupt)
 	go func() {
 		<-c
-		fmt.Println("\nInterrupt received, initiating shutdown...")
+		log.Println("\nInterrupt received, initiating shutdown...")
 		// 1. Signal to end pipline work
 		gstPipeline.SendEvent(gst.NewEOSEvent())
 		// 2. Schedule MainLoop.Quit() to be called from the main GStreamer thread.
@@ -87,13 +87,13 @@ func main() {
 	// Start the pipeline
 	pipeline.Verify(gstPipeline.SetState(gst.StatePlaying))
 
-	fmt.Println("Listening for audio... Recording will start when sound is detected.")
-	fmt.Println("Each utterance will be saved to a new file (e.g., recording-1.wav). Press Ctrl+C to exit.")
+	log.Println("Listening for audio... Recording will start when sound is detected.")
+	log.Println("Each utterance will be saved to a new file (e.g., recording-1.wav). Press Ctrl+C to exit.")
 
 	// Block until the pipeline's bus signals EOS or an error.
 	mainLoop.Run()
 
-	fmt.Println("Stopping pipeline...")
+	log.Println("Stopping pipeline...")
 	// Clean up
 	close(rmsDisplayChan)
 	close(vadControlChan)
@@ -103,7 +103,7 @@ func main() {
 	// Set the pipeline to NULL state. This is a blocking call that will tear down
 	// the pipeline and cause sink.PullSample() to unblock and return nil.
 	gstPipeline.SetState(gst.StateNull)
-	fmt.Println("Pipeline stopped.")
+	log.Println("Pipeline stopped.")
 
 	// Now that the pipeline is stopped, wait for the processing goroutines to finish their cleanup.
 	wg.Wait()

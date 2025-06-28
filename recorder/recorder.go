@@ -1,7 +1,7 @@
 package recorder
 
 import (
-	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -34,7 +34,7 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 	for {
 
 		if DEBUG {
-			fmt.Println("Write to file")
+			log.Println("Write to file")
 		}
 
 		select {
@@ -43,7 +43,7 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 				if f != nil {
 					f.Close()
 				}
-				fmt.Println("Recording is finished")
+				log.Println("Recording is finished")
 				return
 			}
 
@@ -54,17 +54,17 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 				currentFilename = strings.TrimPrefix(cmd, "START:")
 				f, err = os.Create(currentFilename)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error creating file %s: %v\n", currentFilename, err)
+					log.Printf("ERROR: creating file %s: %v", currentFilename, err)
 					f = nil
 					isWriting = false
 				} else {
 					// Write placeholder WAV header
 					if err := audio.WriteWAVHeader(f); err != nil {
-						fmt.Fprintf(os.Stderr, "Error writing WAV header to %s: %v\n", currentFilename, err)
+						log.Printf("ERROR: writing WAV header to %s: %v", currentFilename, err)
 						f.Close()
 						f = nil
 					} else {
-						fmt.Printf("Created new recording file: %s\n", currentFilename)
+						log.Printf("Created new recording file: %s", currentFilename)
 					}
 					isWriting = true
 				}
@@ -74,15 +74,15 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 					isWriting = false
 					// Update WAV header with actual sizes
 					if err := audio.UpdateWAVHeader(currentFilename, bytesWritten); err != nil {
-						fmt.Fprintf(os.Stderr, "Error updating WAV header for %s: %v\n", currentFilename, err)
+						log.Printf("ERROR: updating WAV header for %s: %v", currentFilename, err)
 					}
 					// Conditionally remove the file. If it's very small, it was likely just noise.
 					info, err := os.Stat(currentFilename)
 					if err == nil && info.Size() < 1024 {
-						fmt.Printf("Recording %s is very short (%d bytes), deleting.\n", currentFilename, info.Size())
+						log.Printf("Recording %s is very short (%d bytes), deleting.", currentFilename, info.Size())
 						os.Remove(currentFilename)
 					} else {
-						fmt.Printf("Finished recording to %s\n", currentFilename)
+						log.Printf("Finished recording to %s", currentFilename)
 					}
 					f = nil
 					bytesWritten = 0 // Reset for next recording
@@ -109,19 +109,19 @@ func pullAndWriteSamples(sink *app.Sink, f *os.File, isWriting *bool, bytesWritt
 		sample := sink.TryPullSample(0)
 		if sample == nil {
 			if DEBUG {
-				fmt.Println("Writer goroutine: no samples in queue, exiting.")
+				log.Println("Writer goroutine: no samples in queue, exiting.")
 			}
 			break // No more samples in queue.
 		}
 
 		if DEBUG {
-			fmt.Println("Writer goroutine: received sample")
+			log.Println("Writer goroutine: received sample")
 		}
 
 		buffer := sample.GetBuffer()
 		if buffer != nil {
 			if _, err := f.Write(buffer.Bytes()); err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing to file: %v\n", err)
+				log.Printf("ERROR: writing to file: %v", err)
 				*isWriting = false // Stop writing on error.
 			}
 			*bytesWritten += int64(len(buffer.Bytes()))
