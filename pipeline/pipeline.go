@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"sync"
+	"time"
 
 	"capgemini.com/audio" // Import the audio package for WAV constants
 
@@ -22,7 +23,7 @@ const (
 // It uses a "tee" element to split the audio stream into two branches:
 // 1. Analysis Branch: -> queue -> appsink (for calculating RMS in Go)
 // 2. Recording Branch: -> queue -> valve -> appsink (for writing to a file in Go)
-func CreateVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element, *app.Sink) {
+func CreateVADPipeline() (*gst.Pipeline, *app.Sink, *app.Sink) {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
 	//Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 
@@ -66,20 +67,18 @@ func CreateVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element, *app.Sink) {
 	// --- Recording Branch Elements ---
 	recordingQueue := Control(gst.NewElement("queue"))
 	// Changed to 0 (no leak) to ensure all data is passed for recording integrity.
-	recordingQueue.SetProperty("leaky", 0) // 0 = No leak
-	// The 'valve' element acts as a gate. We can open/close it to control the data flow.
-	valve := Control(gst.NewElement("valve"))
-	valve.SetProperty("drop-mode", 1) // Allow pass pipeline events, other drop
-	valve.SetProperty("drop", false)  // Start with the valve OPEN to guarantee startup, then close it immediately.
+	recordingQueue.SetProperty("leaky", 0) // 0 = No leak. We want all data when recording.
 
 	// Use a second appsink for the recording branch. This allows Go to handle
 	// file I/O, giving us the flexibility to create new files on the fly.
 	recordingSink := Control(app.NewAppSink())
 	recordingSink.SetProperty("sync", false)
 	recordingSink.SetDrop(false) // Do not drop data; ensure all samples are received for recording.
+	// Set a max buffer to prevent runaway memory usage and add stability.
+	recordingSink.SetMaxBuffers(10)
 
 	// Add all elements to the pipeline
-	Verify(pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, vadsink.Element, recordingQueue, valve, recordingSink.Element))
+	Verify(pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, vadsink.Element, recordingQueue, recordingSink.Element))
 
 	// Link the common path
 	Verify(gst.ElementLinkMany(source, audioconvert, audioresample, capsfilter, tee))
@@ -88,9 +87,9 @@ func CreateVADPipeline() (*gst.Pipeline, *app.Sink, *gst.Element, *app.Sink) {
 	Verify(gst.ElementLinkMany(tee, analysisQueue, vadsink.Element))
 
 	// Link the recording branch
-	Verify(gst.ElementLinkMany(tee, recordingQueue, valve, recordingSink.Element))
+	Verify(gst.ElementLinkMany(tee, recordingQueue, recordingSink.Element))
 
-	return pipeline, vadsink, valve, recordingSink
+	return pipeline, vadsink, recordingSink
 }
 
 // MainLoop creates and runs a GLib Main Loop for GStreamer bus messages.
@@ -126,10 +125,21 @@ func PullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsDisplayChan chan<- float
 	defer wg.Done()
 
 	for {
-		sample := sink.PullSample()
-		if sample == nil {
-			log.Println("Pipeline sampler work finished")
+		// Check for End-of-Stream first to ensure a clean exit. This is the
+		// condition that will terminate this goroutine's loop.
+		if sink.IsEOS() {
+			log.Println("Pipeline sampler work finished (EOS detected)")
 			return
+		}
+
+		// Use TryPullSample for a non-blocking pull. The blocking PullSample() was
+		// causing a deadlock when the main thread tried to pause the pipeline.
+		sample := sink.TryPullSample(0)
+		if sample == nil {
+			// No sample is available right now. Sleep for a short duration
+			// to prevent this loop from consuming 100% CPU.
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 
 		if DEBUG {
@@ -138,33 +148,33 @@ func PullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsDisplayChan chan<- float
 
 		buffer := sample.GetBuffer()
 		if buffer != nil {
-			samples := buffer.Map(gst.MapRead).AsInt16LESlice()
-			if len(samples) > 0 {
-				var sumOfSquares float64
-				for _, s := range samples {
-					sumOfSquares += float64(int64(s) * int64(s))
-				}
-				rms := math.Sqrt(sumOfSquares / float64(len(samples)))
-				const normalizationFactor = 32768.0
-				normalizedRms := rms / normalizationFactor
+			func() {
+				defer buffer.Unmap()
+				samples := buffer.Map(gst.MapRead).AsInt16LESlice()
+				if len(samples) > 0 {
+					var sumOfSquares float64
+					for _, s := range samples {
+						sumOfSquares += float64(int64(s) * int64(s))
+					}
+					rms := math.Sqrt(sumOfSquares / float64(len(samples)))
+					const normalizationFactor = 32768.0
+					normalizedRms := rms / normalizationFactor
 
-				// Send to display goroutine (non-blocking)
-				select {
-				case rmsDisplayChan <- normalizedRms:
-				default:
-				}
+					// Send to display goroutine (non-blocking)
+					select {
+					case rmsDisplayChan <- normalizedRms:
+					default:
+					}
 
-				// Send to VAD controller goroutine (non-blocking)
-				select {
-				case vadControlChan <- normalizedRms:
-				default:
+					// Send to VAD controller goroutine (non-blocking)
+					select {
+					case vadControlChan <- normalizedRms:
+					default:
+					}
 				}
-			}
+			}()
 		}
-		buffer.Unmap()
-		//IMPORTANT: Go GStreamer unref sample automatically
-		// sample.Unref()
-
+		// IMPORTANT: Go GStreamer unrefs the sample automatically.
 	}
 }
 

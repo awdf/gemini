@@ -52,6 +52,7 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 					f.Close()
 				}
 				currentFilename = strings.TrimPrefix(cmd, "START:")
+				bytesWritten = 0 // Reset for new recording
 				f, err = os.Create(currentFilename)
 				if err != nil {
 					log.Printf("ERROR: creating file %s: %v", currentFilename, err)
@@ -64,9 +65,9 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 						f.Close()
 						f = nil
 					} else {
-						log.Printf("Created new recording file: %s", currentFilename)
+						isWriting = true
+						log.Printf("Recording to new file: %s", currentFilename)
 					}
-					isWriting = true
 				}
 			} else if strings.HasPrefix(cmd, "STOP:") {
 				if f != nil {
@@ -85,7 +86,6 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 						log.Printf("Finished recording to %s", currentFilename)
 					}
 					f = nil
-					bytesWritten = 0 // Reset for next recording
 
 					currentFilename = strings.TrimPrefix(cmd, "STOP:")
 					fileChan <- currentFilename
@@ -93,41 +93,36 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 			}
 
 		case <-ticker.C:
+			// Always pull samples from the sink. This is crucial to prevent the
+			// GStreamer pipeline from blocking if the sink's buffer fills up.
 			pullAndWriteSamples(sink, f, &isWriting, &bytesWritten)
 		}
 	}
 }
 
 // pullAndWriteSamples pulls all available samples from the sink and writes them to the file.
+// It MUST be called continuously to drain the sink, even when not recording.
 func pullAndWriteSamples(sink *app.Sink, f *os.File, isWriting *bool, bytesWritten *int64) {
-	if f == nil || !*isWriting {
-		return
-	}
-
-	// Pull all available samples from the sink.
+	// Pull all available samples from the sink in a loop.
 	for {
 		sample := sink.TryPullSample(0)
 		if sample == nil {
-			if DEBUG {
-				log.Println("Writer goroutine: no samples in queue, exiting.")
-			}
 			break // No more samples in queue.
 		}
 
-		if DEBUG {
-			log.Println("Writer goroutine: received sample")
-		}
-
-		buffer := sample.GetBuffer()
-		if buffer != nil {
-			if _, err := f.Write(buffer.Bytes()); err != nil {
-				log.Printf("ERROR: writing to file: %v", err)
-				*isWriting = false // Stop writing on error.
+		// Only write to the file if we are in a recording state.
+		// Otherwise, we still pull the sample but just discard it.
+		if f != nil && *isWriting {
+			buffer := sample.GetBuffer()
+			if buffer != nil {
+				if _, err := f.Write(buffer.Bytes()); err != nil {
+					log.Printf("ERROR: writing to file: %v", err)
+					*isWriting = false // Stop writing on error.
+				}
+				*bytesWritten += int64(len(buffer.Bytes()))
+				buffer.Unmap()
 			}
-			*bytesWritten += int64(len(buffer.Bytes()))
 		}
-		buffer.Unmap()
-		//IMPORTANT: Golang GStreamer unref sample automatically
-		// sample.Unref()
+		// IMPORTANT: Go GStreamer unrefs the sample automatically.
 	}
 }

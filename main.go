@@ -53,10 +53,10 @@ func main() {
 	aiOnDemandChan := make(chan string, 2)   // Pass WAV file name for the AI flow
 
 	// Creation pipeline
-	gstPipeline, vadSink, valve, recordingSink := pipeline.CreateVADPipeline()
+	gstPipeline, vadSink, recordingSink := pipeline.CreateVADPipeline()
 
 	// Create the VAD state controller.
-	vadState := vad.NewVAD(valve, fileControlChan)
+	vadState := vad.NewVAD(fileControlChan)
 
 	// Create a GLib Main Loop to handle GStreamer bus messages.
 	mainLoop := pipeline.MainLoop(gstPipeline)

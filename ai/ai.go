@@ -248,11 +248,10 @@ func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) 
 				if fVoice {
 					once("\n%sVoice answer: %s\n", colorCyan, colorReset)
 					printFormatted(part.Text, &inBold, &inCodeBlock)
-					// TODO: Remove comments. In debug reason commented.
-					// err := AnwerWithVoice(part.Text)
-					// if err != nil {
-					// 	return err
-					// }
+					err := AnwerWithVoice(part.Text)
+					if err != nil {
+						return err
+					}
 				} else {
 					printFormatted(part.Text, &inBold, &inCodeBlock)
 				}

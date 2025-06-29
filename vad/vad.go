@@ -5,9 +5,6 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/go-gst/go-glib/glib"
-	"github.com/go-gst/go-gst/gst"
 )
 
 const (
@@ -27,7 +24,6 @@ const (
 // State represents the state of the Voice Activity Detector.
 type State struct {
 	mu              sync.Mutex
-	valve           *gst.Element
 	isRecording     bool
 	silenceEndTime  time.Time
 	fileCounter     int
@@ -35,9 +31,8 @@ type State struct {
 }
 
 // NewVAD creates a new VAD controller.
-func NewVAD(valve *gst.Element, fileControlChan chan<- string) *State {
+func NewVAD(fileControlChan chan<- string) *State {
 	return &State{
-		valve:           valve,
 		fileControlChan: fileControlChan,
 	}
 }
@@ -57,14 +52,8 @@ func (v *State) ProcessAudioChunk(rms float64) {
 			v.fileCounter++
 			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
 
+			log.Println(">>> Sound detected! Starting recording...")
 			v.fileControlChan <- "START:" + newFilename
-			// Schedule the GStreamer state change to happen on the main GLib thread.
-			// This is the safest way to modify a running pipeline from a goroutine.
-			glib.IdleAdd(func() bool {
-				log.Println(">>> Sound detected! Starting recording...")
-				v.valve.SetProperty("drop", false)
-				return false // Do not call again
-			})
 		}
 		// If it's loud, we are not in a hangover period, so reset the timer.
 		v.silenceEndTime = time.Time{}
@@ -76,14 +65,9 @@ func (v *State) ProcessAudioChunk(rms float64) {
 			// Hangover period is over. Stop recording.
 			v.isRecording = false
 
+			log.Println("<<< Silence detected. Stopping recording.")
 			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
 			v.fileControlChan <- "STOP:" + newFilename
-			// Schedule the GStreamer state change to happen on the main GLib thread.
-			glib.IdleAdd(func() bool {
-				log.Println("<<< Silence detected. Stopping recording.")
-				v.valve.SetProperty("drop", true)
-				return false // Do not call again
-			})
 		}
 	}
 }
