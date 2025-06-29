@@ -214,13 +214,7 @@ func printFormatted(text string, inBold, inCodeBlock *bool) {
 func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) error {
 	// State flags to print prefixes only once per block and track formatting.
 	var thoughtStarted, answerStarted, inBold, inCodeBlock bool
-	var fOnce bool
-	var once = func(text, c1, c2 string) {
-		if !fOnce {
-			fmt.Printf(text, c1, c2)
-			fOnce = true
-		}
-	}
+	var fullResponseText string // To accumulate the full text for a single TTS call
 
 	for chunk, err := range resp {
 		if err != nil {
@@ -228,7 +222,6 @@ func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) 
 			fmt.Println(colorReset)
 			return err
 		}
-		// Add nil checks for robustness
 		if chunk == nil || len(chunk.Candidates) == 0 || chunk.Candidates[0].Content == nil {
 			continue
 		}
@@ -236,26 +229,37 @@ func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) 
 		for _, part := range chunk.Candidates[0].Content.Parts {
 			if part.Thought {
 				if !thoughtStarted {
-					once("\n%sThought: %s\n", colorYellow, colorReset)
-					thoughtStarted, answerStarted = true, false
+					fmt.Printf("\n%sThought: %s\n", colorYellow, colorReset)
+					thoughtStarted, answerStarted = true, false // Reset answer flag
 				}
 				printFormatted(part.Text, &inBold, &inCodeBlock)
 			} else {
 				if !answerStarted {
-					once("\n%sAnswer: %s\n", colorCyan, colorReset)
+					if fVoice {
+						fmt.Printf("\n%sVoice answer: %s\n", colorCyan, colorReset)
+					} else {
+						fmt.Printf("\n%sAnswer: %s\n", colorCyan, colorReset)
+					}
 					answerStarted, thoughtStarted = true, false
 				}
+
+				// Always print the text chunk as it arrives for immediate feedback.
+				printFormatted(part.Text, &inBold, &inCodeBlock)
+
+				// If voice is enabled, append the text to our buffer for a single API call later.
 				if fVoice {
-					once("\n%sVoice answer: %s\n", colorCyan, colorReset)
-					printFormatted(part.Text, &inBold, &inCodeBlock)
-					err := AnwerWithVoice(part.Text)
-					if err != nil {
-						return err
-					}
-				} else {
-					printFormatted(part.Text, &inBold, &inCodeBlock)
+					fullResponseText += part.Text
 				}
 			}
+		}
+	}
+	// After the stream is finished, if voice was enabled and we have text,
+	// make a single API call to generate the audio.
+	if fVoice && len(fullResponseText) > 0 {
+		if err := AnwerWithVoice(fullResponseText); err != nil {
+			// Log the error but don't fail the whole operation, as the user
+			// has already received the text response.
+			log.Printf("ERROR: Text-to-speech failed: %v", err)
 		}
 	}
 	// After the stream is finished, reset the color and print a final newline.
@@ -263,6 +267,7 @@ func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) 
 	return nil
 }
 
+// Model RPD 15
 func AnwerWithVoice(prompt string) error {
 	if !isInit {
 		Init()

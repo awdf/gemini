@@ -14,7 +14,7 @@ const (
 const (
 	// SilenceThreshold is the normalized RMS level below which we consider the audio to be silent.
 	// You may need to adjust this value based on your microphone and environment.
-	SilenceThreshold = 0.02
+	SilenceThreshold = 0.1
 
 	// HangoverDuration is the amount of time to continue recording after the audio level
 	// drops below the silence threshold. This prevents cutting off recordings prematurely.
@@ -52,7 +52,7 @@ func (v *State) ProcessAudioChunk(rms float64) {
 			v.fileCounter++
 			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
 
-			log.Println(">>> Sound detected! Starting recording...")
+			log.Printf(">>> Sound detected! RMS: %.2f, Starting recording...\n", rms)
 			v.fileControlChan <- "START:" + newFilename
 		}
 		// If it's loud, we are not in a hangover period, so reset the timer.

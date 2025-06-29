@@ -1,6 +1,7 @@
 package recorder
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -48,48 +49,21 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 			}
 
 			if strings.HasPrefix(cmd, "START:") {
-				if f != nil { // Close previous file if it exists
-					f.Close()
-				}
 				currentFilename = strings.TrimPrefix(cmd, "START:")
 				bytesWritten = 0 // Reset for new recording
-				f, err = os.Create(currentFilename)
+				f, err = startNewRecording(f, currentFilename)
 				if err != nil {
-					log.Printf("ERROR: creating file %s: %v", currentFilename, err)
+					log.Printf("ERROR: %v", err)
 					f = nil
 					isWriting = false
 				} else {
-					// Write placeholder WAV header
-					if err := audio.WriteWAVHeader(f); err != nil {
-						log.Printf("ERROR: writing WAV header to %s: %v", currentFilename, err)
-						f.Close()
-						f = nil
-					} else {
-						isWriting = true
-						log.Printf("Recording to new file: %s", currentFilename)
-					}
+					isWriting = true
 				}
 			} else if strings.HasPrefix(cmd, "STOP:") {
-				if f != nil {
-					f.Close()
-					isWriting = false
-					// Update WAV header with actual sizes
-					if err := audio.UpdateWAVHeader(currentFilename, bytesWritten); err != nil {
-						log.Printf("ERROR: updating WAV header for %s: %v", currentFilename, err)
-					}
-					// Conditionally remove the file. If it's very small, it was likely just noise.
-					info, err := os.Stat(currentFilename)
-					if err == nil && info.Size() < 1024 {
-						log.Printf("Recording %s is very short (%d bytes), deleting.", currentFilename, info.Size())
-						os.Remove(currentFilename)
-					} else {
-						log.Printf("Finished recording to %s", currentFilename)
-					}
-					f = nil
-
-					currentFilename = strings.TrimPrefix(cmd, "STOP:")
-					fileChan <- currentFilename
-				}
+				finalizeRecording(f, currentFilename, bytesWritten, fileChan)
+				f = nil
+				isWriting = false
+				currentFilename = "" // Reset filename
 			}
 
 		case <-ticker.C:
@@ -97,6 +71,59 @@ func FileWriter(wg *sync.WaitGroup, sink *app.Sink, controlChan <-chan string, f
 			// GStreamer pipeline from blocking if the sink's buffer fills up.
 			pullAndWriteSamples(sink, f, &isWriting, &bytesWritten)
 		}
+	}
+}
+
+// startNewRecording handles the creation of a new recording file. It closes any
+// previous file, creates the new one, and writes a placeholder WAV header.
+func startNewRecording(previousFile *os.File, filename string) (*os.File, error) {
+	if previousFile != nil {
+		// If a previous file handle exists, it implies a STOP command was missed.
+		// We should close it to prevent resource leaks.
+		log.Printf("Warning: Starting new recording for %s while previous file was still open. Closing it now.", filename)
+		previousFile.Close()
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		// The error is returned to the caller to be handled.
+		return nil, fmt.Errorf("creating file %s: %w", filename, err)
+	}
+
+	// Write placeholder WAV header
+	if err := audio.WriteWAVHeader(f); err != nil {
+		f.Close()           // Clean up the created file on header write error.
+		os.Remove(filename) // Also remove the file.
+		return nil, fmt.Errorf("writing WAV header to %s: %w", filename, err)
+	}
+
+	return f, nil
+}
+
+// finalizeRecording closes the file, updates its WAV header, and, if the file is large enough,
+// sends it to the processing channel. Otherwise, it deletes the file.
+func finalizeRecording(f *os.File, filename string, bytesWritten int64, fileChan chan<- string) {
+	if f == nil {
+		return
+	}
+	// It's crucial to close the file before updating the header or checking its size.
+	f.Close()
+
+	// Update WAV header with actual file sizes.
+	if err := audio.UpdateWAVHeader(filename, bytesWritten); err != nil {
+		log.Printf("ERROR: updating WAV header for %s: %v", filename, err)
+	}
+
+	// Conditionally remove the file if it's too short (likely just noise).
+	const minFileSize = 1024 // 1KB threshold.
+	if info, err := os.Stat(filename); err == nil && info.Size() < minFileSize {
+		log.Printf("Recording %s is very short (%d bytes), deleting.", filename, info.Size())
+		os.Remove(filename)
+	} else if err == nil {
+		log.Printf("Finished recording to %s, sending for processing.", filename)
+		fileChan <- filename
+	} else {
+		log.Printf("ERROR: could not stat file %s to check size: %v", filename, err)
 	}
 }
 

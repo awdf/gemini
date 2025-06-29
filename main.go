@@ -35,10 +35,21 @@ import (
 // It calculates the RMS and passes it to other goroutines for processing, but never
 // modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
 // printBar encapsulates the expensive printing logic.
-var voicePtr = flag.Bool("voice", false, "Enable voice responses from the AI")
+var (
+	voicePtr   = flag.Bool("voice", false, "Enable voice responses from the AI")
+	logFilePtr = flag.String("logfile", "app.log", "Redirect log output to a file")
+)
 
 func main() {
 	flag.Parse()
+
+	f, err := os.OpenFile(*logFilePtr, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("error opening log file %s: %v", *logFilePtr, err)
+	}
+	defer f.Close()
+	log.SetOutput(f)
+
 	if *voicePtr {
 		log.Print("Voice responses enabled")
 	}
