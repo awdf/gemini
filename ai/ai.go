@@ -48,6 +48,9 @@ var client *genai.Client
 var thinking int32 = -1
 var thoughts = false
 
+// Conversation history
+var conversationHistory []*genai.Content
+
 var isInit = false
 
 func Init() {
@@ -118,10 +121,17 @@ func TextQuestion(prompt string, fVoice bool) {
 		Init()
 	}
 
+	parts := []*genai.Part{
+		genai.NewPartFromText(prompt),
+	}
+
+	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
+	contents := append(conversationHistory, userContent)
+
 	resp := client.Models.GenerateContentStream(
 		ctx,
 		model,
-		genai.Text(prompt),
+		contents,
 		&genai.GenerateContentConfig{
 			ThinkingConfig: &genai.ThinkingConfig{
 				IncludeThoughts: thoughts,
@@ -130,8 +140,16 @@ func TextQuestion(prompt string, fVoice bool) {
 		},
 	)
 
-	if err := Output(resp, fVoice); err != nil {
+	fullResponse, err := Output(resp, fVoice)
+	if err != nil {
 		log.Printf("ERROR: processing text question: %v", err)
+	} else {
+		conversationHistory = append(conversationHistory, userContent)
+		save := []*genai.Part{
+			genai.NewPartFromText(fullResponse),
+		}
+		modelResponseContent := genai.NewContentFromParts(save, genai.RoleModel)
+		conversationHistory = append(conversationHistory, modelResponseContent)
 	}
 }
 
@@ -154,9 +172,8 @@ func VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
 		genai.NewPartFromText(prompt),
 		genai.NewPartFromURI(uploadedFile.URI, uploadedFile.MIMEType),
 	}
-	contents := []*genai.Content{
-		genai.NewContentFromParts(parts, genai.RoleUser),
-	}
+	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
+	contents := append(conversationHistory, userContent)
 
 	resp := client.Models.GenerateContentStream(
 		ctx,
@@ -170,7 +187,18 @@ func VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
 		},
 	)
 
-	return Output(resp, fVoice)
+	fullResponse, err := Output(resp, fVoice)
+	if err != nil {
+		return err
+	}
+
+	conversationHistory = append(conversationHistory, userContent)
+	save := []*genai.Part{
+		genai.NewPartFromText(fullResponse),
+	}
+	modelResponseContent := genai.NewContentFromParts(save, genai.RoleModel)
+	conversationHistory = append(conversationHistory, modelResponseContent)
+	return nil
 }
 
 func printFormatted(text string, inBold, inCodeBlock *bool) {
@@ -211,16 +239,16 @@ func printFormatted(text string, inBold, inCodeBlock *bool) {
 	}
 }
 
-func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) error {
+func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) (string, error) {
 	// State flags to print prefixes only once per block and track formatting.
 	var thoughtStarted, answerStarted, inBold, inCodeBlock bool
-	var fullResponseText string // To accumulate the full text for a single TTS call
+	var fullResponseText string // To accumulate the full text for history and a single TTS call
 
 	for chunk, err := range resp {
 		if err != nil {
 			// On error, ensure we reset color and print a newline.
 			fmt.Println(colorReset)
-			return err
+			return "", err
 		}
 		if chunk == nil || len(chunk.Candidates) == 0 || chunk.Candidates[0].Content == nil {
 			continue
@@ -246,17 +274,15 @@ func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) 
 				// Always print the text chunk as it arrives for immediate feedback.
 				printFormatted(part.Text, &inBold, &inCodeBlock)
 
-				// If voice is enabled, append the text to our buffer for a single API call later.
-				if fVoice {
-					fullResponseText += part.Text
-				}
+				// Accumulate all non-thought text for history and potential TTS.
+				fullResponseText += part.Text
 			}
 		}
 	}
 	// After the stream is finished, if voice was enabled and we have text,
 	// make a single API call to generate the audio.
 	if fVoice && len(fullResponseText) > 0 {
-		if err := AnwerWithVoice(fullResponseText); err != nil {
+		if err := AnswerWithVoice(fullResponseText); err != nil {
 			// Log the error but don't fail the whole operation, as the user
 			// has already received the text response.
 			log.Printf("ERROR: Text-to-speech failed: %v", err)
@@ -264,11 +290,11 @@ func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) 
 	}
 	// After the stream is finished, reset the color and print a final newline.
 	fmt.Println(colorReset)
-	return nil
+	return fullResponseText, nil
 }
 
 // Model RPD 15
-func AnwerWithVoice(prompt string) error {
+func AnswerWithVoice(prompt string) error {
 	if !isInit {
 		Init()
 	}

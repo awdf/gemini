@@ -147,33 +147,33 @@ func PullSamples(wg *sync.WaitGroup, sink *app.Sink, rmsDisplayChan chan<- float
 		}
 
 		buffer := sample.GetBuffer()
-		if buffer != nil {
-			func() {
-				defer buffer.Unmap()
-				samples := buffer.Map(gst.MapRead).AsInt16LESlice()
-				if len(samples) > 0 {
-					var sumOfSquares float64
-					for _, s := range samples {
-						sumOfSquares += float64(int64(s) * int64(s))
-					}
-					rms := math.Sqrt(sumOfSquares / float64(len(samples)))
-					const normalizationFactor = 32768.0
-					normalizedRms := rms / normalizationFactor
-
-					// Send to display goroutine (non-blocking)
-					select {
-					case rmsDisplayChan <- normalizedRms:
-					default:
-					}
-
-					// Send to VAD controller goroutine (non-blocking)
-					select {
-					case vadControlChan <- normalizedRms:
-					default:
-					}
-				}
-			}()
+		if buffer == nil {
+			continue
 		}
+
+		samples := buffer.Map(gst.MapRead).AsInt16LESlice()
+		if len(samples) > 0 {
+			var sumOfSquares float64
+			for _, s := range samples {
+				sumOfSquares += float64(int64(s) * int64(s))
+			}
+			rms := math.Sqrt(sumOfSquares / float64(len(samples)))
+			const normalizationFactor = 32768.0
+			normalizedRms := rms / normalizationFactor
+
+			// Send to display goroutine (non-blocking)
+			select {
+			case rmsDisplayChan <- normalizedRms:
+			default:
+			}
+
+			// Send to VAD controller goroutine (non-blocking)
+			select {
+			case vadControlChan <- normalizedRms:
+			default:
+			}
+		}
+		buffer.Unmap()
 		// IMPORTANT: Go GStreamer unrefs the sample automatically.
 	}
 }
