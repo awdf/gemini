@@ -2,6 +2,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -34,7 +35,14 @@ import (
 // It calculates the RMS and passes it to other goroutines for processing, but never
 // modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
 // printBar encapsulates the expensive printing logic.
+var voicePtr = flag.Bool("voice", false, "Enable voice responses from the AI")
+
 func main() {
+	flag.Parse()
+	if *voicePtr {
+		log.Print("Voice responses enabled")
+	}
+
 	// Initialize GStreamer. This should be called once per application.
 	gst.Init(nil)
 
@@ -45,7 +53,7 @@ func main() {
 	aiOnDemandChan := make(chan string, 2)   // Pass WAV file name for the AI flow
 
 	// Creation pipeline
-	gstPipeline, vadsink, valve, recordingSink := pipeline.CreateVADPipeline()
+	gstPipeline, vadSink, valve, recordingSink := pipeline.CreateVADPipeline()
 
 	// Create the VAD state controller.
 	vadState := vad.NewVAD(valve, fileControlChan)
@@ -79,11 +87,11 @@ func main() {
 	// the pipeline's state (by controlling the valve).
 	go vad.Controller(&wg, vadState, vadControlChan)
 	// Rutine 3. Start the puller goroutine.
-	go pipeline.PullSamples(&wg, vadsink, rmsDisplayChan, vadControlChan)
+	go pipeline.PullSamples(&wg, vadSink, rmsDisplayChan, vadControlChan)
 	// Rutine 4. Start the file writer goroutine.
 	go recorder.FileWriter(&wg, recordingSink, fileControlChan, aiOnDemandChan)
 	// Rutine 5. Start the AI Chat goroutine.
-	go ai.Chat(&wg, aiOnDemandChan)
+	go ai.Chat(&wg, gstPipeline, *voicePtr, aiOnDemandChan)
 	// Start the pipeline
 	pipeline.Verify(gstPipeline.SetState(gst.StatePlaying))
 

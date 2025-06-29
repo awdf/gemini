@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
 	"google.golang.org/genai"
@@ -17,10 +18,20 @@ const (
 	DEBUG = false
 )
 
+// ANSI color codes for terminal output.
+const (
+	colorReset  = "\033[0m"
+	colorYellow = "\033[33m" // For "Thought:" prefix
+	colorCyan   = "\033[36m" // For "Answer:" prefix
+	colorWhite  = "\033[97m" // For **bold** text
+	colorGreen  = "\033[32m" // For ```code``` blocks
+)
+
 // Model
 const model = "gemini-2.5-flash"
 const modelTTS = "gemini-2.5-flash-preview-tts"
 const voice = "Kore"
+const mainPrompt = "Step 1: Generate a transcript of the speech. Step 2: Respond to the question from the speech."
 
 // Context
 var ctx context.Context
@@ -50,7 +61,7 @@ func Init() {
 	isInit = true
 }
 
-func Chat(wg *sync.WaitGroup, fileChan <-chan string) {
+func Chat(wg *sync.WaitGroup, pipeline *gst.Pipeline, fVoice bool, fileChan <-chan string) {
 	defer wg.Done()
 
 	if !isInit {
@@ -59,7 +70,23 @@ func Chat(wg *sync.WaitGroup, fileChan <-chan string) {
 
 	for file := range fileChan {
 		log.Printf("Chat: Processing %s", file)
-		err := VoiceQuestion(file, "Step 1: Generate a transcript of the speech. Step 2: Respond to the question from the speech.")
+
+		// If voice responses are enabled, pause the listening pipeline
+		// to prevent it from recording its own speech.
+		if fVoice {
+			log.Println("Pausing listening pipeline for AI response...")
+			// Schedule the state change on the main GLib context to avoid deadlocks.
+			// This is a blocking operation, so we wait for it to complete.
+			done := make(chan struct{})
+			glib.IdleAdd(func() bool {
+				pipeline.SetState(gst.StatePaused)
+				close(done)
+				return false // Do not call again
+			})
+			<-done
+		}
+
+		err := VoiceQuestion(file, mainPrompt, fVoice)
 		if err != nil {
 			// If there was an error, log it and DO NOT delete the file.
 			log.Printf("ERROR: AI processing failed for %s, leaving file for retry: %v", file, err)
@@ -68,11 +95,24 @@ func Chat(wg *sync.WaitGroup, fileChan <-chan string) {
 			log.Printf("Chat: Successfully processed %s. Removing file.", file)
 			os.Remove(file)
 		}
+		// Resume the listening pipeline after the AI has finished speaking.
+		if fVoice {
+			log.Println("Resuming listening pipeline...")
+			// Schedule the state change on the main GLib context.
+			done := make(chan struct{})
+			glib.IdleAdd(func() bool {
+				pipeline.SetState(gst.StatePlaying)
+				close(done)
+				return false // Do not call again
+			})
+			<-done
+		}
 	}
+
 	log.Println("AI Chat work finished")
 }
 
-func TextQuestion(prompt string) {
+func TextQuestion(prompt string, fVoice bool) {
 
 	if !isInit {
 		Init()
@@ -90,12 +130,12 @@ func TextQuestion(prompt string) {
 		},
 	)
 
-	if err := Output(resp); err != nil {
+	if err := Output(resp, fVoice); err != nil {
 		log.Printf("ERROR: processing text question: %v", err)
 	}
 }
 
-func VoiceQuestion(wavPath string, prompt string) error {
+func VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
 
 	if !isInit {
 		Init()
@@ -130,12 +170,62 @@ func VoiceQuestion(wavPath string, prompt string) error {
 		},
 	)
 
-	return Output(resp)
+	return Output(resp, fVoice)
 }
 
-func Output(resp iter.Seq2[*genai.GenerateContentResponse, error]) error {
+func printFormatted(text string, inBold, inCodeBlock *bool) {
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		// Check for code block marker first, as it takes precedence.
+		if i+2 < len(runes) && runes[i] == '`' && runes[i+1] == '`' && runes[i+2] == '`' {
+			*inCodeBlock = !*inCodeBlock
+			if *inCodeBlock {
+				fmt.Print(colorGreen)
+			} else {
+				fmt.Print(colorReset)
+			}
+			i += 2 // Advance past the marker.
+			continue
+		}
+
+		// If we are in a code block, just print the character.
+		if *inCodeBlock {
+			fmt.Print(string(runes[i]))
+			continue
+		}
+
+		// Check for bold marker.
+		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
+			*inBold = !*inBold
+			if *inBold {
+				fmt.Print(colorWhite)
+			} else {
+				fmt.Print(colorReset)
+			}
+			i++ // Advance past the marker.
+			continue
+		}
+
+		// Print the character.
+		fmt.Print(string(runes[i]))
+	}
+}
+
+func Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) error {
+	// State flags to print prefixes only once per block and track formatting.
+	var thoughtStarted, answerStarted, inBold, inCodeBlock bool
+	var fOnce bool
+	var once = func(text, c1, c2 string) {
+		if !fOnce {
+			fmt.Printf(text, c1, c2)
+			fOnce = true
+		}
+	}
+
 	for chunk, err := range resp {
 		if err != nil {
+			// On error, ensure we reset color and print a newline.
+			fmt.Println(colorReset)
 			return err
 		}
 		// Add nil checks for robustness
@@ -144,17 +234,33 @@ func Output(resp iter.Seq2[*genai.GenerateContentResponse, error]) error {
 		}
 
 		for _, part := range chunk.Candidates[0].Content.Parts {
-			if len(part.Text) == 0 {
-				continue
-			}
-
 			if part.Thought {
-				log.Printf("Thought: %s", part.Text)
+				if !thoughtStarted {
+					once("\n%sThought: %s\n", colorYellow, colorReset)
+					thoughtStarted, answerStarted = true, false
+				}
+				printFormatted(part.Text, &inBold, &inCodeBlock)
 			} else {
-				log.Printf("Answer: %s", part.Text)
+				if !answerStarted {
+					once("\n%sAnswer: %s\n", colorCyan, colorReset)
+					answerStarted, thoughtStarted = true, false
+				}
+				if fVoice {
+					once("\n%sVoice answer: %s\n", colorCyan, colorReset)
+					printFormatted(part.Text, &inBold, &inCodeBlock)
+					// TODO: Remove comments. In debug reason commented.
+					// err := AnwerWithVoice(part.Text)
+					// if err != nil {
+					// 	return err
+					// }
+				} else {
+					printFormatted(part.Text, &inBold, &inCodeBlock)
+				}
 			}
 		}
 	}
+	// After the stream is finished, reset the color and print a final newline.
+	fmt.Println(colorReset)
 	return nil
 }
 
@@ -269,7 +375,6 @@ func playWavBlob(data []byte) error {
 	}
 
 	// Start playing
-	log.Println("Playing AI voice response...")
 	pipeline.SetState(gst.StatePlaying)
 
 	// Wait for the pipeline to finish by watching the bus for an EOS or Error message.
