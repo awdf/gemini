@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"capgemini.com/audio" // Import the audio package for WAV constants
+	"capgemini.com/config"
 
 	"github.com/go-gst/go-gst/gst/app"
 )
@@ -118,12 +119,11 @@ func finalizeRecording(f *os.File, filename string, bytesWritten int64, fileChan
 	}
 
 	// Conditionally remove the file if it's too short (likely just noise).
-	const minFileSize = 1024 // 1KB threshold.
-	if info, err := os.Stat(filename); err == nil && info.Size() < minFileSize {
+	if info, err := os.Stat(filename); err == nil && info.Size() < config.C.Recorder.MinFileSizeBytes {
 		log.Printf("Recording %s is very short (%d bytes), deleting.", filename, info.Size())
 		os.Remove(filename)
 	} else if err == nil {
-		log.Printf("Finished recording to %s, sending for processing.", filename)
+		log.Printf("Finished recording to %s (%d bytes), sending for processing.", filename, info.Size())
 		fileChan <- filename
 	} else {
 		log.Printf("ERROR: could not stat file %s to check size: %v", filename, err)

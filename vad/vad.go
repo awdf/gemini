@@ -5,20 +5,12 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"capgemini.com/config"
 )
 
 const (
 	DEBUG = false
-)
-
-const (
-	// SilenceThreshold is the normalized RMS level below which we consider the audio to be silent.
-	// You may need to adjust this value based on your microphone and environment.
-	SilenceThreshold = 0.1
-
-	// HangoverDuration is the amount of time to continue recording after the audio level
-	// drops below the silence threshold. This prevents cutting off recordings prematurely.
-	HangoverDuration = 2 * time.Second
 )
 
 // State represents the state of the Voice Activity Detector.
@@ -43,7 +35,7 @@ func (v *State) ProcessAudioChunk(rms float64) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	isLoud := rms > SilenceThreshold
+	isLoud := rms > config.C.VAD.SilenceThreshold
 
 	if isLoud {
 		// If we detect sound, and we are not currently recording, we need to start.
@@ -60,7 +52,7 @@ func (v *State) ProcessAudioChunk(rms float64) {
 	} else if v.isRecording { // is silent, but we were recording
 		if v.silenceEndTime.IsZero() {
 			// First moment of silence, start the hangover timer.
-			v.silenceEndTime = time.Now().Add(HangoverDuration)
+			v.silenceEndTime = time.Now().Add(config.C.VAD.HangoverDuration())
 		} else if time.Now().After(v.silenceEndTime) {
 			// Hangover period is over. Stop recording.
 			v.isRecording = false

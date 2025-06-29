@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"capgemini.com/config"
 )
 
 const (
@@ -15,15 +17,13 @@ const (
 
 // printBar encapsulates the expensive printing logic.
 func printBar(rms float64, lastBarLength *int) {
-	const barWidth = 100
-
 	// Use a small threshold to avoid printing for near-silent audio.
 	if !math.IsNaN(rms) {
 		// Since RMS is now normalized to [0.0, 1.0], we can scale it directly to the bar size.
-		currentBarLength := int(rms * barWidth)
+		currentBarLength := int(rms * float64(config.C.Display.BarWidth))
 
-		if currentBarLength > barWidth {
-			currentBarLength = barWidth
+		if currentBarLength > config.C.Display.BarWidth {
+			currentBarLength = config.C.Display.BarWidth
 		}
 
 		// Only update the display if the integer length of the bar has changed.
@@ -31,7 +31,7 @@ func printBar(rms float64, lastBarLength *int) {
 		if currentBarLength != *lastBarLength {
 			*lastBarLength = currentBarLength
 			bar := strings.Repeat("=", currentBarLength)
-			gap := strings.Repeat(" ", barWidth-currentBarLength)
+			gap := strings.Repeat(" ", config.C.Display.BarWidth-currentBarLength)
 			// This is the expensive call we are throttling.
 			fmt.Printf("[%s%s]\n\033[1A", bar, gap)
 		}
@@ -43,8 +43,7 @@ func DisplayRMS(wg *sync.WaitGroup, rmsChan <-chan float64) {
 	defer wg.Done()
 	// Refresh the display at a fixed rate (e.g., 20 times per second)
 	// This is fast enough for a smooth UI but prevents overwhelming the terminal.
-	const updateInterval = 50 * time.Millisecond
-	ticker := time.NewTicker(updateInterval)
+	ticker := time.NewTicker(config.C.Display.UpdateInterval())
 	defer ticker.Stop()
 
 	var lastPrintedBarLength = -1 // Initialize to -1 to guarantee the first print.

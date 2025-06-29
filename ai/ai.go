@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 
+	"capgemini.com/config"
 	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
@@ -27,26 +28,8 @@ const (
 	colorGreen  = "\033[32m" // For ```code``` blocks
 )
 
-// Model
-const model = "gemini-2.5-flash"
-const modelTTS = "gemini-2.5-flash-preview-tts"
-const voice = "Kore"
-const mainPrompt = "Step 1: Generate a transcript of the speech. Step 2: Respond to the question from the speech."
-
-// Context
 var ctx context.Context
-
-// Client
 var client *genai.Client
-
-// Flash model thinking
-// Dynamic:-1
-// None:0
-// low:512,
-// Medium:8,192,
-// High:24,576
-var thinking int32 = -1
-var thoughts = false
 
 // Conversation history
 var conversationHistory []*genai.Content
@@ -89,7 +72,7 @@ func Chat(wg *sync.WaitGroup, pipeline *gst.Pipeline, fVoice bool, fileChan <-ch
 			<-done
 		}
 
-		err := VoiceQuestion(file, mainPrompt, fVoice)
+		err := VoiceQuestion(file, config.C.AI.MainPrompt, fVoice)
 		if err != nil {
 			// If there was an error, log it and DO NOT delete the file.
 			log.Printf("ERROR: AI processing failed for %s, leaving file for retry: %v", file, err)
@@ -130,12 +113,12 @@ func TextQuestion(prompt string, fVoice bool) {
 
 	resp := client.Models.GenerateContentStream(
 		ctx,
-		model,
+		config.C.AI.Model,
 		contents,
 		&genai.GenerateContentConfig{
 			ThinkingConfig: &genai.ThinkingConfig{
-				IncludeThoughts: thoughts,
-				ThinkingBudget:  &thinking,
+				IncludeThoughts: config.C.AI.Thoughts,
+				ThinkingBudget:  &config.C.AI.Thinking,
 			},
 		},
 	)
@@ -177,12 +160,12 @@ func VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
 
 	resp := client.Models.GenerateContentStream(
 		ctx,
-		model,
+		config.C.AI.Model,
 		contents,
 		&genai.GenerateContentConfig{
 			ThinkingConfig: &genai.ThinkingConfig{
-				IncludeThoughts: thoughts,
-				ThinkingBudget:  &thinking,
+				IncludeThoughts: config.C.AI.Thoughts,
+				ThinkingBudget:  &config.C.AI.Thinking,
 			},
 		},
 	)
@@ -309,14 +292,14 @@ func AnswerWithVoice(prompt string) error {
 
 	resp := client.Models.GenerateContentStream(
 		ctx,
-		modelTTS,
+		config.C.AI.ModelTTS,
 		contents,
 		&genai.GenerateContentConfig{
 			ResponseModalities: mode, // Corrected: mode is now a []string
 			SpeechConfig: &genai.SpeechConfig{
 				VoiceConfig: &genai.VoiceConfig{
 					PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
-						VoiceName: voice,
+						VoiceName: config.C.AI.Voice,
 					},
 				},
 			},

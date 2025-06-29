@@ -3,13 +3,13 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"sync"
 
 	"capgemini.com/ai"
+	"capgemini.com/config"
 	"capgemini.com/display"
 	"capgemini.com/pipeline"
 	"capgemini.com/recorder"
@@ -37,19 +37,22 @@ import (
 // modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
 // printBar encapsulates the expensive printing logic.
 var (
-	voicePtr   = flag.Bool("voice", false, "Enable voice responses from the AI")
-	logFilePtr = flag.String("logfile", "app.log", "Redirect log output to a file")
+	voicePtr  = flag.Bool("voice", false, "Enable voice responses from the AI")
+	configPtr = flag.String("config", "config.toml", "Path to the configuration file")
 )
 
 func main() {
 	flag.Parse()
 
-	f, err := os.OpenFile(*logFilePtr, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	config.Load(*configPtr)
+
+	f, err := os.OpenFile(config.C.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
-		log.Fatalf("error opening log file %s: %v", *logFilePtr, err)
+		log.Fatalf("error opening log file %s: %v", config.C.LogFile, err)
 	}
 	defer f.Close()
 	log.SetOutput(f)
+	log.Println("### Application started!!!")
 
 	if *voicePtr {
 		log.Print("Voice responses enabled")
@@ -78,7 +81,7 @@ func main() {
 	signal.Notify(c, os.Interrupt)
 	go func() {
 		<-c
-		log.Println("\nInterrupt received, initiating shutdown...")
+		log.Println("Interrupt received, initiating shutdown...")
 		// 1. Signal to end pipline work
 		gstPipeline.SendEvent(gst.NewEOSEvent())
 		// 2. Schedule MainLoop.Quit() to be called from the main GStreamer thread.
@@ -108,7 +111,7 @@ func main() {
 	pipeline.Verify(gstPipeline.SetState(gst.StatePlaying))
 
 	log.Println("Listening for audio... Recording will start when sound is detected.")
-	log.Println("Each utterance will be saved to a new file (e.g., recording-1.wav). Press Ctrl+C to exit.")
+	log.Println("Each utterance will be saved to a new file (e.g., recording-n.wav). Press Ctrl+C to exit.")
 
 	// Block until the pipeline's bus signals EOS or an error.
 	mainLoop.Run()
@@ -127,5 +130,5 @@ func main() {
 
 	// Now that the pipeline is stopped, wait for the processing goroutines to finish their cleanup.
 	wg.Wait()
-	fmt.Println("All goroutines finished.")
+	log.Println("All goroutines finished.")
 }

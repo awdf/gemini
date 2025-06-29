@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"capgemini.com/audio" // Import the audio package for WAV constants
+	"capgemini.com/config"
 
 	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
@@ -38,7 +39,7 @@ func CreateVADPipeline() (*gst.Pipeline, *app.Sink, *app.Sink) {
 
 	// Increase the buffer time to make the source more resilient to startup latency.
 	// This helps prevent race conditions in complex pipelines. Value is in microseconds.
-	source.SetProperty("buffer-time", int64(500000)) // 500ms
+	source.SetProperty("buffer-time", config.C.Pipeline.BufferTimeUs)
 
 	audioconvert := Control(gst.NewElementWithName("audioconvert", "audio-convert"))
 
