@@ -33,7 +33,7 @@ type AI struct {
 func NewAI() *AI {
 	ctx := context.Background()
 	client := helpers.Control(genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  os.Getenv("GOOGLE_API_KEY"),
+		APIKey:  config.C.AI.APIKey,
 		Backend: genai.BackendGeminiAPI,
 	}))
 

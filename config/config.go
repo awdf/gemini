@@ -26,6 +26,7 @@ type AIConfig struct {
 	Model      string
 	ModelTTS   string
 	Voice      string
+	APIKey     string
 	MainPrompt string
 	Thinking   int32
 	Thoughts   bool
@@ -55,19 +56,27 @@ type PipelineConfig struct {
 }
 
 // Load reads the configuration from the specified file path.
+// It supports expanding environment variables in the format ${VAR} or $VAR.
 func Load(path string) {
-	if _, err := toml.DecodeFile(path, &C); err != nil {
+	content, err := os.ReadFile(path)
+	if err != nil {
 		// If config file doesn't exist, create a default one.
 		if os.IsNotExist(err) {
 			log.Printf("Config file not found at %s, creating a default one.", path)
 			createDefaultConfig(path)
 			// Retry decoding after creating the file.
-			if _, err := toml.DecodeFile(path, &C); err != nil {
+			content, err = os.ReadFile(path)
+			if err != nil {
 				log.Fatalf("Failed to read newly created config file: %v", err)
 			}
 		} else {
 			log.Fatalf("Error reading config file %s: %v", path, err)
 		}
+	}
+
+	expandedContent := os.ExpandEnv(string(content))
+	if _, err := toml.Decode(expandedContent, &C); err != nil {
+		log.Fatalf("Error decoding config from %s: %v", path, err)
 	}
 }
 
@@ -79,7 +88,8 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Model = "gemini-2.5-flash"
 	defaultConfig.AI.ModelTTS = "gemini-2.5-flash-preview-tts"
 	defaultConfig.AI.Voice = "Kore"
-	defaultConfig.AI.MainPrompt = "Step 1: Generate a transcript of the speech.\nStep 2: Identify the language of the transcript.\nStep 3: Respond to the question from the speech in the same language as the transcript."
+	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}" // You can set this directly or use an environment variable.
+	defaultConfig.AI.MainPrompt = "You are a helpful voice assistant. Please listen to the user's utterance in the attached audio file and provide a concise and accurate response. Respond in the same language as the audio."
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
 	defaultConfig.VAD.SilenceThreshold = 0.1

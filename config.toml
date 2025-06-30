@@ -3,9 +3,12 @@
 LogFile = "app.log"
 
 [ai]
+# The API Key for the AI service. Can be set directly or via an environment variable.
+# Example: APIKey = "${GOOGLE_API_KEY}"
+APIKey = "${GOOGLE_API_KEY}"
 Model = "gemini-2.5-flash"
 ModelTTS = "gemini-2.5-flash-preview-tts"
-Voice = "Kore"
+Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
 MainPrompt = """
 Step 1: Generate a transcript of the speech.
 Step 2: Identify the language of the transcript.
