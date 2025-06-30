@@ -13,8 +13,8 @@ const (
 	DEBUG = false
 )
 
-// State represents the state of the Voice Activity Detector.
-type State struct {
+// VADEngine represents the state of the Voice Activity Detector.
+type VADEngine struct {
 	mu              sync.Mutex
 	isRecording     bool
 	silenceEndTime  time.Time
@@ -22,16 +22,16 @@ type State struct {
 	fileControlChan chan<- string
 }
 
-// NewVAD creates a new VAD controller.
-func NewVAD(fileControlChan chan<- string) *State {
-	return &State{
+// CreateVAD creates a new VAD controller.
+func CreateVAD(fileControlChan chan<- string) *VADEngine {
+	return &VADEngine{
 		fileControlChan: fileControlChan,
 	}
 }
 
 // ProcessAudioChunk analyzes an audio chunk's RMS value and updates the recording state.
 // It controls the 'valve' element to start or stop the flow of data to the filesink.
-func (v *State) ProcessAudioChunk(rms float64) {
+func (v *VADEngine) ProcessAudioChunk(rms float64) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -67,13 +67,13 @@ func (v *State) ProcessAudioChunk(rms float64) {
 // Controller is a dedicated goroutine that listens for RMS values and controls the
 // recording valve. Isolating this GStreamer state change into its own goroutine
 // is critical for preventing deadlocks.
-func Controller(wg *sync.WaitGroup, vad *State, vadControlChan <-chan float64) {
+func (v *VADEngine) Controller(wg *sync.WaitGroup, vadControlChan <-chan float64) {
 	defer wg.Done()
 	for rms := range vadControlChan {
 		if DEBUG {
 			log.Println("VAD received RMS")
 		}
-		vad.ProcessAudioChunk(rms)
+		v.ProcessAudioChunk(rms)
 	}
 	log.Println("VAD work finished")
 }

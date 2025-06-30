@@ -51,6 +51,7 @@ type DisplayConfig struct {
 // PipelineConfig holds settings for the GStreamer pipeline.
 type PipelineConfig struct {
 	BufferTimeUs int64
+	Device       string
 }
 
 // Load reads the configuration from the specified file path.

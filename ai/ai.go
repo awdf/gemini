@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"capgemini.com/config"
+	"capgemini.com/helpers"
+	"capgemini.com/pipeline"
 	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
@@ -39,7 +41,7 @@ var isInit = false
 func Init() {
 
 	ctx = context.Background()
-	client = Control(genai.NewClient(ctx, &genai.ClientConfig{
+	client = helpers.Control(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  os.Getenv("GOOGLE_API_KEY"),
 		Backend: genai.BackendGeminiAPI,
 	}))
@@ -47,7 +49,7 @@ func Init() {
 	isInit = true
 }
 
-func Chat(wg *sync.WaitGroup, pipeline *gst.Pipeline, fVoice bool, fileChan <-chan string) {
+func Chat(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, fileChan <-chan string) {
 	defer wg.Done()
 
 	if !isInit {
@@ -400,19 +402,4 @@ func playWavBlob(data []byte) error {
 	// Clean up
 	pipeline.SetState(gst.StateNull)
 	return nil
-}
-
-// Control is a helper function to check errors during GStreamer element creation.
-func Control[T any](object T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return object
-}
-
-// Verify is a helper function to check errors during GStreamer linking.
-func Verify(err error) {
-	if err != nil {
-		panic(err)
-	}
 }

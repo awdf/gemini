@@ -5,12 +5,13 @@ import (
 	"flag"
 	"log"
 	"os"
-	"os/signal"
 	"sync"
 
 	"capgemini.com/ai"
 	"capgemini.com/config"
 	"capgemini.com/display"
+	"capgemini.com/flow"
+	"capgemini.com/helpers"
 	"capgemini.com/pipeline"
 	"capgemini.com/recorder"
 	"capgemini.com/vad"
@@ -41,94 +42,123 @@ var (
 	configPtr = flag.String("config", "config.toml", "Path to the configuration file")
 )
 
-func main() {
-	flag.Parse()
+// App encapsulates the application's state and main components.
+type App struct {
+	logFile         *os.File
+	pipeline        *pipeline.VadPipeline
+	recorder        *recorder.Recorder
+	rmsDisplayChan  chan float64
+	vadControlChan  chan float64
+	fileControlChan chan string
+	aiOnDemandChan  chan string
+	wg              *sync.WaitGroup
+	voiceEnabled    bool
+}
 
+func main() {
+	// Parse command-line flags
+	flag.Parse()
+	flow.Controls()
+
+	// Load the configuration
 	config.Load(*configPtr)
 
-	f, err := os.OpenFile(config.C.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if err != nil {
-		log.Fatalf("error opening log file %s: %v", config.C.LogFile, err)
+	app := &App{
+		wg:           &sync.WaitGroup{},
+		voiceEnabled: *voicePtr,
 	}
-	defer f.Close()
-	log.SetOutput(f)
-	log.Println("### Application started!!!")
 
-	if *voicePtr {
-		log.Print("Voice responses enabled")
-	}
+	app.initLogging()
+	app.run()
+	app.shutdown()
+}
+
+func (app *App) run() {
 
 	// Initialize GStreamer. This should be called once per application.
 	gst.Init(nil)
 
 	// Create buffered channels to decouple the "hot" GStreamer loop from other goroutines.
-	rmsDisplayChan := make(chan float64, 10) // For the RMS volume bar
-	vadControlChan := make(chan float64, 10) // For the VAD logic
-	fileControlChan := make(chan string, 5)  // For WAV files flow
-	aiOnDemandChan := make(chan string, 2)   // Pass WAV file name for the AI flow
+	app.rmsDisplayChan = make(chan float64, 10) // For the RMS volume bar
+	app.vadControlChan = make(chan float64, 10) // For the VAD logic
+	app.fileControlChan = make(chan string, 5)  // For WAV files flow
+	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI flow
 
-	// Creation pipeline
-	gstPipeline, vadSink, recordingSink := pipeline.CreateVADPipeline()
+	// Creation vadPipline
+	app.recorder = recorder.CreateRecorderSink()
+	app.pipeline = pipeline.CreateVADPipeline(app.recorder)
 
 	// Create the VAD state controller.
-	vadState := vad.NewVAD(fileControlChan)
+	vadEngine := vad.CreateVAD(app.fileControlChan)
 
-	// Create a GLib Main Loop to handle GStreamer bus messages.
-	mainLoop := pipeline.MainLoop(gstPipeline)
-
-	// Handle Ctrl+C signal for graceful shutdown
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
 	go func() {
-		<-c
+		<-*flow.GetListener()
 		log.Println("Interrupt received, initiating shutdown...")
-		// 1. Signal to end pipline work
-		gstPipeline.SendEvent(gst.NewEOSEvent())
+		// 1. Signal to end pipeline work
+		app.pipeline.SendEvent(gst.NewEOSEvent())
 		// 2. Schedule MainLoop.Quit() to be called from the main GStreamer thread.
 		// This is the safest way to interact with the pipeline from a different
 		// thread. This will cause mainLoop.Run() to return, allowing a clean shutdown.
 		glib.IdleAdd(func() bool {
-			mainLoop.Quit()
+			app.pipeline.Quit()
 			return false // Do not call again
 		})
 	}()
 
 	// Use a WaitGroup to ensure our goroutines shut down cleanly.
-	var wg sync.WaitGroup
-	wg.Add(5)
-	// Rutine 1. Start a "cold" goroutine for printing the volume bar.
-	go display.DisplayRMS(&wg, rmsDisplayChan)
-	// Rutine 2. Start the VAD controller goroutine. This is the only goroutine allowed to change
+	app.wg.Add(5)
+	// Routine 1. Start a "cold" goroutine for printing the volume bar.
+	go display.DisplayRMS(app.wg, app.rmsDisplayChan)
+	// Routine 2. Start the VAD controller goroutine. This is the only goroutine allowed to change
 	// the pipeline's state (by controlling the valve).
-	go vad.Controller(&wg, vadState, vadControlChan)
-	// Rutine 3. Start the puller goroutine.
-	go pipeline.PullSamples(&wg, vadSink, rmsDisplayChan, vadControlChan)
-	// Rutine 4. Start the file writer goroutine.
-	go recorder.FileWriter(&wg, recordingSink, fileControlChan, aiOnDemandChan)
-	// Rutine 5. Start the AI Chat goroutine.
-	go ai.Chat(&wg, gstPipeline, *voicePtr, aiOnDemandChan)
+	go vadEngine.Controller(app.wg, app.vadControlChan)
+	// Routine 3. Start the puller goroutine.
+	go app.pipeline.PullSamples(app.wg, app.rmsDisplayChan, app.vadControlChan)
+	// Routine 4. Start the file writer goroutine.
+	go app.recorder.FileWriter(app.wg, app.fileControlChan, app.aiOnDemandChan)
+	// Routine 5. Start the AI Chat goroutine.
+	go ai.Chat(app.wg, app.pipeline, app.voiceEnabled, app.aiOnDemandChan)
 	// Start the pipeline
-	pipeline.Verify(gstPipeline.SetState(gst.StatePlaying))
+	helpers.Verify(app.pipeline.SetState(gst.StatePlaying))
 
 	log.Println("Listening for audio... Recording will start when sound is detected.")
 	log.Println("Each utterance will be saved to a new file (e.g., recording-n.wav). Press Ctrl+C to exit.")
 
 	// Block until the pipeline's bus signals EOS or an error.
-	mainLoop.Run()
+	app.pipeline.Run()
+}
 
+func (app *App) shutdown() {
 	log.Println("Stopping pipeline...")
 	// Clean up
-	close(rmsDisplayChan)
-	close(vadControlChan)
-	close(fileControlChan)
-	close(aiOnDemandChan)
+	close(app.rmsDisplayChan)
+	close(app.vadControlChan)
+	close(app.fileControlChan)
+	close(app.aiOnDemandChan)
 
 	// Set the pipeline to NULL state. This is a blocking call that will tear down
 	// the pipeline and cause sink.PullSample() to unblock and return nil.
-	gstPipeline.SetState(gst.StateNull)
+	app.pipeline.SetState(gst.StateNull)
 	log.Println("Pipeline stopped.")
 
 	// Now that the pipeline is stopped, wait for the processing goroutines to finish their cleanup.
-	wg.Wait()
+	app.wg.Wait()
 	log.Println("All goroutines finished.")
+	app.logFile.Close()
+}
+
+func (app *App) initLogging() {
+	// Set up logging
+	var err error
+	app.logFile, err = os.OpenFile(config.C.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatalf("error opening log file %s: %v", config.C.LogFile, err)
+	}
+	log.SetOutput(app.logFile)
+	log.Println("### Application started!!!")
+
+	// Enable voice responses
+	if app.voiceEnabled {
+		log.Print("Voice responses enabled")
+	}
 }

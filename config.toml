@@ -31,5 +31,7 @@ BarWidth = 100
 UpdateIntervalMs = 50
 
 [pipeline]
+# Physical sound device for input (Default system device by default)
+# Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 # GStreamer source buffer time in microseconds. Helps prevent race conditions.
 BufferTimeUs = 500000
