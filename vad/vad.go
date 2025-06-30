@@ -22,8 +22,8 @@ type VADEngine struct {
 	fileControlChan chan<- string
 }
 
-// CreateVAD creates a new VAD controller.
-func CreateVAD(fileControlChan chan<- string) *VADEngine {
+// NewVAD creates a new VAD controller.
+func NewVAD(fileControlChan chan<- string) *VADEngine {
 	return &VADEngine{
 		fileControlChan: fileControlChan,
 	}

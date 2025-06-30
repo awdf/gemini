@@ -28,12 +28,12 @@ type VadPipeline struct {
 	loop     *glib.MainLoop
 }
 
-// CreateVADPipeline sets up a GStreamer pipeline that listens to an audio source,
+// NewVADPipeline sets up a GStreamer pipeline that listens to an audio source,
 // analyzes its volume, and records it to a file only when sound is detected.
 // It uses a "tee" element to split the audio stream into two branches:
 // 1. Analysis Branch: -> queue -> appsink (for calculating RMS in Go)
 // 2. Recording Branch: -> queue -> valve -> appsink (for writing to a file in Go)
-func CreateVADPipeline(recorder *recorder.Recorder) *VadPipeline {
+func NewVADPipeline(recorder *recorder.Recorder) *VadPipeline {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
 	//Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 

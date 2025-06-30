@@ -1,6 +1,10 @@
 // sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-good1.0-dev
 package main
 
+// DIRECTIVE: Chosen OOP approach for application development
+// DIRECTIVE: Each scope of logic should be placed in separated module
+// DIRECTIVE: Inside module can be only one constructor and name must start from New prefix
+
 import (
 	"flag"
 	"log"
@@ -20,23 +24,6 @@ import (
 	"github.com/go-gst/go-gst/gst"
 )
 
-// vadState represents the state of the Voice Activity Detector.
-// newVAD creates a new VAD controller.
-// processAudioChunk analyzes an audio chunk's RMS value and updates the recording state.
-// It controls the 'valve' element to start or stop the flow of data to the filesink.
-// fileWriter is a dedicated goroutine for writing encoded audio data to files.
-// It listens for control messages to start new files and finalize (and potentially delete) old ones.
-// vadController is a dedicated goroutine that listens for RMS values and controls the
-// recording valve. Isolating this GStreamer state change into its own goroutine
-// is critical for preventing deadlocks.
-// writeWAVHeader writes a placeholder WAV header to the file.
-// The dataSize and fileSize will need to be updated later.
-// updateWAVHeader updates the ChunkSize and Subchunk2Size in the WAV header.
-// pullAndWriteSamples pulls all available samples from the sink and writes them to the file.
-// pullSamples is a dedicated goroutine that only pulls samples from the GStreamer pipeline.
-// It calculates the RMS and passes it to other goroutines for processing, but never
-// modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
-// printBar encapsulates the expensive printing logic.
 var (
 	voicePtr  = flag.Bool("voice", false, "Enable voice responses from the AI")
 	configPtr = flag.String("config", "config.toml", "Path to the configuration file")
@@ -47,12 +34,39 @@ type App struct {
 	logFile         *os.File
 	pipeline        *pipeline.VadPipeline
 	recorder        *recorder.Recorder
+	vadEngine       *vad.VADEngine
+	ai              *ai.AI
 	rmsDisplayChan  chan float64
 	vadControlChan  chan float64
 	fileControlChan chan string
 	aiOnDemandChan  chan string
 	wg              *sync.WaitGroup
 	voiceEnabled    bool
+}
+
+// NewApp creates and initializes a new application instance.
+// It sets up all components and channels, making the App ready to run.
+func NewApp(voiceEnabled bool) *App {
+	app := &App{
+		wg:           &sync.WaitGroup{},
+		voiceEnabled: voiceEnabled,
+	}
+
+	app.initLogging()
+
+	// Create buffered channels to decouple the "hot" GStreamer loop from other goroutines.
+	app.rmsDisplayChan = make(chan float64, 10) // For the RMS volume bar
+	app.vadControlChan = make(chan float64, 10) // For the VAD logic
+	app.fileControlChan = make(chan string, 5)  // For WAV files flow
+	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI flow
+
+	// Create the main components
+	app.recorder = recorder.NewRecorderSink()
+	app.pipeline = pipeline.NewVADPipeline(app.recorder)
+	app.vadEngine = vad.NewVAD(app.fileControlChan)
+	app.ai = ai.NewAI()
+
+	return app
 }
 
 func main() {
@@ -63,33 +77,15 @@ func main() {
 	// Load the configuration
 	config.Load(*configPtr)
 
-	app := &App{
-		wg:           &sync.WaitGroup{},
-		voiceEnabled: *voicePtr,
-	}
-
-	app.initLogging()
-	app.run()
-	app.shutdown()
-}
-
-func (app *App) run() {
-
 	// Initialize GStreamer. This should be called once per application.
 	gst.Init(nil)
 
-	// Create buffered channels to decouple the "hot" GStreamer loop from other goroutines.
-	app.rmsDisplayChan = make(chan float64, 10) // For the RMS volume bar
-	app.vadControlChan = make(chan float64, 10) // For the VAD logic
-	app.fileControlChan = make(chan string, 5)  // For WAV files flow
-	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI flow
+	NewApp(*voicePtr).run()
+}
 
-	// Creation vadPipline
-	app.recorder = recorder.CreateRecorderSink()
-	app.pipeline = pipeline.CreateVADPipeline(app.recorder)
-
-	// Create the VAD state controller.
-	vadEngine := vad.CreateVAD(app.fileControlChan)
+func (app *App) run() {
+	// Defer shutdown to ensure it runs when the function exits.
+	defer app.shutdown()
 
 	go func() {
 		<-*flow.GetListener()
@@ -111,13 +107,13 @@ func (app *App) run() {
 	go display.DisplayRMS(app.wg, app.rmsDisplayChan)
 	// Routine 2. Start the VAD controller goroutine. This is the only goroutine allowed to change
 	// the pipeline's state (by controlling the valve).
-	go vadEngine.Controller(app.wg, app.vadControlChan)
+	go app.vadEngine.Controller(app.wg, app.vadControlChan)
 	// Routine 3. Start the puller goroutine.
 	go app.pipeline.PullSamples(app.wg, app.rmsDisplayChan, app.vadControlChan)
 	// Routine 4. Start the file writer goroutine.
 	go app.recorder.FileWriter(app.wg, app.fileControlChan, app.aiOnDemandChan)
 	// Routine 5. Start the AI Chat goroutine.
-	go ai.Chat(app.wg, app.pipeline, app.voiceEnabled, app.aiOnDemandChan)
+	go app.ai.Chat(app.wg, app.pipeline, app.voiceEnabled, app.aiOnDemandChan)
 	// Start the pipeline
 	helpers.Verify(app.pipeline.SetState(gst.StatePlaying))
 
