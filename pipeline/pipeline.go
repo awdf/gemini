@@ -37,11 +37,11 @@ func NewVADPipeline(recorder *recorder.Recorder) *VadPipeline {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
 	//Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 
-	var vad VadPipeline
-	vad.recorder = recorder
+	var p VadPipeline
+	p.recorder = recorder
 
 	// Create a new pipeline
-	vad.pipeline = helpers.Control(gst.NewPipeline("vad-recording-pipeline"))
+	p.pipeline = helpers.Control(gst.NewPipeline("vad-recording-pipeline"))
 
 	// Create elements
 	// On modern Linux systems, PipeWire is often the underlying audio server.
@@ -73,29 +73,29 @@ func NewVADPipeline(recorder *recorder.Recorder) *VadPipeline {
 	// --- Analysis Branch Elements ---
 	analysisQueue := helpers.Control(gst.NewElement("queue"))
 
-	vad.vadSink = helpers.Control(app.NewAppSink())
-	helpers.Verify(vad.vadSink.SetProperty("sync", false)) // Don't synchronize on clock, get data as fast as possible
-	vad.vadSink.SetDrop(false)
+	p.vadSink = helpers.Control(app.NewAppSink())
+	helpers.Verify(p.vadSink.SetProperty("sync", false)) // Don't synchronize on clock, get data as fast as possible
+	p.vadSink.SetDrop(false)
 	// Set the maximum number of buffers that can be queued. This is critical for stability.
-	vad.vadSink.SetMaxBuffers(10)
+	p.vadSink.SetMaxBuffers(10)
 
 	// --- Recording Branch Elements ---
 	recordingQueue := helpers.Control(gst.NewElement("queue"))
 
 	// Add all elements to the pipeline
-	helpers.Verify(vad.pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, vad.vadSink.Element, recordingQueue, recorder.Element))
+	helpers.Verify(p.pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, p.vadSink.Element, recordingQueue, recorder.Element))
 
 	// Link the common path
 	helpers.Verify(gst.ElementLinkMany(source, audioconvert, audioresample, capsfilter, tee))
 
 	// Link the analysis branch
-	helpers.Verify(gst.ElementLinkMany(tee, analysisQueue, vad.vadSink.Element))
+	helpers.Verify(gst.ElementLinkMany(tee, analysisQueue, p.vadSink.Element))
 
 	// Link the recording branch
 	helpers.Verify(gst.ElementLinkMany(tee, recordingQueue, recorder.Element))
 
-	vad.mainLoop()
-	return &vad
+	p.mainLoop()
+	return &p
 }
 
 // MainLoop creates and runs a GLib Main Loop for GStreamer bus messages.

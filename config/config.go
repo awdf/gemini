@@ -36,6 +36,7 @@ type AIConfig struct {
 type VADConfig struct {
 	SilenceThreshold    float64
 	HangoverDurationSec float64
+	WarmupDuration      string `toml:"WarmupDuration"`
 }
 
 // RecorderConfig holds settings for the audio recorder.
@@ -118,4 +119,17 @@ func (v VADConfig) HangoverDuration() time.Duration {
 // UpdateInterval converts the configured milliseconds into a time.Duration.
 func (d DisplayConfig) UpdateInterval() time.Duration {
 	return time.Duration(d.UpdateIntervalMs) * time.Millisecond
+}
+
+// WarmupDuration parses the VAD.WarmupDuration string into a time.Duration.
+func (v *VADConfig) WarmUpDuration() time.Duration {
+	if v.WarmupDuration == "" {
+		return 0 // No warm-up if not specified.
+	}
+	d, err := time.ParseDuration(v.WarmupDuration)
+	if err != nil {
+		log.Printf("Warning: could not parse VAD.WarmupDuration '%s', using default 1s. Error: %v", v.WarmupDuration, err)
+		return time.Second
+	}
+	return d
 }

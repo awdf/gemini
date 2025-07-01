@@ -9,12 +9,11 @@ APIKey = "${GOOGLE_API_KEY}"
 Model = "gemini-2.5-flash"
 ModelTTS = "gemini-2.5-flash-preview-tts"
 Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
-MainPrompt = """
-Step 1: Generate a transcript of the speech.
+MainPrompt = """ Step 1: Generate a transcript of the speech.
 Step 2: Identify the language of the transcript.
 Step 3: Respond to the question from the speech in the same language as the transcript.
 """
-Thinking = -1 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
+Thinking = 512 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
 Thoughts = false
 
 [vad]
@@ -22,6 +21,9 @@ Thoughts = false
 SilenceThreshold = 0.1
 # The amount of time in seconds to continue recording after the audio level drops below the silence threshold.
 HangoverDurationSec = 2.0
+# Duration to ignore audio at startup to allow the pipeline to stabilize.
+# This prevents initial hardware "pops" from triggering a recording.
+WarmupDuration = "1500ms"
 
 [recorder]
 # Recordings shorter than this (in bytes) will be deleted.

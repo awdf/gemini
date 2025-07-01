@@ -195,9 +195,10 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool) error {
 				ThinkingBudget:  &config.C.AI.Thinking,
 			},
 			// Enable the model to use Google Search to answer questions.
-			Tools: []*genai.Tool{{
-				GoogleSearch: &genai.GoogleSearch{},
-			}},
+			// Tools: []*genai.Tool{{
+			// 	GoogleSearch: &genai.GoogleSearch{},
+			// 	URLContext:   &genai.URLContext{},
+			// }},
 		},
 	)
 

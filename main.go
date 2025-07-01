@@ -103,22 +103,27 @@ func (app *App) run() {
 
 	// Use a WaitGroup to ensure our goroutines shut down cleanly.
 	app.wg.Add(5)
-	// Routine 1. Start a "cold" goroutine for printing the volume bar.
+	// Routine 1. Start the puller goroutine.
+	go app.pipeline.PullSamples(app.wg, app.rmsDisplayChan, app.vadControlChan)
+	// Routine 2. Start a "cold" goroutine for printing the volume bar.
 	go display.DisplayRMS(app.wg, app.rmsDisplayChan)
-	// Routine 2. Start the VAD controller goroutine. This is the only goroutine allowed to change
+	// Routine 3. Start the VAD controller goroutine. This is the only goroutine allowed to change
 	// the pipeline's state (by controlling the valve).
 	go app.vadEngine.Controller(app.wg, app.vadControlChan)
-	// Routine 3. Start the puller goroutine.
-	go app.pipeline.PullSamples(app.wg, app.rmsDisplayChan, app.vadControlChan)
 	// Routine 4. Start the file writer goroutine.
 	go app.recorder.FileWriter(app.wg, app.fileControlChan, app.aiOnDemandChan)
 	// Routine 5. Start the AI Chat goroutine.
 	go app.ai.Chat(app.wg, app.pipeline, app.voiceEnabled, app.aiOnDemandChan)
+
 	// Start the pipeline
 	helpers.Verify(app.pipeline.SetState(gst.StatePlaying))
 
 	log.Println("Listening for audio... Recording will start when sound is detected.")
 	log.Println("Each utterance will be saved to a new file (e.g., recording-n.wav). Press Ctrl+C to exit.")
+
+	// Process existing files and get the last file index to avoid overwrites.
+	lastFileIndex := app.recorder.ProcessExistingRecordings(app.aiOnDemandChan)
+	app.vadEngine.SetFileCounter(lastFileIndex)
 
 	// Block until the pipeline's bus signals EOS or an error.
 	app.pipeline.Run()
@@ -151,6 +156,7 @@ func (app *App) initLogging() {
 		log.Fatalf("error opening log file %s: %v", config.C.LogFile, err)
 	}
 	log.SetOutput(app.logFile)
+	log.SetPrefix("\x20")
 	log.Println("### Application started!!!")
 
 	// Enable voice responses

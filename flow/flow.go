@@ -14,7 +14,7 @@ var (
 )
 
 func Controls() {
-	signal.Notify(signalChan, os.Interrupt)
+	signal.Notify(signalChan, syscall.SIGINT)
 	signal.Notify(signalChan, syscall.SIGTERM)
 	signal.Notify(signalChan, syscall.SIGQUIT)
 	signal.Notify(signalChan, syscall.SIGPIPE)
@@ -33,8 +33,7 @@ func Terminate() {
 }
 
 func processSignal() {
-	for {
-		sig := <-signalChan
+	for sig := range signalChan {
 		signal.Reset(sig)
 		fmt.Println()
 		log.Printf("got signal, value = \"%s\"", sig)

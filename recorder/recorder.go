@@ -3,6 +3,9 @@ package recorder
 import (
 	"log"
 	"os"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -82,7 +85,12 @@ func (r *Recorder) FileWriter(wg *sync.WaitGroup, controlChan <-chan string, fil
 					r.isWriting = true
 				}
 			} else if strings.HasPrefix(cmd, "STOP:") {
-				r.finalizeAndSend(fileChan)
+				filename := strings.TrimPrefix(cmd, "STOP:")
+				// Check that the STOP command is for the file we think we are writing.
+				if r.currentWav != nil && r.currentWav.Filename() != filename {
+					log.Printf("Warning: STOP command for '%s' received, but current recording is '%s'. Finalizing current recording.", filename, r.currentWav.Filename())
+				}
+				r.finalizeAndSend(fileChan) // Finalize the current recording.
 				r.isWriting = false
 			}
 
@@ -148,4 +156,54 @@ func (r *Recorder) pullAndWriteSamples() {
 		}
 		// IMPORTANT: Go GStreamer unrefs the sample automatically.
 	}
+}
+
+// ProcessExistingRecordings scans the current directory for unprocessed recordings,
+// queues them for AI processing, and returns the highest recording number found.
+func (r *Recorder) ProcessExistingRecordings(aiOnDemandChan chan<- string) int {
+	log.Println("Checking for existing recordings to process...")
+
+	files, err := os.ReadDir(".")
+	if err != nil {
+		log.Printf("ERROR: could not read current directory: %v", err)
+		return 0
+	}
+
+	re := regexp.MustCompile(`^recording-(\d+)\.wav$`)
+	type recordingInfo struct {
+		name string
+		num  int
+	}
+	var recordings []recordingInfo
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		matches := re.FindStringSubmatch(file.Name())
+		if len(matches) > 1 {
+			if num, err := strconv.Atoi(matches[1]); err == nil {
+				recordings = append(recordings, recordingInfo{name: file.Name(), num: num})
+			}
+		}
+	}
+
+	if len(recordings) == 0 {
+		log.Println("No existing recordings found.")
+		return 0
+	}
+
+	// Sort files numerically to process them in order.
+	sort.Slice(recordings, func(i, j int) bool {
+		return recordings[i].num < recordings[j].num
+	})
+
+	log.Printf("Found %d existing recordings. Queueing for processing.", len(recordings))
+	for _, rec := range recordings {
+		log.Printf("Queueing existing recording: %s", rec.name)
+		aiOnDemandChan <- rec.name
+	}
+
+	// The highest number is in the last element of the sorted slice.
+	return recordings[len(recordings)-1].num
 }

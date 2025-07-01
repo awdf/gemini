@@ -18,15 +18,31 @@ type VADEngine struct {
 	mu              sync.Mutex
 	isRecording     bool
 	silenceEndTime  time.Time
+	warmupEndTime   time.Time
 	fileCounter     int
 	fileControlChan chan<- string
 }
 
 // NewVAD creates a new VAD controller.
 func NewVAD(fileControlChan chan<- string) *VADEngine {
+	// Get the warm-up duration from the configuration.
+	warmupDuration := config.C.VAD.WarmUpDuration()
+	if warmupDuration > 0 {
+		log.Printf("VAD initialised with a warm-up period of %s", warmupDuration)
+	}
 	return &VADEngine{
 		fileControlChan: fileControlChan,
+		// Set the time when the warm-up period will be over.
+		warmupEndTime: time.Now().Add(warmupDuration),
 	}
+}
+
+// SetFileCounter sets the starting number for the file counter to avoid overwriting
+// existing recordings.
+func (v *VADEngine) SetFileCounter(start int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.fileCounter = start
 }
 
 // ProcessAudioChunk analyzes an audio chunk's RMS value and updates the recording state.
@@ -34,6 +50,17 @@ func NewVAD(fileControlChan chan<- string) *VADEngine {
 func (v *VADEngine) ProcessAudioChunk(rms float64) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+
+	// Check if the warm-up period is active.
+	if !v.warmupEndTime.IsZero() {
+		if time.Now().Before(v.warmupEndTime) {
+			return // Still in warm-up, so ignore this audio chunk.
+		}
+		// The warm-up period has just ended. Log it and clear the timer
+		// so this check doesn't run for every subsequent chunk.
+		log.Println("VAD warm-up complete. Now actively listening for speech.")
+		v.warmupEndTime = time.Time{}
+	}
 
 	isLoud := rms > config.C.VAD.SilenceThreshold
 
