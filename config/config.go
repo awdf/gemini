@@ -23,13 +23,15 @@ type Config struct {
 
 // AIConfig holds settings related to the AI model.
 type AIConfig struct {
-	Model      string
-	ModelTTS   string
-	Voice      string
-	APIKey     string
-	MainPrompt string
-	Thinking   int32
-	Thoughts   bool
+	Model               string
+	TranscriptionPrompt string
+	ModelTTS            string
+	Voice               string
+	APIKey              string
+	MainPrompt          string
+	Thinking            int32
+	Thoughts            bool
+	EnableTools         bool
 }
 
 // VADConfig holds settings for the Voice Activity Detector.
@@ -89,13 +91,15 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Model = "gemini-2.5-flash"
 	defaultConfig.AI.ModelTTS = "gemini-2.5-flash-preview-tts"
 	defaultConfig.AI.Voice = "Kore"
+	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}" // You can set this directly or use an environment variable.
-	defaultConfig.AI.MainPrompt = "You are a helpful voice assistant. Please listen to the user's utterance in the attached audio file and provide a concise and accurate response. Respond in the same language as the audio."
+	defaultConfig.AI.MainPrompt = "You are a helpful voice assistant. Based on the transcript, please provide a transcript and concise and accurate response. Respond in the same language as the transcript."
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
+	defaultConfig.AI.EnableTools = true
 	defaultConfig.VAD.SilenceThreshold = 0.1
 	defaultConfig.VAD.HangoverDurationSec = 2.0
-	defaultConfig.Recorder.MinFileSizeBytes = 1024
+	defaultConfig.Recorder.MinFileSizeBytes = 600000
 	defaultConfig.Display.BarWidth = 100
 	defaultConfig.Display.UpdateIntervalMs = 50
 	defaultConfig.Pipeline.BufferTimeUs = 500000

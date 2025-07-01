@@ -9,12 +9,14 @@ APIKey = "${GOOGLE_API_KEY}"
 Model = "gemini-2.5-flash"
 ModelTTS = "gemini-2.5-flash-preview-tts"
 Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
-MainPrompt = """ Step 1: Generate a transcript of the speech.
-Step 2: Identify the language of the transcript.
-Step 3: Respond to the question from the speech in the same language as the transcript.
+TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
+MainPrompt = """You are a helpful voice assistant.
+Based on the transcript, please provide a transcript and concise and accurate response.
+Respond in the same language as the transcript.
 """
 Thinking = 512 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
 Thoughts = false
+EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
 
 [vad]
 # The normalized RMS level below which we consider the audio to be silent.
@@ -27,7 +29,8 @@ WarmupDuration = "1500ms"
 
 [recorder]
 # Recordings shorter than this (in bytes) will be deleted.
-MinFileSizeBytes = 1024
+# Example: 600 000 bytes it is mouse click record size.
+MinFileSizeBytes = 600000
 
 [display]
 # Width of the RMS volume bar in characters.

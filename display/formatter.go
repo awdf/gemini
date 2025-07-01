@@ -9,6 +9,8 @@ const (
 	ColorCyan   = "\033[36m" // For "Answer:" prefix
 	ColorWhite  = "\033[97m" // For **bold** text
 	ColorGreen  = "\033[32m" // For ```code``` blocks
+	ColorGray   = "\033[90m" // For subtle text like sources
+	ColorBlue   = "\033[34m" // For general purpose highlighting
 )
 
 // Formatter handles stateful, formatted printing to the terminal,
@@ -64,7 +66,7 @@ func (f *Formatter) Print(text string) {
 
 // Println prints a formatted line with a specific color prefix.
 func (f *Formatter) Println(prefix, color string) {
-	fmt.Printf("\n%s%s %s\n", color, prefix, ColorReset)
+	fmt.Printf("%s%s %s\n", color, prefix, ColorReset)
 }
 
 // Reset prints a final newline and resets the terminal color.
