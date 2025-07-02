@@ -9,10 +9,6 @@ import (
 	"capgemini.com/config"
 )
 
-const (
-	DEBUG = false
-)
-
 // VADEngine represents the state of the Voice Activity Detector.
 type VADEngine struct {
 	mu              sync.Mutex
@@ -101,7 +97,7 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 func (v *VADEngine) Run() {
 	defer v.wg.Done()
 	for rms := range v.vadControlChan {
-		if DEBUG {
+		if config.C.Debug {
 			log.Println("VAD received RMS")
 		}
 		v.ProcessAudioChunk(rms)

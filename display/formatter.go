@@ -10,7 +10,7 @@ const (
 	ColorWhite  = "\033[97m" // For **bold** text
 	ColorGreen  = "\033[32m" // For ```code``` blocks
 	ColorGray   = "\033[90m" // For subtle text like sources
-	ColorBlue   = "\033[34m" // For general purpose highlighting
+	ColorBlue   = "\033[34m" // For links highlighting
 )
 
 // Formatter handles stateful, formatted printing to the terminal,

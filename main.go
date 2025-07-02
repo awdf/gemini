@@ -76,6 +76,7 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 	app.ai = ai.NewAI(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan)
 	app.display = display.NewRMSDisplay(app.wg, app.rmsDisplayChan)
 
+	//Collect all Runnable for future processing
 	app.runnables = []Runnable{
 		app.pipeline,
 		app.display,
@@ -171,6 +172,10 @@ func (app *App) initLogging() {
 	log.SetOutput(app.logFile)
 	log.SetPrefix("\x20")
 	log.Println("### Application started!!!")
+
+	if config.C.Debug {
+		log.Println("!!! DEBUG MODE ENABLED !!!")
+	}
 
 	if !app.aiEnabled {
 		log.Print("AI processing is disabled. The application will only record audio.")

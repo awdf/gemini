@@ -18,10 +18,6 @@ import (
 	"google.golang.org/genai"
 )
 
-const (
-	DEBUG = false
-)
-
 // AI encapsulates the state and logic for interacting with the Gemini AI.
 type AI struct {
 	ctx                 context.Context
@@ -62,7 +58,7 @@ func (a *AI) Run() {
 		log.Println("AI Chat processor is disabled. Draining file channel to prevent blocking.")
 		// We must still consume from the channel to prevent the recorder from blocking.
 		for file := range a.fileChan {
-			if DEBUG {
+			if config.C.Debug {
 				log.Printf("AI disabled, discarding file: %s", file)
 			}
 			// Discard file by doing nothing with it.

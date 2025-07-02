@@ -13,6 +13,7 @@ var C Config
 
 // Config defines the structure of the configuration file.
 type Config struct {
+	Debug    bool
 	LogFile  string
 	AI       AIConfig
 	VAD      VADConfig
@@ -87,6 +88,7 @@ func Load(path string) {
 func createDefaultConfig(path string) {
 	defaultConfig := C // Start with zero-value struct
 	// Populate with default values
+	defaultConfig.Debug = false
 	defaultConfig.LogFile = "app.log"
 	defaultConfig.AI.Model = "gemini-2.5-flash"
 	defaultConfig.AI.ModelTTS = "gemini-2.5-flash-preview-tts"

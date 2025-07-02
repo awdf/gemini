@@ -11,10 +11,6 @@ import (
 	"capgemini.com/config"
 )
 
-const (
-	DEBUG = false
-)
-
 // RMSDisplay manages the state and logic for displaying the RMS volume bar.
 type RMSDisplay struct {
 	barWidth             int
@@ -69,7 +65,7 @@ func (d *RMSDisplay) Run() {
 	defer ticker.Stop()
 
 	for {
-		if DEBUG {
+		if config.C.Debug {
 			log.Println("Display RMS")
 		}
 		select {

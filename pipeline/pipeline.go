@@ -17,10 +17,6 @@ import (
 	"github.com/go-gst/go-gst/gst/app"
 )
 
-const (
-	DEBUG = false
-)
-
 type VadPipeline struct {
 	pipeline       *gst.Pipeline
 	vadSink        *app.Sink
@@ -173,7 +169,7 @@ func (p *VadPipeline) Run() {
 			continue
 		}
 
-		if DEBUG {
+		if config.C.Debug {
 			log.Println("Puller goroutine: received sample")
 		}
 

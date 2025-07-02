@@ -18,10 +18,6 @@ import (
 	"github.com/go-gst/go-gst/gst/app"
 )
 
-const (
-	DEBUG = false
-)
-
 type Recorder struct {
 	currentWav    *audio.WavFile // The active WAV file being written to.
 	isWriting     bool
@@ -59,7 +55,7 @@ func (r *Recorder) Run() {
 
 	for {
 
-		if DEBUG {
+		if config.C.Debug {
 			log.Println("Write to file")
 		}
 

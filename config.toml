@@ -1,6 +1,8 @@
 # Main application configuration
-
 LogFile = "app.log"
+
+# Enable or disable debug logging for all modules.
+Debug = false 
 
 [ai]
 # The API Key for the AI service. Can be set directly or via an environment variable.
