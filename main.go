@@ -2,7 +2,7 @@
 package main
 
 // DIRECTIVE: Chosen OOP approach for application development
-// DIRECTIVE: Each scope of logic should be placed in separated module
+// DIRECTIVE: Each scope of logic should be placed in dedicated module
 // DIRECTIVE: Inside module can be only one constructor and name must start from New prefix
 
 import (
@@ -30,6 +30,10 @@ var (
 	aiOffPtr  = flag.Bool("no-ai", false, "Disable AI processing, only record audio")
 )
 
+type Runnable interface {
+	Run()
+}
+
 // App encapsulates the application's state and main components.
 type App struct {
 	logFile         *os.File
@@ -37,6 +41,7 @@ type App struct {
 	recorder        *recorder.Recorder
 	vadEngine       *vad.VADEngine
 	ai              *ai.AI
+	display         *display.RMSDisplay
 	rmsDisplayChan  chan float64
 	vadControlChan  chan float64
 	fileControlChan chan string
@@ -44,6 +49,7 @@ type App struct {
 	wg              *sync.WaitGroup
 	voiceEnabled    bool
 	aiEnabled       bool
+	runnables       []Runnable
 }
 
 // NewApp creates and initializes a new application instance.
@@ -63,11 +69,20 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 	app.fileControlChan = make(chan string, 5)  // For WAV files flow
 	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI flow
 
-	// Create the main components
-	app.recorder = recorder.NewRecorderSink()
-	app.pipeline = pipeline.NewVADPipeline(app.recorder)
-	app.vadEngine = vad.NewVAD(app.fileControlChan)
-	app.ai = ai.NewAI()
+	// Create the main components with Dependency Injection.
+	app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan)
+	app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder, app.rmsDisplayChan, app.vadControlChan)
+	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan)
+	app.ai = ai.NewAI(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan)
+	app.display = display.NewRMSDisplay(app.wg, app.rmsDisplayChan)
+
+	app.runnables = []Runnable{
+		app.pipeline,
+		app.display,
+		app.vadEngine,
+		app.recorder,
+		app.ai,
+	}
 
 	return app
 }
@@ -104,39 +119,34 @@ func (app *App) run() {
 		})
 	}()
 
-	// Use a WaitGroup to ensure our goroutines shut down cleanly.
-	app.wg.Add(5)
-	// Routine 1. Start the puller goroutine.
-	go app.pipeline.PullSamples(app.wg, app.rmsDisplayChan, app.vadControlChan)
-	// Routine 2. Start a "cold" goroutine for printing the volume bar.
-	go display.DisplayRMS(app.wg, app.rmsDisplayChan)
-	// Routine 3. Start the VAD controller goroutine. This is the only goroutine allowed to change
-	// the pipeline's state (by controlling the valve).
-	go app.vadEngine.Controller(app.wg, app.vadControlChan)
-	// Routine 4. Start the file writer goroutine.
-	go app.recorder.FileWriter(app.wg, app.fileControlChan, app.aiOnDemandChan)
-	// Routine 5. Start the AI Chat goroutine.
-	go app.ai.Chat(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan)
+	// Launch all runnable components as goroutines.
+	for _, r := range app.runnables {
+		app.join(r)
+	}
 
 	// Start the pipeline
 	helpers.Verify(app.pipeline.SetState(gst.StatePlaying))
 
-	log.Println("Listening for audio... Recording will start when sound is detected.")
-	log.Println("Each utterance will be saved to a new file (e.g., recording-n.wav). Press Ctrl+C to exit.")
+	log.Println("Listening for audio... Recording will start when sound is detected. Press Ctrl+C to exit.")
 
 	// Process existing files and get the last file index to avoid overwrites.
 	lastFileIndex := app.recorder.ProcessExistingRecordings(app.aiOnDemandChan)
 	app.vadEngine.SetFileCounter(lastFileIndex)
 
 	// Block until the pipeline's bus signals EOS or an error.
-	app.pipeline.Run()
+	app.pipeline.Start()
+}
+
+func (app *App) join(r Runnable) {
+	app.wg.Add(1)
+	go r.Run()
 }
 
 func (app *App) shutdown() {
 	log.Println("Stopping pipeline...")
 	// Clean up
-	close(app.rmsDisplayChan)
-	close(app.vadControlChan)
+	// The rmsDisplayChan and vadControlChan are closed by their producer, the PullSamples goroutine.
+	// This is the idiomatic Go way to handle channel lifecycle and prevent race conditions on shutdown.
 	close(app.fileControlChan)
 	close(app.aiOnDemandChan)
 

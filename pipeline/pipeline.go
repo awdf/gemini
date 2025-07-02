@@ -22,10 +22,13 @@ const (
 )
 
 type VadPipeline struct {
-	pipeline *gst.Pipeline
-	vadSink  *app.Sink
-	recorder *recorder.Recorder
-	loop     *glib.MainLoop
+	pipeline       *gst.Pipeline
+	vadSink        *app.Sink
+	recorder       *recorder.Recorder
+	loop           *glib.MainLoop
+	wg             *sync.WaitGroup
+	rmsDisplayChan chan<- float64
+	vadControlChan chan<- float64
 }
 
 // NewVADPipeline sets up a GStreamer pipeline that listens to an audio source,
@@ -33,13 +36,16 @@ type VadPipeline struct {
 // It uses a "tee" element to split the audio stream into two branches:
 // 1. Analysis Branch: -> queue -> appsink (for calculating RMS in Go)
 // 2. Recording Branch: -> queue -> valve -> appsink (for writing to a file in Go)
-func NewVADPipeline(recorder *recorder.Recorder) *VadPipeline {
+func NewVADPipeline(wg *sync.WaitGroup, recorder *recorder.Recorder, rmsDisplayChan chan<- float64, vadControlChan chan<- float64) *VadPipeline {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
 	//Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 
 	var p VadPipeline
 	p.recorder = recorder
+	p.wg = wg
 
+	p.rmsDisplayChan = rmsDisplayChan
+	p.vadControlChan = vadControlChan
 	// Create a new pipeline
 	p.pipeline = helpers.Control(gst.NewPipeline("vad-recording-pipeline"))
 
@@ -126,7 +132,7 @@ func (p *VadPipeline) Quit() {
 	p.loop.Quit()
 }
 
-func (p *VadPipeline) Run() {
+func (p *VadPipeline) Start() {
 	p.loop.Run()
 }
 
@@ -138,11 +144,16 @@ func (p *VadPipeline) SetState(state gst.State) error {
 	return p.pipeline.SetState(state)
 }
 
-// PullSamples is a dedicated goroutine that only pulls samples from the GStreamer pipeline.
+// Run is a dedicated goroutine that only pulls samples from the GStreamer pipeline.
 // It calculates the RMS and passes it to other goroutines for processing, but never
 // modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
-func (p *VadPipeline) PullSamples(wg *sync.WaitGroup, rmsDisplayChan chan<- float64, vadControlChan chan<- float64) {
-	defer wg.Done()
+func (p *VadPipeline) Run() {
+	// This goroutine is the producer for the display and VAD channels.
+	// By Go convention, the producer is responsible for closing the channel
+	// to signal to consumers that no more data will be sent.
+	defer close(p.rmsDisplayChan)
+	defer close(p.vadControlChan)
+	defer p.wg.Done()
 
 	for {
 		// Check for End-of-Stream first to ensure a clean exit. This is the
@@ -183,13 +194,13 @@ func (p *VadPipeline) PullSamples(wg *sync.WaitGroup, rmsDisplayChan chan<- floa
 
 			// Send to display goroutine (non-blocking)
 			select {
-			case rmsDisplayChan <- normalizedRms:
+			case p.rmsDisplayChan <- normalizedRms:
 			default:
 			}
 
 			// Send to VAD controller goroutine (non-blocking)
 			select {
-			case vadControlChan <- normalizedRms:
+			case p.vadControlChan <- normalizedRms:
 			default:
 			}
 		}

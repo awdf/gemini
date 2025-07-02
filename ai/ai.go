@@ -27,10 +27,15 @@ type AI struct {
 	ctx                 context.Context
 	client              *genai.Client
 	conversationHistory []*genai.Content
+	wg                  *sync.WaitGroup
+	pipeline            *pipeline.VadPipeline
+	fVoice              bool
+	aiEnabled           bool
+	fileChan            <-chan string
 }
 
 // NewAI creates a new AI instance, initializing the client and conversation history.
-func NewAI() *AI {
+func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string) *AI {
 	ctx := context.Background()
 	client := helpers.Control(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
@@ -38,18 +43,25 @@ func NewAI() *AI {
 	}))
 
 	return &AI{
-		ctx:    ctx,
-		client: client,
+		ctx:       ctx,
+		client:    client,
+		wg:        wg,
+		pipeline:  pipeline,
+		fVoice:    fVoice,
+		aiEnabled: aiEnabled,
+		fileChan:  fileChan,
 	}
 }
 
-func (a *AI) Chat(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string) {
-	defer wg.Done()
+// Run is the main loop for the AI component. It listens for completed audio files,
+// sends them for processing, and handles the response.
+func (a *AI) Run() {
+	defer a.wg.Done()
 
-	if !aiEnabled {
+	if !a.aiEnabled {
 		log.Println("AI Chat processor is disabled. Draining file channel to prevent blocking.")
 		// We must still consume from the channel to prevent the recorder from blocking.
-		for file := range fileChan {
+		for file := range a.fileChan {
 			if DEBUG {
 				log.Printf("AI disabled, discarding file: %s", file)
 			}
@@ -59,11 +71,11 @@ func (a *AI) Chat(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice boo
 		return
 	}
 
-	for file := range fileChan {
+	for file := range a.fileChan {
 		log.Printf("Chat: Processing %s", file)
 
-		a.withPipelinePausedIfVoice(pipeline, fVoice, func() {
-			err := a.VoiceQuestion(file, config.C.AI.MainPrompt, fVoice)
+		a.withPipelinePausedIfVoice(a.pipeline, a.fVoice, func() {
+			err := a.VoiceQuestion(file, config.C.AI.MainPrompt, a.fVoice)
 			if err != nil {
 				// If there was an error, log it and DO NOT delete the file.
 				log.Printf("ERROR: AI processing failed for %s, leaving file for retry: %v", file, err)

@@ -21,17 +21,21 @@ type VADEngine struct {
 	warmupEndTime   time.Time
 	fileCounter     int
 	fileControlChan chan<- string
+	wg              *sync.WaitGroup
+	vadControlChan  <-chan float64
 }
 
 // NewVAD creates a new VAD controller.
-func NewVAD(fileControlChan chan<- string) *VADEngine {
+func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-chan float64) *VADEngine {
 	// Get the warm-up duration from the configuration.
 	warmupDuration := config.C.VAD.WarmUpDuration()
 	if warmupDuration > 0 {
 		log.Printf("VAD initialised with a warm-up period of %s", warmupDuration)
 	}
 	return &VADEngine{
+		wg:              wg,
 		fileControlChan: fileControlChan,
+		vadControlChan:  vadControlChan,
 		// Set the time when the warm-up period will be over.
 		warmupEndTime: time.Now().Add(warmupDuration),
 	}
@@ -91,12 +95,12 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 	}
 }
 
-// Controller is a dedicated goroutine that listens for RMS values and controls the
+// Run is a dedicated goroutine that listens for RMS values and controls the
 // recording valve. Isolating this GStreamer state change into its own goroutine
 // is critical for preventing deadlocks.
-func (v *VADEngine) Controller(wg *sync.WaitGroup, vadControlChan <-chan float64) {
-	defer wg.Done()
-	for rms := range vadControlChan {
+func (v *VADEngine) Run() {
+	defer v.wg.Done()
+	for rms := range v.vadControlChan {
 		if DEBUG {
 			log.Println("VAD received RMS")
 		}

@@ -27,9 +27,12 @@ type Recorder struct {
 	isWriting     bool
 	recordingSink *app.Sink
 	Element       *gst.Element
+	wg            *sync.WaitGroup
+	controlChan   <-chan string
+	fileChan      chan<- string
 }
 
-func NewRecorderSink() *Recorder {
+func NewRecorderSink(wg *sync.WaitGroup, controlChan <-chan string, fileChan chan<- string) *Recorder {
 	var r Recorder
 	// Use a second appsink for the recording branch. This allows Go to handle
 	// file I/O, giving us the flexibility to create new files on the fly.
@@ -39,13 +42,16 @@ func NewRecorderSink() *Recorder {
 	// Set a max buffer to prevent runaway memory usage and add stability.
 	r.recordingSink.SetMaxBuffers(10)
 	r.Element = r.recordingSink.Element
+	r.wg = wg
+	r.controlChan = controlChan
+	r.fileChan = fileChan
 	return &r
 }
 
-// FileWriter is a dedicated goroutine for writing encoded audio data to files.
+// Run is a dedicated goroutine for writing encoded audio data to files.
 // It listens for control messages to start new files and finalize (and potentially delete) old ones.
-func (r *Recorder) FileWriter(wg *sync.WaitGroup, controlChan <-chan string, fileChan chan<- string) {
-	defer wg.Done()
+func (r *Recorder) Run() {
+	defer r.wg.Done()
 
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
 	ticker := time.NewTicker(20 * time.Millisecond)
@@ -58,11 +64,11 @@ func (r *Recorder) FileWriter(wg *sync.WaitGroup, controlChan <-chan string, fil
 		}
 
 		select {
-		case cmd, ok := <-controlChan:
+		case cmd, ok := <-r.controlChan:
 			if !ok { // Channel closed, shutdown.
 				if r.currentWav != nil {
 					// Final cleanup if a file was open.
-					r.finalizeAndSend(fileChan)
+					r.finalizeAndSend(r.fileChan)
 				}
 				log.Println("Recording is finished")
 				return
@@ -73,7 +79,7 @@ func (r *Recorder) FileWriter(wg *sync.WaitGroup, controlChan <-chan string, fil
 				// If a previous file was being written, finalize it first.
 				if r.currentWav != nil {
 					log.Printf("Warning: START received while a recording was in progress. Finalizing previous file.")
-					r.finalizeAndSend(fileChan)
+					r.finalizeAndSend(r.fileChan)
 				}
 				var err error
 				r.currentWav, err = audio.NewWavFile(filename)
@@ -90,7 +96,7 @@ func (r *Recorder) FileWriter(wg *sync.WaitGroup, controlChan <-chan string, fil
 				if r.currentWav != nil && r.currentWav.Filename() != filename {
 					log.Printf("Warning: STOP command for '%s' received, but current recording is '%s'. Finalizing current recording.", filename, r.currentWav.Filename())
 				}
-				r.finalizeAndSend(fileChan) // Finalize the current recording.
+				r.finalizeAndSend(r.fileChan) // Finalize the current recording.
 				r.isWriting = false
 			}
 
