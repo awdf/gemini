@@ -20,7 +20,7 @@ EnableTools = true # Set to true to enable tools like Google Search. This may in
 
 [vad]
 # The normalized RMS level below which we consider the audio to be silent.
-SilenceThreshold = 0.1
+SilenceThreshold = 0.02
 # The amount of time in seconds to continue recording after the audio level drops below the silence threshold.
 HangoverDurationSec = 2.0
 # Duration to ignore audio at startup to allow the pipeline to stabilize.
@@ -40,6 +40,6 @@ UpdateIntervalMs = 50
 
 [pipeline]
 # Physical sound device for input (Default system device by default)
-# Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 # GStreamer source buffer time in microseconds. Helps prevent race conditions.
 BufferTimeUs = 500000

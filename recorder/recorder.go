@@ -125,7 +125,9 @@ func (r *Recorder) finalizeAndSend(fileChan chan<- string) {
 		os.Remove(filename)
 	} else {
 		log.Printf("Finished recording to %s (%d bytes), sending for processing.", filename, size)
-		fileChan <- filename
+		if helpers.SafeSend(fileChan, filename) {
+			log.Printf("Could not send %s for processing, AI channel is closed.", filename)
+		}
 	}
 
 	// Reset for the next recording.
@@ -201,7 +203,10 @@ func (r *Recorder) ProcessExistingRecordings(aiOnDemandChan chan<- string) int {
 	log.Printf("Found %d existing recordings. Queueing for processing.", len(recordings))
 	for _, rec := range recordings {
 		log.Printf("Queueing existing recording: %s", rec.name)
-		aiOnDemandChan <- rec.name
+		if helpers.SafeSend(aiOnDemandChan, rec.name) {
+			log.Println("Could not queue existing recordings, AI channel is closed. Aborting.")
+			break
+		}
 	}
 
 	// The highest number is in the last element of the sorted slice.

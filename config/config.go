@@ -97,7 +97,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
 	defaultConfig.AI.EnableTools = true
-	defaultConfig.VAD.SilenceThreshold = 0.1
+	defaultConfig.VAD.SilenceThreshold = 0.02
 	defaultConfig.VAD.HangoverDurationSec = 2.0
 	defaultConfig.Recorder.MinFileSizeBytes = 600000
 	defaultConfig.Display.BarWidth = 100

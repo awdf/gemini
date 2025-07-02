@@ -27,6 +27,7 @@ import (
 var (
 	voicePtr  = flag.Bool("voice", false, "Enable voice responses from the AI")
 	configPtr = flag.String("config", "config.toml", "Path to the configuration file")
+	aiOffPtr  = flag.Bool("no-ai", false, "Disable AI processing, only record audio")
 )
 
 // App encapsulates the application's state and main components.
@@ -42,14 +43,16 @@ type App struct {
 	aiOnDemandChan  chan string
 	wg              *sync.WaitGroup
 	voiceEnabled    bool
+	aiEnabled       bool
 }
 
 // NewApp creates and initializes a new application instance.
 // It sets up all components and channels, making the App ready to run.
-func NewApp(voiceEnabled bool) *App {
+func NewApp(voiceEnabled, aiEnabled bool) *App {
 	app := &App{
 		wg:           &sync.WaitGroup{},
 		voiceEnabled: voiceEnabled,
+		aiEnabled:    aiEnabled,
 	}
 
 	app.initLogging()
@@ -80,7 +83,7 @@ func main() {
 	// Initialize GStreamer. This should be called once per application.
 	gst.Init(nil)
 
-	NewApp(*voicePtr).run()
+	NewApp(*voicePtr, !*aiOffPtr).run()
 }
 
 func (app *App) run() {
@@ -113,7 +116,7 @@ func (app *App) run() {
 	// Routine 4. Start the file writer goroutine.
 	go app.recorder.FileWriter(app.wg, app.fileControlChan, app.aiOnDemandChan)
 	// Routine 5. Start the AI Chat goroutine.
-	go app.ai.Chat(app.wg, app.pipeline, app.voiceEnabled, app.aiOnDemandChan)
+	go app.ai.Chat(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan)
 
 	// Start the pipeline
 	helpers.Verify(app.pipeline.SetState(gst.StatePlaying))
@@ -158,6 +161,10 @@ func (app *App) initLogging() {
 	log.SetOutput(app.logFile)
 	log.SetPrefix("\x20")
 	log.Println("### Application started!!!")
+
+	if !app.aiEnabled {
+		log.Print("AI processing is disabled. The application will only record audio.")
+	}
 
 	// Enable voice responses
 	if app.voiceEnabled {

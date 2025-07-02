@@ -43,8 +43,21 @@ func NewAI() *AI {
 	}
 }
 
-func (a *AI) Chat(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, fileChan <-chan string) {
+func (a *AI) Chat(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string) {
 	defer wg.Done()
+
+	if !aiEnabled {
+		log.Println("AI Chat processor is disabled. Draining file channel to prevent blocking.")
+		// We must still consume from the channel to prevent the recorder from blocking.
+		for file := range fileChan {
+			if DEBUG {
+				log.Printf("AI disabled, discarding file: %s", file)
+			}
+			// Discard file by doing nothing with it.
+		}
+		log.Println("AI Chat work finished (disabled).")
+		return
+	}
 
 	for file := range fileChan {
 		log.Printf("Chat: Processing %s", file)
