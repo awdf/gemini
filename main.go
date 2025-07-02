@@ -15,12 +15,10 @@ import (
 	"capgemini.com/config"
 	"capgemini.com/display"
 	"capgemini.com/flow"
-	"capgemini.com/helpers"
 	"capgemini.com/pipeline"
 	"capgemini.com/recorder"
 	"capgemini.com/vad"
 
-	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
 )
 
@@ -91,7 +89,7 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 func main() {
 	// Parse command-line flags
 	flag.Parse()
-	flow.Controls()
+	flow.EnableControl()
 
 	// Load the configuration
 	config.Load(*configPtr)
@@ -106,36 +104,21 @@ func (app *App) run() {
 	// Defer shutdown to ensure it runs when the function exits.
 	defer app.shutdown()
 
-	go func() {
-		<-*flow.GetListener()
-		log.Println("Interrupt received, initiating shutdown...")
-		// 1. Signal to end pipeline work
-		app.pipeline.SendEvent(gst.NewEOSEvent())
-		// 2. Schedule MainLoop.Quit() to be called from the main GStreamer thread.
-		// This is the safest way to interact with the pipeline from a different
-		// thread. This will cause mainLoop.Run() to return, allowing a clean shutdown.
-		glib.IdleAdd(func() bool {
-			app.pipeline.Quit()
-			return false // Do not call again
-		})
-	}()
-
 	// Launch all runnable components as goroutines.
 	for _, r := range app.runnables {
 		app.join(r)
 	}
 
-	// Start the pipeline
-	helpers.Verify(app.pipeline.SetState(gst.StatePlaying))
-
-	log.Println("Listening for audio... Recording will start when sound is detected. Press Ctrl+C to exit.")
-
 	// Process existing files and get the last file index to avoid overwrites.
-	lastFileIndex := app.recorder.ProcessExistingRecordings(app.aiOnDemandChan)
+	lastFileIndex := app.recorder.ProcessExistingRecordings()
 	app.vadEngine.SetFileCounter(lastFileIndex)
 
+	// Start the pipeline
+	app.pipeline.Play()
+	log.Println("Listening for audio... Recording will start when sound is detected. Press Ctrl+C to exit.")
+
 	// Block until the pipeline's bus signals EOS or an error.
-	app.pipeline.Start()
+	app.pipeline.Loop()
 }
 
 func (app *App) join(r Runnable) {
@@ -145,15 +128,11 @@ func (app *App) join(r Runnable) {
 
 func (app *App) shutdown() {
 	log.Println("Stopping pipeline...")
-	// Clean up
-	// The rmsDisplayChan and vadControlChan are closed by their producer, the PullSamples goroutine.
-	// This is the idiomatic Go way to handle channel lifecycle and prevent race conditions on shutdown.
-	close(app.fileControlChan)
-	close(app.aiOnDemandChan)
 
-	// Set the pipeline to NULL state. This is a blocking call that will tear down
-	// the pipeline and cause sink.PullSample() to unblock and return nil.
-	app.pipeline.SetState(gst.StateNull)
+	// The main event loop has already been stopped when this function is called.
+	// We call the pipeline's Stop method, which is designed to handle this state
+	// and set the pipeline to NULL safely.
+	app.pipeline.Stop()
 	log.Println("Pipeline stopped.")
 
 	// Now that the pipeline is stopped, wait for the processing goroutines to finish their cleanup.

@@ -13,8 +13,6 @@ import (
 	"capgemini.com/display"
 	"capgemini.com/helpers"
 	"capgemini.com/pipeline"
-	"github.com/go-gst/go-glib/glib"
-	"github.com/go-gst/go-gst/gst"
 	"google.golang.org/genai"
 )
 
@@ -273,18 +271,6 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 	return fullResponseText, nil
 }
 
-// setPipelineState safely sets the pipeline's state by scheduling the call
-// on the main GLib context and waiting for it to complete.
-func setPipelineState(p *pipeline.VadPipeline, state gst.State) {
-	done := make(chan struct{})
-	glib.IdleAdd(func() bool {
-		p.SetState(state)
-		close(done)
-		return false // Do not call again
-	})
-	<-done
-}
-
 // withPipelinePausedIfVoice pauses and resumes the pipeline if voice is enabled,
 // executing the provided action in between. It uses a defer to ensure the pipeline
 // is always resumed.
@@ -295,11 +281,11 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, fVoice bool, act
 	}
 
 	log.Println("Pausing listening pipeline for AI response...")
-	setPipelineState(p, gst.StatePaused)
+	p.Pause()
 
 	defer func() {
 		log.Println("Resuming listening pipeline...")
-		setPipelineState(p, gst.StatePlaying)
+		p.Play()
 	}()
 
 	action()

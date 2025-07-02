@@ -9,6 +9,7 @@ import (
 
 	"capgemini.com/audio" // Import the audio package for WAV constants
 	"capgemini.com/config"
+	"capgemini.com/flow"
 	"capgemini.com/helpers"
 	"capgemini.com/recorder"
 
@@ -124,26 +125,79 @@ func (p *VadPipeline) mainLoop() {
 	})
 }
 
-func (p *VadPipeline) Quit() {
-	p.loop.Quit()
-}
-
-func (p *VadPipeline) Start() {
-	p.loop.Run()
-}
-
 func (p *VadPipeline) SendEvent(event *gst.Event) {
 	p.pipeline.SendEvent(event)
 }
 
-func (p *VadPipeline) SetState(state gst.State) error {
-	return p.pipeline.SetState(state)
+// setPipelineStateAndWait schedules a state change on the main GLib context
+// and blocks until it is complete. This is for making state changes from
+// goroutines other than the main GStreamer/GLib thread.
+func (p *VadPipeline) setPipelineStateAndWait(state gst.State) {
+	done := make(chan struct{})
+	glib.IdleAdd(func() bool {
+		helpers.Verify(p.pipeline.SetState(state))
+		close(done)
+		return false // Do not call again
+	})
+	<-done
+}
+
+func (p *VadPipeline) Play() {
+	// This method is called from a glib.IdleAdd context, so it's
+	// executing on the main GStreamer thread. It's safe to set the state directly
+	// without scheduling another task, which would cause a deadlock.
+	glib.IdleAdd(func() bool {
+		helpers.Verify(p.pipeline.SetState(gst.StatePlaying))
+		return false // Do not call again
+	})
+}
+
+func (p *VadPipeline) Pause() {
+	// Pause is called from the AI goroutine, so it must use the wait helper.
+	p.setPipelineStateAndWait(gst.StatePaused)
+}
+
+func (p *VadPipeline) Stop() {
+	// The main loop is stopped when this is called from app.shutdown(), so using
+	// glib.IdleAdd in setPipelineState would deadlock. We can call SetState
+	// directly as it's safe to do from the main thread after the loop has exited.
+	helpers.Verify(p.pipeline.SetState(gst.StateNull))
+}
+
+func (p *VadPipeline) Loop() {
+	go func() {
+		<-*flow.GetListener()
+		p.Abort("Interrupt received, pipline will be initiating shutdown...")
+	}()
+
+	p.loop.Run()
+}
+
+func (p *VadPipeline) Abort(reason string) {
+	log.Println(reason)
+	// 1. Signal to end pipeline work
+	p.SendEvent(gst.NewEOSEvent())
+	// 2. Schedule MainLoop.Quit() to be called from the main GStreamer thread.
+	// This is the safest way to interact with the pipeline from a different
+	// thread. This will cause mainLoop.Run() to return, allowing a clean shutdown.
+	p.Quit()
+}
+
+func (p *VadPipeline) Quit() {
+	glib.IdleAdd(func() bool {
+		p.loop.Quit()
+		return false // Do not call again
+	})
 }
 
 // Run is a dedicated goroutine that only pulls samples from the GStreamer pipeline.
 // It calculates the RMS and passes it to other goroutines for processing, but never
 // modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
 func (p *VadPipeline) Run() {
+	// When this goroutine exits for any reason (e.g., EOS, error), we must
+	// ensure the main GStreamer loop is also terminated to prevent a hang.
+	defer p.Quit()
+
 	// This goroutine is the producer for the display and VAD channels.
 	// By Go convention, the producer is responsible for closing the channel
 	// to signal to consumers that no more data will be sent.
@@ -151,7 +205,14 @@ func (p *VadPipeline) Run() {
 	defer close(p.vadControlChan)
 	defer p.wg.Done()
 
+	p.vadSink.GetState(gst.StatePlaying, gst.ClockTimeNone)
+
+	// Give the pipeline a moment to settle. If the source failed to start,
+	// this delay gives the GStreamer bus time to deliver an error message
+	// before this goroutine detects the EOS and triggers a shutdown.
+	time.Sleep(200 * time.Millisecond)
 	for {
+
 		// Check for End-of-Stream first to ensure a clean exit. This is the
 		// condition that will terminate this goroutine's loop.
 		if p.vadSink.IsEOS() {

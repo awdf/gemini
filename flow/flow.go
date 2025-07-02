@@ -13,7 +13,7 @@ var (
 	listeners  = make([]*chan os.Signal, 0)
 )
 
-func Controls() {
+func EnableControl() {
 	signal.Notify(signalChan, syscall.SIGINT)
 	signal.Notify(signalChan, syscall.SIGTERM)
 	signal.Notify(signalChan, syscall.SIGQUIT)
@@ -32,6 +32,14 @@ func Terminate() {
 	signalChan <- syscall.SIGTERM
 }
 
+func Quit() {
+	signalChan <- syscall.SIGQUIT
+}
+
+func Interrupt() {
+	signalChan <- syscall.SIGINT
+}
+
 func processSignal() {
 	for sig := range signalChan {
 		signal.Reset(sig)
@@ -48,7 +56,6 @@ func processSignal() {
 }
 
 func handle(sig os.Signal) {
-
 	if len(listeners) == 0 {
 		log.Fatalf("service exiting, reason - signal \"%s\"", sig)
 	}
@@ -56,5 +63,4 @@ func handle(sig os.Signal) {
 	for _, l := range listeners {
 		*l <- sig
 	}
-
 }

@@ -47,6 +47,7 @@ func NewRecorderSink(wg *sync.WaitGroup, controlChan <-chan string, fileChan cha
 // Run is a dedicated goroutine for writing encoded audio data to files.
 // It listens for control messages to start new files and finalize (and potentially delete) old ones.
 func (r *Recorder) Run() {
+	defer close(r.fileChan)
 	defer r.wg.Done()
 
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
@@ -64,7 +65,7 @@ func (r *Recorder) Run() {
 			if !ok { // Channel closed, shutdown.
 				if r.currentWav != nil {
 					// Final cleanup if a file was open.
-					r.finalizeAndSend(r.fileChan)
+					r.finalizeAndSend()
 				}
 				log.Println("Recording is finished")
 				return
@@ -75,7 +76,7 @@ func (r *Recorder) Run() {
 				// If a previous file was being written, finalize it first.
 				if r.currentWav != nil {
 					log.Printf("Warning: START received while a recording was in progress. Finalizing previous file.")
-					r.finalizeAndSend(r.fileChan)
+					r.finalizeAndSend()
 				}
 				var err error
 				r.currentWav, err = audio.NewWavFile(filename)
@@ -92,7 +93,7 @@ func (r *Recorder) Run() {
 				if r.currentWav != nil && r.currentWav.Filename() != filename {
 					log.Printf("Warning: STOP command for '%s' received, but current recording is '%s'. Finalizing current recording.", filename, r.currentWav.Filename())
 				}
-				r.finalizeAndSend(r.fileChan) // Finalize the current recording.
+				r.finalizeAndSend() // Finalize the current recording.
 				r.isWriting = false
 			}
 
@@ -106,7 +107,7 @@ func (r *Recorder) Run() {
 
 // finalizeAndSend closes the current WAV file, decides whether to keep it,
 // and sends it for processing if valid.
-func (r *Recorder) finalizeAndSend(fileChan chan<- string) {
+func (r *Recorder) finalizeAndSend() {
 	if r.currentWav == nil {
 		return
 	}
@@ -127,9 +128,10 @@ func (r *Recorder) finalizeAndSend(fileChan chan<- string) {
 		os.Remove(filename)
 	} else {
 		log.Printf("Finished recording to %s (%d bytes), sending for processing.", filename, size)
-		if helpers.SafeSend(fileChan, filename) {
-			log.Printf("Could not send %s for processing, AI channel is closed.", filename)
-		}
+		r.fileChan <- filename
+		// if helpers.SafeSend(r.fileChan, filename) {
+		// 	log.Printf("Could not send %s for processing, AI channel is closed.", filename)
+		// }
 	}
 
 	// Reset for the next recording.
@@ -164,7 +166,7 @@ func (r *Recorder) pullAndWriteSamples() {
 
 // ProcessExistingRecordings scans the current directory for unprocessed recordings,
 // queues them for AI processing, and returns the highest recording number found.
-func (r *Recorder) ProcessExistingRecordings(aiOnDemandChan chan<- string) int {
+func (r *Recorder) ProcessExistingRecordings() int {
 	log.Println("Checking for existing recordings to process...")
 
 	files, err := os.ReadDir(".")
@@ -205,7 +207,7 @@ func (r *Recorder) ProcessExistingRecordings(aiOnDemandChan chan<- string) int {
 	log.Printf("Found %d existing recordings. Queueing for processing.", len(recordings))
 	for _, rec := range recordings {
 		log.Printf("Queueing existing recording: %s", rec.name)
-		if helpers.SafeSend(aiOnDemandChan, rec.name) {
+		if helpers.SafeSend(r.fileChan, rec.name) {
 			log.Println("Could not queue existing recordings, AI channel is closed. Aborting.")
 			break
 		}

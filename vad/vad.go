@@ -95,7 +95,9 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 // recording valve. Isolating this GStreamer state change into its own goroutine
 // is critical for preventing deadlocks.
 func (v *VADEngine) Run() {
+	defer close(v.fileControlChan)
 	defer v.wg.Done()
+
 	for rms := range v.vadControlChan {
 		if config.C.Debug {
 			log.Println("VAD received RMS")
