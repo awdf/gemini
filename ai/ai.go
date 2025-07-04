@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"iter"
@@ -10,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"capgemini.com/audio"
 	"capgemini.com/config"
 	"capgemini.com/display"
 	"capgemini.com/helpers"
 	"capgemini.com/pipeline"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/genai"
 )
 
@@ -29,6 +32,7 @@ type AI struct {
 	fVoice              bool
 	aiEnabled           bool
 	fileChan            <-chan string
+	initialFileParts    []*genai.Part
 	cache               *genai.CachedContent
 }
 
@@ -41,20 +45,22 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEn
 	}))
 
 	ai := &AI{
-		ctx:       ctx,
-		client:    client,
-		wg:        wg,
-		pipeline:  pipeline,
-		fVoice:    fVoice,
-		aiEnabled: aiEnabled,
-		fileChan:  fileChan,
-		cache:     nil,
+		ctx:              ctx,
+		client:           client,
+		wg:               wg,
+		pipeline:         pipeline,
+		fVoice:           fVoice,
+		aiEnabled:        aiEnabled,
+		fileChan:         fileChan,
+		initialFileParts: nil,
+		cache:            nil,
 	}
 
 	if config.C.AI.EnableCache {
 		ai.uploadCache()
 	} else {
-		log.Println("AI Caching is disabled by configuration.")
+		log.Println("AI Caching is disabled. Preparing files to be included in the first message.")
+		ai.prepareInitialFiles()
 	}
 
 	return ai
@@ -82,10 +88,16 @@ func (a *AI) Run() {
 		log.Printf("Chat: Processing %s", file)
 
 		a.withPipelinePausedIfVoice(a.pipeline, a.fVoice, func() {
-			err := a.VoiceQuestion(file, config.C.AI.MainPrompt, a.fVoice)
+			// Define the action to be retried.
+			action := func() error {
+				return a.VoiceQuestion(file, config.C.AI.MainPrompt, a.fVoice)
+			}
+
+			// Execute the action with retry logic.
+			err := a.retryWithBackoff(action)
 			if err != nil {
 				// If there was an error, log it and DO NOT delete the file.
-				log.Printf("ERROR: AI processing failed for %s, leaving file for retry: %v", file, err)
+				log.Printf("ERROR: AI processing failed for %s after all retries, leaving file for manual processing: %v", file, err)
 			} else {
 				// Only remove the file if processing was successful.
 				log.Printf("Chat: Successfully processed %s. Removing file.", file)
@@ -95,6 +107,49 @@ func (a *AI) Run() {
 	}
 
 	log.Println("AI Chat work finished")
+}
+
+// retryWithBackoff wraps an action with a retry mechanism, using exponential backoff for specific, transient errors.
+func (a *AI) retryWithBackoff(action func() error) error {
+	maxRetries := config.C.AI.Retry.MaxRetries
+	initialDelay := time.Duration(config.C.AI.Retry.InitialDelayMs) * time.Millisecond
+	maxDelay := time.Duration(config.C.AI.Retry.MaxDelayMs) * time.Millisecond
+
+	var lastErr error
+	delay := initialDelay
+
+	for i := 0; i <= maxRetries; i++ { // Total attempts = 1 (initial) + maxRetries
+		lastErr = action()
+		if lastErr == nil {
+			return nil // Success
+		}
+
+		// Stop if this was the last attempt.
+		if i == maxRetries {
+			break
+		}
+
+		// Check if the error is a googleapi.Error and if it's a retryable status code.
+		var gerr *googleapi.Error
+		if errors.As(lastErr, &gerr) {
+			// Retry on 500 (Internal Server Error), 503 (Service Unavailable), and 429 (Resource Exhausted/Rate Limiting).
+			if gerr.Code == 500 || gerr.Code == 503 || gerr.Code == 429 {
+				log.Printf("Retryable error detected (code %d). Retrying in %v... (Retry %d of %d)", gerr.Code, delay, i+1, maxRetries)
+				time.Sleep(delay)
+				// Exponential backoff
+				delay *= 2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+				continue // Try again
+			}
+		}
+
+		// If the error is not nil and not a retryable API error, return it immediately.
+		return lastErr
+	}
+
+	return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
 }
 
 func (a *AI) TextQuestion(prompt string, fVoice bool) {
@@ -145,7 +200,12 @@ func (a *AI) VoiceQuestionWithTools(wavPath string, prompt string, fVoice bool) 
 		return nil // Not an error, just silence or non-speech audio.
 	}
 
-	log.Printf("Transcript: %s\n", transcript)
+	//IMPORTANT: Never participate in the voice answer.
+	//Output method is not acceptable here
+	formatter := display.NewFormatter()
+	formatter.Println("Transcript:\n", display.ColorCyan)
+	formatter.Print(transcript)
+	fmt.Println()
 
 	// Step 2: Use the transcript to ask the main question. This call CAN use tools.
 	log.Println("Request 2: Generating response from transcript...")
@@ -307,6 +367,14 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, fVoice bool, act
 // generateAndProcessContent is a universal method to generate content from a set of parts,
 // process the streamed response, and update the conversation history.
 func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool) error {
+	// Check if we have initial files to prepend
+	if len(a.initialFileParts) > 0 {
+		log.Println("Prepending initial files to the first message.")
+		// Prepend the initial file parts to the current message parts
+		parts = append(a.initialFileParts, parts...)
+		// Clear the initial parts so they are only sent once
+		a.initialFileParts = nil
+	}
 	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
 	contents := append(a.conversationHistory, userContent)
 
@@ -410,6 +478,53 @@ func (a *AI) AnswerWithVoice(prompt string) error {
 	return fmt.Errorf("no audio data received from API")
 }
 
+// prepareInitialFiles reads files from the cache directory and prepares them to be
+// included as context in the first message when caching is disabled.
+func (a *AI) prepareInitialFiles() {
+	cacheDir := config.C.AI.CacheDir
+	if cacheDir == "" {
+		return // Silently return if no dir is configured
+	}
+
+	files, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("ERROR: failed to read cache directory %s: %v", cacheDir, err)
+		}
+		return
+	}
+
+	var filesToInclude []fs.DirEntry
+	for _, file := range files {
+		if !file.IsDir() && file.Name() != ".gitkeep" {
+			filesToInclude = append(filesToInclude, file)
+		}
+	}
+
+	if len(filesToInclude) == 0 {
+		return
+	}
+
+	log.Printf("Found %d files to include in the first message.", len(filesToInclude))
+
+	var parts []*genai.Part
+	// Add the system prompt for the files first.
+	if config.C.AI.CacheSystemPrompt != "" {
+		parts = append(parts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
+	}
+
+	for _, file := range filesToInclude {
+		localPath := filepath.Join(cacheDir, file.Name())
+		part, err := a.createPartFromFile(localPath)
+		if err != nil {
+			log.Printf("ERROR: could not prepare file %s for history: %v", localPath, err)
+			continue
+		}
+		parts = append(parts, part)
+	}
+	a.initialFileParts = parts
+}
+
 // uploadCache finds all files in the configured cache directory, uploads them,
 // and creates a single cache for the model to use in subsequent conversations.
 func (a *AI) uploadCache() {
@@ -450,13 +565,7 @@ func (a *AI) uploadCache() {
 	var cacheContents []*genai.Content
 	for _, file := range filesToCache {
 		localPath := filepath.Join(cacheDir, file.Name())
-		mimeType := mime.TypeByExtension(filepath.Ext(file.Name()))
-		if mimeType == "" {
-			mimeType = "application/octet-stream" // Fallback
-		}
-
-		log.Printf("Preparing %s for cache with MIME type %s...", localPath, mimeType)
-		content, err := a.createContentFromFile(localPath, mimeType)
+		content, err := a.createContentFromFile(localPath)
 		if err != nil {
 			log.Printf("ERROR: could not create content for %s: %v", localPath, err)
 			continue // Skip this file and try the next
@@ -472,21 +581,31 @@ func (a *AI) uploadCache() {
 	}
 }
 
-// createContentFromFile uploads a single file and wraps it in a *genai.Content object.
-func (a *AI) createContentFromFile(localPath string, mimeType string) (*genai.Content, error) {
+// createPartFromFile uploads a single file and returns a *genai.Part object.
+func (a *AI) createPartFromFile(localPath string) (*genai.Part, error) {
+	mimeType := mime.TypeByExtension(filepath.Ext(localPath))
+	if mimeType == "" {
+		mimeType = "application/octet-stream" // Fallback
+	}
+	log.Printf("Uploading %s with MIME type %s...", localPath, mimeType)
 	document, err := a.client.Files.UploadFromPath(
 		a.ctx,
 		localPath,
-		&genai.UploadFileConfig{
-			MIMEType: mimeType,
-		},
+		&genai.UploadFileConfig{MIMEType: mimeType},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to upload cache file %s: %w", localPath, err)
+		return nil, fmt.Errorf("failed to upload file %s: %w", localPath, err)
 	}
-	parts := []*genai.Part{
-		genai.NewPartFromURI(document.URI, document.MIMEType),
+	return genai.NewPartFromURI(document.URI, document.MIMEType), nil
+}
+
+// createContentFromFile uploads a single file and wraps it in a *genai.Content object.
+func (a *AI) createContentFromFile(localPath string) (*genai.Content, error) {
+	part, err := a.createPartFromFile(localPath)
+	if err != nil {
+		return nil, err
 	}
+	parts := []*genai.Part{part}
 	// The role for file data is 'user'
 	return genai.NewContentFromParts(parts, genai.RoleUser), nil
 }

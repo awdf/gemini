@@ -37,6 +37,7 @@ type AIConfig struct {
 	CacheDir            string
 	CacheSystemPrompt   string
 	EnableCache         bool
+	Retry               RetryConfig
 }
 
 // VADConfig holds settings for the Voice Activity Detector.
@@ -61,6 +62,13 @@ type DisplayConfig struct {
 type PipelineConfig struct {
 	BufferTimeUs int64
 	Device       string
+}
+
+// RetryConfig holds settings for API call retries.
+type RetryConfig struct {
+	MaxRetries     int
+	InitialDelayMs int
+	MaxDelayMs     int
 }
 
 // Load reads the configuration from the specified file path.
@@ -99,14 +107,17 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Voice = "Kore"
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}" // You can set this directly or use an environment variable.
-	defaultConfig.AI.MainPrompt = "You are a helpful voice assistant. Based on the transcript, please provide a transcript and concise and accurate response. Respond in the same language as the transcript."
-	defaultConfig.AI.SystemPrompt = ""
+	defaultConfig.AI.MainPrompt = "Based on the transcript, please provide a transcript and concise and accurate response. Respond in the same language as the transcript."
+	defaultConfig.AI.SystemPrompt = "You are a helpful voice assistant."
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
 	defaultConfig.AI.EnableTools = true
 	defaultConfig.AI.CacheDir = "cache"
-	defaultConfig.AI.CacheSystemPrompt = "You are an expert in software development. The following files are provided as context for our conversation."
+	defaultConfig.AI.CacheSystemPrompt = "The following files are provided as context for our conversation."
 	defaultConfig.AI.EnableCache = false
+	defaultConfig.AI.Retry.MaxRetries = 3
+	defaultConfig.AI.Retry.InitialDelayMs = 1000
+	defaultConfig.AI.Retry.MaxDelayMs = 10000
 	defaultConfig.VAD.SilenceThreshold = 0.02
 	defaultConfig.VAD.HangoverDurationSec = 2.0
 	defaultConfig.Recorder.MinFileSizeBytes = 600000

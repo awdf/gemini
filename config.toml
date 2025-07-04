@@ -13,17 +13,24 @@ ModelTTS = "gemini-2.5-flash-preview-tts"
 Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
 SystemPrompt = "You are expert in software development. It is your interview process."
 TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
-MainPrompt = """Based on the transcript, please provide a transcript and concise and accurate response.
-Respond in the same language as the transcript.
+MainPrompt = """Based on the transcript, please provide both concise and accurate response.
+In case of questions about your developer life or your person, find any human like answer.
+Respond in the same language as the transcript. 
 """
 Thinking = 512 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
 Thoughts = false
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
 
-#Enable it manualy in case of model support cache
+#Enable it manualy in case of model support cache. Paid tier 1+.
 EnableCache = false # Set to true to enable caching. Note: Not all models or API tiers support caching.
 CacheDir = "cache" #All files from this path will be added to cache
-CacheSystemPrompt = "You are an expert in software development. The following files are provided as context for our conversation."
+CacheSystemPrompt = "The following files are provided as context for our conversation."
+
+[ai.retry]
+# Configuration for retrying failed API calls.
+MaxRetries = 3 # Number of times to retry a failed request after the first attempt.
+InitialDelayMs = 1000 # Initial wait time in milliseconds before the first retry.
+MaxDelayMs = 10000 # Maximum wait time in milliseconds for exponential backoff.
 
 [vad]
 # The normalized RMS level below which we consider the audio to be silent.
@@ -32,7 +39,7 @@ SilenceThreshold = 0.02
 HangoverDurationSec = 2.0
 # Duration to ignore audio at startup to allow the pipeline to stabilize.
 # This prevents initial hardware "pops" from triggering a recording.
-WarmupDuration = "1500ms"
+WarmupDuration = "2000ms"
 
 [recorder]
 # Recordings shorter than this (in bytes) will be deleted.
