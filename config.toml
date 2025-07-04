@@ -11,14 +11,19 @@ APIKey = "${GOOGLE_API_KEY}"
 Model = "gemini-2.5-flash"
 ModelTTS = "gemini-2.5-flash-preview-tts"
 Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
+SystemPrompt = "You are expert in software development. It is your interview process."
 TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
-MainPrompt = """You are a helpful voice assistant.
-Based on the transcript, please provide a transcript and concise and accurate response.
+MainPrompt = """Based on the transcript, please provide a transcript and concise and accurate response.
 Respond in the same language as the transcript.
 """
 Thinking = 512 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
 Thoughts = false
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
+
+#Enable it manualy in case of model support cache
+EnableCache = false # Set to true to enable caching. Note: Not all models or API tiers support caching.
+CacheDir = "cache" #All files from this path will be added to cache
+CacheSystemPrompt = "You are an expert in software development. The following files are provided as context for our conversation."
 
 [vad]
 # The normalized RMS level below which we consider the audio to be silent.
@@ -42,6 +47,6 @@ UpdateIntervalMs = 50
 
 [pipeline]
 # Physical sound device for input (Default system device by default)
-Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+# Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 # GStreamer source buffer time in microseconds. Helps prevent race conditions.
 BufferTimeUs = 500000

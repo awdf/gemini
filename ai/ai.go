@@ -3,9 +3,12 @@ package ai
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"iter"
 	"log"
+	"mime"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"capgemini.com/audio"
@@ -26,6 +29,7 @@ type AI struct {
 	fVoice              bool
 	aiEnabled           bool
 	fileChan            <-chan string
+	cache               *genai.CachedContent
 }
 
 // NewAI creates a new AI instance, initializing the client and conversation history.
@@ -36,7 +40,7 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEn
 		Backend: genai.BackendGeminiAPI,
 	}))
 
-	return &AI{
+	ai := &AI{
 		ctx:       ctx,
 		client:    client,
 		wg:        wg,
@@ -44,7 +48,16 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEn
 		fVoice:    fVoice,
 		aiEnabled: aiEnabled,
 		fileChan:  fileChan,
+		cache:     nil,
 	}
+
+	if config.C.AI.EnableCache {
+		ai.uploadCache()
+	} else {
+		log.Println("AI Caching is disabled by configuration.")
+	}
+
+	return ai
 }
 
 // Run is the main loop for the AI component. It listens for completed audio files,
@@ -304,6 +317,16 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool) error {
 		},
 	}
 
+	if a.cache != nil {
+		genConfig.CachedContent = a.cache.Name
+		log.Println("Using cached content for this request.")
+	}
+
+	if config.C.AI.SystemPrompt != "" {
+		// The role for a system instruction is empty.
+		genConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(config.C.AI.SystemPrompt)}, "")
+	}
+
 	// Conditionally enable tools based on the configuration.
 	// This is only done for the main response generation, not transcription.
 	if config.C.AI.EnableTools {
@@ -385,4 +408,114 @@ func (a *AI) AnswerWithVoice(prompt string) error {
 	}
 
 	return fmt.Errorf("no audio data received from API")
+}
+
+// uploadCache finds all files in the configured cache directory, uploads them,
+// and creates a single cache for the model to use in subsequent conversations.
+func (a *AI) uploadCache() {
+	cacheDir := config.C.AI.CacheDir
+	if cacheDir == "" {
+		log.Println("AI.CacheDir is not configured, skipping cache upload.")
+		return
+	}
+
+	log.Printf("Checking for files in cache directory: %s", cacheDir)
+
+	// Check if cache directory exists.
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		log.Printf("Cache directory '%s' not found, skipping cache upload.", cacheDir)
+		return
+	}
+
+	files, err := os.ReadDir(cacheDir)
+	if err != nil {
+		log.Printf("ERROR: failed to read cache directory %s: %v", cacheDir, err)
+		return
+	}
+
+	var filesToCache []fs.DirEntry
+	for _, file := range files {
+		if !file.IsDir() && file.Name() != ".gitkeep" {
+			filesToCache = append(filesToCache, file)
+		}
+	}
+
+	if len(filesToCache) == 0 {
+		log.Println("No files to cache found in cache directory.")
+		return
+	}
+
+	log.Printf("Found %d files to upload to model cache.", len(filesToCache))
+
+	var cacheContents []*genai.Content
+	for _, file := range filesToCache {
+		localPath := filepath.Join(cacheDir, file.Name())
+		mimeType := mime.TypeByExtension(filepath.Ext(file.Name()))
+		if mimeType == "" {
+			mimeType = "application/octet-stream" // Fallback
+		}
+
+		log.Printf("Preparing %s for cache with MIME type %s...", localPath, mimeType)
+		content, err := a.createContentFromFile(localPath, mimeType)
+		if err != nil {
+			log.Printf("ERROR: could not create content for %s: %v", localPath, err)
+			continue // Skip this file and try the next
+		}
+		cacheContents = append(cacheContents, content)
+	}
+
+	if len(cacheContents) > 0 {
+		log.Println("Creating a single cache for all provided files...")
+		if err := a.createAndStoreCache(cacheContents); err != nil {
+			log.Printf("ERROR: Failed to create and store the model cache: %v", err)
+		}
+	}
+}
+
+// createContentFromFile uploads a single file and wraps it in a *genai.Content object.
+func (a *AI) createContentFromFile(localPath string, mimeType string) (*genai.Content, error) {
+	document, err := a.client.Files.UploadFromPath(
+		a.ctx,
+		localPath,
+		&genai.UploadFileConfig{
+			MIMEType: mimeType,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload cache file %s: %w", localPath, err)
+	}
+	parts := []*genai.Part{
+		genai.NewPartFromURI(document.URI, document.MIMEType),
+	}
+	// The role for file data is 'user'
+	return genai.NewContentFromParts(parts, genai.RoleUser), nil
+}
+
+// createAndStoreCache takes a list of contents and creates a single cache object,
+// storing it in the AI struct for future use.
+func (a *AI) createAndStoreCache(contents []*genai.Content) error {
+	createConfig := &genai.CreateCachedContentConfig{
+		Contents: contents,
+	}
+
+	if config.C.AI.CacheSystemPrompt != "" {
+		// The role for a system instruction must be empty.
+		createConfig.SystemInstruction = genai.NewContentFromParts(
+			[]*genai.Part{genai.NewPartFromText(config.C.AI.CacheSystemPrompt)},
+			"",
+		)
+	}
+
+	cache, err := a.client.Caches.Create(
+		a.ctx,
+		config.C.AI.Model,
+		createConfig,
+	)
+	if err != nil {
+		return fmt.Errorf("cache creation failed: %w", err)
+	}
+
+	a.cache = cache
+	log.Printf("Successfully created and stored cache: %s", cache.Name)
+	return nil
 }

@@ -30,9 +30,13 @@ type AIConfig struct {
 	Voice               string
 	APIKey              string
 	MainPrompt          string
+	SystemPrompt        string
 	Thinking            int32
 	Thoughts            bool
 	EnableTools         bool
+	CacheDir            string
+	CacheSystemPrompt   string
+	EnableCache         bool
 }
 
 // VADConfig holds settings for the Voice Activity Detector.
@@ -96,9 +100,13 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}" // You can set this directly or use an environment variable.
 	defaultConfig.AI.MainPrompt = "You are a helpful voice assistant. Based on the transcript, please provide a transcript and concise and accurate response. Respond in the same language as the transcript."
+	defaultConfig.AI.SystemPrompt = ""
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
 	defaultConfig.AI.EnableTools = true
+	defaultConfig.AI.CacheDir = "cache"
+	defaultConfig.AI.CacheSystemPrompt = "You are an expert in software development. The following files are provided as context for our conversation."
+	defaultConfig.AI.EnableCache = false
 	defaultConfig.VAD.SilenceThreshold = 0.02
 	defaultConfig.VAD.HangoverDurationSec = 2.0
 	defaultConfig.Recorder.MinFileSizeBytes = 600000
