@@ -8,8 +8,10 @@ import (
 	"iter"
 	"log"
 	"mime"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +39,11 @@ type AI struct {
 	cache               *genai.CachedContent
 	formatter           *display.Formatter
 }
+
+const (
+	youtubeURL1 = "youtube.com"
+	youtubeURL2 = "youtu.be"
+)
 
 // NewAI creates a new AI instance, initializing the client and conversation history.
 func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string, textCmdChan <-chan string) *AI {
@@ -181,10 +188,25 @@ func (a *AI) retryWithBackoff(action func() error) error {
 }
 
 func (a *AI) TextQuestion(prompt string, fVoice bool) {
-	parts := []*genai.Part{
-		genai.NewPartFromText(prompt),
+	var parts []*genai.Part
+	// By default, allow the model to use tools to browse URLs.
+	urlContextDisabled := false
+
+	// If the prompt seems to contain a YouTube URL, we parse it specially.
+	// The Gemini API treats YouTube URLs as direct video content, not as pages to browse.
+	if strings.Contains(prompt, youtubeURL1) || strings.Contains(prompt, youtubeURL2) {
+		// If a video URL was actually parsed and added as a part,
+		// we must disable the URLContext tool.
+		parts, urlContextDisabled = parsePromptForURLs(prompt)
+	} else {
+		// For regular text prompts, just create a text part.
+		parts = []*genai.Part{
+			genai.NewPartFromText(prompt),
+		}
 	}
-	if err := a.generateAndProcessContent(parts, fVoice); err != nil {
+
+	// Text models are able to use the URLContext tool.
+	if err := a.generateAndProcessContent(parts, fVoice, urlContextDisabled); err != nil {
 		log.Printf("ERROR: processing text question: %v", err)
 	}
 }
@@ -205,7 +227,8 @@ func (a *AI) VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
 		genai.NewPartFromText(prompt),
 		genai.NewPartFromURI(uploadedFile.URI, uploadedFile.MIMEType),
 	}
-	return a.generateAndProcessContent(parts, fVoice)
+	//IMPORTANT: TTS models can't use URLContext tool.
+	return a.generateAndProcessContent(parts, fVoice, false)
 }
 
 // It's forced call of Voice chat with tool enabled ignoring config.
@@ -244,7 +267,8 @@ func (a *AI) VoiceQuestionWithTools(wavPath string, prompt string, fVoice bool) 
 	}
 
 	// The second step is a pure text-based query, so we can reuse the history logic.
-	return a.generateAndProcessContent(parts, fVoice)
+	// IMPORTANT: TTS models can't use URLContext tool.
+	return a.generateAndProcessContent(parts, fVoice, false)
 }
 
 // generateTranscript performs a dedicated API call to get a transcript from an audio file.
@@ -392,7 +416,7 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, fVoice bool, act
 
 // generateAndProcessContent is a universal method to generate content from a set of parts,
 // process the streamed response, and update the conversation history.
-func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool) error {
+func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlContextDisabled bool) error {
 	// Check if we have initial files to prepend
 	if len(a.initialFileParts) > 0 {
 		log.Println("Prepending initial files to the first message.")
@@ -425,9 +449,18 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool) error {
 	// This is only done for the main response generation, not transcription.
 	if config.C.AI.EnableTools {
 		log.Println("Tool use is enabled for this request.")
-		genConfig.Tools = []*genai.Tool{{
-			GoogleSearch: &genai.GoogleSearch{},
-		}}
+		if urlContextDisabled {
+			log.Println("Google search tool in use")
+			genConfig.Tools = []*genai.Tool{{
+				GoogleSearch: &genai.GoogleSearch{},
+			}}
+		} else {
+			log.Println("URLContext and Google search tools in use")
+			genConfig.Tools = []*genai.Tool{{
+				GoogleSearch: &genai.GoogleSearch{},
+				URLContext:   &genai.URLContext{},
+			}}
+		}
 	}
 
 	resp := a.client.Models.GenerateContentStream(
@@ -663,4 +696,42 @@ func (a *AI) createAndStoreCache(contents []*genai.Content) error {
 	a.cache = cache
 	log.Printf("Successfully created and stored cache: %s", cache.Name)
 	return nil
+}
+
+// parsePromptForURLs splits a prompt into text and URL parts.
+// It returns the parts and a boolean indicating if a YouTube URL was found.
+func parsePromptForURLs(prompt string) ([]*genai.Part, bool) {
+	var parts []*genai.Part
+	var textBuilder strings.Builder
+	videoFound := false
+
+	// Split prompt into words to find URLs.
+	for _, word := range strings.Fields(prompt) {
+		// Trim trailing punctuation that might be attached to a URL
+		trimmedWord := strings.TrimRight(word, ".,;:!?")
+		u, err := url.ParseRequestURI(trimmedWord)
+		// Check for valid HTTP/HTTPS URLs that are for YouTube.
+		if err == nil && (u.Scheme == "http" || u.Scheme == "https") &&
+			(strings.Contains(u.Host, youtubeURL1) || strings.Contains(u.Host, youtubeURL2)) {
+
+			log.Printf("Detected YouTube URL in prompt: %s", u.String())
+			// For YouTube URLs, the Gemini API can infer the content type.
+			// We provide a generic video MIME type as a hint, as the API is optimized for video URIs.
+			parts = append(parts, genai.NewPartFromURI(u.String(), "video/*"))
+			videoFound = true
+		} else {
+			// This word is part of the text prompt.
+			if textBuilder.Len() > 0 {
+				textBuilder.WriteString(" ")
+			}
+			textBuilder.WriteString(word)
+		}
+	}
+
+	// Prepend the collected text as the first part, if any.
+	if textBuilder.Len() > 0 {
+		parts = append([]*genai.Part{genai.NewPartFromText(textBuilder.String())}, parts...)
+	}
+
+	return parts, videoFound
 }

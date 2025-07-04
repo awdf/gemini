@@ -26,8 +26,8 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string) *CLI {
 
 // Run starts the CLI input loop. It should be run in a goroutine.
 func (c *CLI) Run() {
-	defer c.wg.Done()
 	defer close(c.cmdChan)
+	defer c.wg.Done()
 
 	log.Println("CLI input handler started. Type a message and press Enter to send.")
 	fmt.Print("> ") // Initial prompt

@@ -14,7 +14,9 @@ Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
 SystemPrompt = "You are expert in software development. It is your interview process."
 TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 MainPrompt = """Based on the transcript, please provide both concise and accurate response.
+In case of questions about your developer experience, please check attached to context files.
 In case of questions about your developer life or your person, find any human like answer.
+In other cases, play developer role and show your expertise in software development and science.
 Respond in the same language as the transcript. 
 """
 Thinking = 512 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
