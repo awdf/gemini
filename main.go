@@ -15,6 +15,7 @@ import (
 	"capgemini.com/config"
 	"capgemini.com/display"
 	"capgemini.com/flow"
+	"capgemini.com/input"
 	"capgemini.com/pipeline"
 	"capgemini.com/recorder"
 	"capgemini.com/vad"
@@ -39,11 +40,13 @@ type App struct {
 	recorder        *recorder.Recorder
 	vadEngine       *vad.VADEngine
 	ai              *ai.AI
+	cli             *input.CLI
 	display         *display.RMSDisplay
 	rmsDisplayChan  chan float64
 	vadControlChan  chan float64
 	fileControlChan chan string
 	aiOnDemandChan  chan string
+	textCommandChan chan string
 	wg              *sync.WaitGroup
 	voiceEnabled    bool
 	aiEnabled       bool
@@ -65,14 +68,16 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 	app.rmsDisplayChan = make(chan float64, 10) // For the RMS volume bar
 	app.vadControlChan = make(chan float64, 10) // For the VAD logic
 	app.fileControlChan = make(chan string, 5)  // For WAV files flow
-	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI flow
+	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI audio flow
+	app.textCommandChan = make(chan string, 5)  // For text commands from CLI
 
 	// Create the main components with Dependency Injection.
 	app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan)
 	app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder, app.rmsDisplayChan, app.vadControlChan)
 	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan)
-	app.ai = ai.NewAI(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan)
+	app.ai = ai.NewAI(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan, app.textCommandChan)
 	app.display = display.NewRMSDisplay(app.wg, app.rmsDisplayChan)
+	app.cli = input.NewCLI(app.wg, app.textCommandChan)
 
 	//Collect all Runnable for future processing
 	app.runnables = []Runnable{
@@ -81,6 +86,7 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 		app.vadEngine,
 		app.recorder,
 		app.ai,
+		app.cli,
 	}
 
 	return app

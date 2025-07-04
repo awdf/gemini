@@ -32,12 +32,14 @@ type AI struct {
 	fVoice              bool
 	aiEnabled           bool
 	fileChan            <-chan string
+	textCmdChan         <-chan string
 	initialFileParts    []*genai.Part
 	cache               *genai.CachedContent
+	formatter           *display.Formatter
 }
 
 // NewAI creates a new AI instance, initializing the client and conversation history.
-func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string) *AI {
+func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string, textCmdChan <-chan string) *AI {
 	ctx := context.Background()
 	client := helpers.Control(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
@@ -52,8 +54,10 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEn
 		fVoice:           fVoice,
 		aiEnabled:        aiEnabled,
 		fileChan:         fileChan,
+		textCmdChan:      textCmdChan,
 		initialFileParts: nil,
 		cache:            nil,
+		formatter:        display.NewFormatter(),
 	}
 
 	if config.C.AI.EnableCache {
@@ -72,38 +76,62 @@ func (a *AI) Run() {
 	defer a.wg.Done()
 
 	if !a.aiEnabled {
-		log.Println("AI Chat processor is disabled. Draining file channel to prevent blocking.")
-		// We must still consume from the channel to prevent the recorder from blocking.
-		for file := range a.fileChan {
-			if config.C.Debug {
-				log.Printf("AI disabled, discarding file: %s", file)
+		log.Println("AI Chat processor is disabled. Draining channels to prevent blocking.")
+		// We must still consume from the channels to prevent other goroutines from blocking.
+		for a.fileChan != nil || a.textCmdChan != nil {
+			select {
+			case file, ok := <-a.fileChan:
+				if !ok {
+					a.fileChan = nil
+					continue
+				}
+				if config.C.Debug {
+					log.Printf("AI disabled, discarding file: %s", file)
+				}
+			case cmd, ok := <-a.textCmdChan:
+				if !ok {
+					a.textCmdChan = nil
+					continue
+				}
+				if config.C.Debug {
+					log.Printf("AI disabled, discarding command: %s", cmd)
+				}
 			}
-			// Discard file by doing nothing with it.
 		}
 		log.Println("AI Chat work finished (disabled).")
 		return
 	}
 
-	for file := range a.fileChan {
-		log.Printf("Chat: Processing %s", file)
-
-		a.withPipelinePausedIfVoice(a.pipeline, a.fVoice, func() {
-			// Define the action to be retried.
-			action := func() error {
-				return a.VoiceQuestion(file, config.C.AI.MainPrompt, a.fVoice)
+	for a.fileChan != nil || a.textCmdChan != nil {
+		select {
+		case file, ok := <-a.fileChan:
+			if !ok {
+				a.fileChan = nil // Mark as closed
+				continue
 			}
-
-			// Execute the action with retry logic.
-			err := a.retryWithBackoff(action)
-			if err != nil {
-				// If there was an error, log it and DO NOT delete the file.
-				log.Printf("ERROR: AI processing failed for %s after all retries, leaving file for manual processing: %v", file, err)
-			} else {
-				// Only remove the file if processing was successful.
-				log.Printf("Chat: Successfully processed %s. Removing file.", file)
-				os.Remove(file)
+			log.Printf("Chat: Processing %s", file)
+			a.withPipelinePausedIfVoice(a.pipeline, a.fVoice, func() {
+				action := func() error {
+					return a.VoiceQuestion(file, config.C.AI.MainPrompt, a.fVoice)
+				}
+				err := a.retryWithBackoff(action)
+				if err != nil {
+					log.Printf("ERROR: AI processing failed for %s after all retries, leaving file for manual processing: %v", file, err)
+				} else {
+					log.Printf("Chat: Successfully processed %s. Removing file.", file)
+					os.Remove(file)
+				}
+			})
+		case cmd, ok := <-a.textCmdChan:
+			if !ok {
+				a.textCmdChan = nil // Mark as closed
+				continue
 			}
-		})
+			log.Printf("Chat: Processing text command: '%s'", cmd)
+			a.withPipelinePausedIfVoice(a.pipeline, a.fVoice, func() {
+				a.TextQuestion(cmd, a.fVoice)
+			})
+		}
 	}
 
 	log.Println("AI Chat work finished")
@@ -265,12 +293,10 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 	// sources will store unique source URIs and their titles.
 	sources := make(map[string]string)
 
-	formatter := display.NewFormatter()
-
 	for chunk, err := range resp {
 		if err != nil {
 			// On error, ensure we reset color and print a newline.
-			formatter.Reset()
+			a.formatter.Reset()
 			return "", err
 		}
 		if chunk == nil || len(chunk.Candidates) == 0 {
@@ -294,40 +320,40 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 		for _, part := range candidate.Content.Parts {
 			if part.Thought && part.Text != "" {
 				if !thoughtStarted {
-					formatter.Println("Thought:", display.ColorYellow)
+					a.formatter.Println("Thought:", display.ColorYellow)
 					thoughtStarted, answerStarted = true, false // Reset answer flag
 				}
-				formatter.Print(part.Text)
+				a.formatter.Print(part.Text)
 			} else if part.Text != "" {
 				// By checking for non-empty text, we correctly filter out the intermediate
 				// tool-use parts and only process the final text answer from the model.
 				if !answerStarted {
 					if fVoice {
-						formatter.Println("Voice answer:", display.ColorCyan)
+						a.formatter.Println("Voice answer:", display.ColorCyan)
 					} else {
-						formatter.Println("Answer:", display.ColorCyan)
+						a.formatter.Println("Answer:", display.ColorCyan)
 					}
 					answerStarted, thoughtStarted = true, false
 				}
 
-				formatter.Print(part.Text)
+				a.formatter.Print(part.Text)
 
 				fullResponseText += part.Text
 			}
 		}
 	}
 	// After the stream is finished, reset the color and print a final newline.
-	formatter.Reset()
+	a.formatter.Reset()
 
 	// If any sources were found during the tool-use, print them.
 	if len(sources) > 0 {
-		formatter.Println("Sources:", display.ColorYellow)
+		a.formatter.Println("Sources:", display.ColorYellow)
 		for uri, title := range sources {
 			if title != "" {
-				formatter.Println(title, display.ColorCyan)
-				formatter.Println(uri, display.ColorBlue)
+				a.formatter.Println(title, display.ColorCyan)
+				a.formatter.Println(uri, display.ColorBlue)
 			} else {
-				formatter.Println(uri, display.ColorBlue)
+				a.formatter.Println(uri, display.ColorBlue)
 			}
 		}
 	}
