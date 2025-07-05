@@ -188,24 +188,17 @@ func (a *AI) retryWithBackoff(action func() error) error {
 }
 
 func (a *AI) TextQuestion(prompt string, fVoice bool) {
-	var parts []*genai.Part
-	// By default, allow the model to use tools to browse URLs.
-	urlContextDisabled := false
-
-	// If the prompt seems to contain a YouTube URL, we parse it specially.
-	// The Gemini API treats YouTube URLs as direct video content, not as pages to browse.
-	if strings.Contains(prompt, youtubeURL1) || strings.Contains(prompt, youtubeURL2) {
-		// If a video URL was actually parsed and added as a part,
-		// we must disable the URLContext tool.
-		parts, urlContextDisabled = parsePromptForURLs(prompt)
-	} else {
-		// For regular text prompts, just create a text part.
-		parts = []*genai.Part{
-			genai.NewPartFromText(prompt),
-		}
+	// Check prompt on any type of URLs it can consist.
+	// The Gemini API treats special URLs as direct content, not as pages to browse.
+	parts, urlContextDisabled, err := a.parsePromptForMultimedia(prompt)
+	if err != nil {
+		log.Printf("ERROR: could not parse prompt for multimedia: %v", err)
+		return // Stop processing if we can't even parse the prompt.
 	}
 
-	// Text models are able to use the URLContext tool.
+	// Text models are able to use the URLContext tool to parse and understend web content.
+	// In case of exception urlContextDisabled is true, means a special URL was found.
+	// special URL: file, YouTube
 	if err := a.generateAndProcessContent(parts, fVoice, urlContextDisabled); err != nil {
 		log.Printf("ERROR: processing text question: %v", err)
 	}
@@ -700,40 +693,64 @@ func (a *AI) createAndStoreCache(contents []*genai.Content) error {
 	return nil
 }
 
-// parsePromptForURLs splits a prompt into text and URL parts.
-// It returns the parts and a boolean indicating if a YouTube URL was found.
-func parsePromptForURLs(prompt string) ([]*genai.Part, bool) {
+// parsePromptForMultimedia splits a prompt into text, YouTube URLs, and local file parts.
+// It returns the parts, a boolean indicating if a non-web URL (video, file) was found,
+// and an error if file processing fails.
+func (a *AI) parsePromptForMultimedia(prompt string) ([]*genai.Part, bool, error) {
 	var parts []*genai.Part
 	var textBuilder strings.Builder
-	videoFound := false
+	multimediaFound := false
+
+	var wordAppend = func(word *string) {
+		if textBuilder.Len() > 0 {
+			textBuilder.WriteString(" ")
+		}
+		textBuilder.WriteString(*word)
+	}
 
 	// Split prompt into words to find URLs.
 	for _, word := range strings.Fields(prompt) {
 		// Trim trailing punctuation that might be attached to a URL
 		trimmedWord := strings.TrimRight(word, ".,;:!?")
-		u, err := url.ParseRequestURI(trimmedWord)
-		// Check for valid HTTP/HTTPS URLs that are for YouTube.
-		if err == nil && (u.Scheme == "http" || u.Scheme == "https") &&
-			(strings.Contains(u.Host, youtubeURL1) || strings.Contains(u.Host, youtubeURL2)) {
+		u, err := url.Parse(trimmedWord)
+		// We need a scheme to identify it as a URL we can handle.
+		if err != nil || u.Scheme == "" {
+			wordAppend(&word)
+			continue
+		}
 
-			log.Printf("Detected YouTube URL in prompt: %s", u.String())
-			// For YouTube URLs, the Gemini API can infer the content type.
-			// We provide a generic video MIME type as a hint, as the API is optimized for video URIs.
-			parts = append(parts, genai.NewPartFromURI(u.String(), "video/*"))
-			videoFound = true
-		} else {
-			// This word is part of the text prompt.
-			if textBuilder.Len() > 0 {
-				textBuilder.WriteString(" ")
+		switch u.Scheme {
+		case "http", "https":
+			if strings.Contains(u.Host, youtubeURL1) || strings.Contains(u.Host, youtubeURL2) {
+				log.Printf("Detected YouTube URL in prompt: %s", u.String())
+				parts = append(parts, genai.NewPartFromURI(u.String(), "video/*"))
+				multimediaFound = true
+			} else {
+				// It's a regular web URL, treat as text. The URLContext tool will handle it.
+				wordAppend(&word)
 			}
-			textBuilder.WriteString(word)
+		case "file":
+			log.Printf("Detected local file URL in prompt: %s", u.String())
+			part, err := a.createPartFromFile(u.Path)
+			if err != nil {
+				return nil, false, fmt.Errorf("failed to process file URL %s: %w", u.String(), err)
+			}
+			parts = append(parts, part)
+			multimediaFound = true
+		default:
+			// Unknown scheme, treat as text.
+			wordAppend(&word)
 		}
 	}
 
 	// Prepend the collected text as the first part, if any.
 	if textBuilder.Len() > 0 {
 		parts = append([]*genai.Part{genai.NewPartFromText(textBuilder.String())}, parts...)
+	} else if len(parts) == 0 {
+		// If there's no text and no multimedia parts, it was an empty prompt.
+		// Create a single empty text part to maintain behavior.
+		parts = append(parts, genai.NewPartFromText(""))
 	}
 
-	return parts, videoFound
+	return parts, multimediaFound, nil
 }
