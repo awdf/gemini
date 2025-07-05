@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"iter"
 	"log"
 	"mime"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -693,6 +695,51 @@ func (a *AI) createAndStoreCache(contents []*genai.Content) error {
 	return nil
 }
 
+// getContentTypeFromURL sends a HEAD request to determine the content type of a URL.
+func getContentTypeFromURL(urlStr string) (string, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second, // Avoid waiting too long
+	}
+	resp, err := client.Head(urlStr)
+	if err != nil {
+		return "", fmt.Errorf("HEAD request failed for %s: %w", urlStr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("bad status for %s: %s", urlStr, resp.Status)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		return "", fmt.Errorf("no Content-Type header found for %s", urlStr)
+	}
+
+	return contentType, nil
+}
+
+// createPartFromURL downloads content from a URL and returns a *genai.Part.
+func (a *AI) createPartFromURL(urlStr, mimeType string) (*genai.Part, error) {
+	resp, err := http.Get(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to GET %s: %w", urlStr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("bad status for %s: %s", urlStr, resp.Status)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read body from %s: %w", urlStr, err)
+	}
+
+	// The Gemini API can often infer the MIME type from the bytes, but providing it
+	// is more explicit and reliable.
+	return genai.NewPartFromBytes(data, mimeType), nil
+}
+
 // parsePromptForMultimedia splits a prompt into text, YouTube URLs, and local file parts.
 // It returns the parts, a boolean indicating if a non-web URL (video, file) was found,
 // and an error if file processing fails.
@@ -721,13 +768,39 @@ func (a *AI) parsePromptForMultimedia(prompt string) ([]*genai.Part, bool, error
 
 		switch u.Scheme {
 		case "http", "https":
+			// For all web URLs, first perform a HEAD request to ensure they are reachable.
+			contentType, err := getContentTypeFromURL(u.String())
+			if err != nil {
+				// The URL is unreachable or invalid. Inform the user and treat it as plain text.
+				// This provides immediate feedback and clarifies that the AI won't be able to browse the link.
+				log.Printf("WARNING: URL is unreachable: %s. Treating as plain text. Error: %v", u.String(), err)
+				fmt.Printf("Warning: URL is unreachable and will be treated as plain text: %s\n", u.String())
+				wordAppend(&word)
+				continue
+			}
+
+			// Now that we know the URL is reachable, decide how to handle it.
 			if strings.Contains(u.Host, youtubeURL1) || strings.Contains(u.Host, youtubeURL2) {
 				log.Printf("Detected YouTube URL in prompt: %s", u.String())
 				parts = append(parts, genai.NewPartFromURI(u.String(), "video/*"))
 				multimediaFound = true
 			} else {
-				// It's a regular web URL, treat as text. The URLContext tool will handle it.
-				wordAppend(&word)
+				// It's a regular web URL. Check if it's a direct link to a document we can upload.
+				baseMimeType, _, _ := mime.ParseMediaType(contentType)
+				if strings.HasPrefix(baseMimeType, "image/") || strings.HasPrefix(baseMimeType, "video/") || baseMimeType == "application/pdf" {
+					log.Printf("Detected document URL (%s): %s. Downloading content...", contentType, u.String())
+					part, err := a.createPartFromURL(u.String(), contentType)
+					if err != nil {
+						log.Printf("Failed to download content from %s, treating as text. Error: %v", u.String(), err)
+						wordAppend(&word)
+					} else {
+						parts = append(parts, part)
+						multimediaFound = true
+					}
+				} else {
+					// Not a direct document link (e.g., text/html), treat as text for the URLContext tool.
+					wordAppend(&word)
+				}
 			}
 		case "file":
 			log.Printf("Detected local file URL in prompt: %s", u.String())
