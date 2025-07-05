@@ -487,6 +487,7 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlCont
 
 // Model RPD 15
 func (a *AI) AnswerWithVoice(prompt string) error {
+	log.Println("Generating audio response...")
 	mode := []string{"AUDIO"}
 
 	parts := []*genai.Part{
@@ -529,6 +530,7 @@ func (a *AI) AnswerWithVoice(prompt string) error {
 		}
 	}
 
+	log.Println("Audio response generated. Play audio...")
 	if len(audioData) > 0 {
 		// Use the centralized audio playback function.
 		return audio.PlayRawPCM(audioData, audio.TTS_SAMPLE_RATE, audio.TTS_CHANNELS)
