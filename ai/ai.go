@@ -22,6 +22,7 @@ import (
 	"capgemini.com/display"
 	"capgemini.com/helpers"
 	"capgemini.com/pipeline"
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/genai"
 )
@@ -40,6 +41,7 @@ type AI struct {
 	initialFileParts    []*genai.Part
 	cache               *genai.CachedContent
 	formatter           *display.Formatter
+	bus                 *EventBus.Bus
 }
 
 const (
@@ -48,7 +50,7 @@ const (
 )
 
 // NewAI creates a new AI instance, initializing the client and conversation history.
-func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string, textCmdChan <-chan string) *AI {
+func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string, textCmdChan <-chan string, bus *EventBus.Bus) *AI {
 	ctx := context.Background()
 	client := helpers.Control(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
@@ -67,6 +69,7 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEn
 		initialFileParts: nil,
 		cache:            nil,
 		formatter:        display.NewFormatter(),
+		bus:              bus,
 	}
 
 	if config.C.AI.EnableCache {
@@ -136,7 +139,7 @@ func (a *AI) Run() {
 				a.textCmdChan = nil // Mark as closed
 				continue
 			}
-			log.Printf("Chat: Processing text command: '%s'", cmd)
+			log.Println("Chat: Processing text prompt...")
 			a.withPipelinePausedIfVoice(a.pipeline, a.fVoice, func() {
 				a.TextQuestion(cmd, a.fVoice)
 			})
@@ -412,6 +415,8 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, fVoice bool, act
 // generateAndProcessContent is a universal method to generate content from a set of parts,
 // process the streamed response, and update the conversation history.
 func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlContextDisabled bool) error {
+	defer (*a.bus).Publish("main:topic", "draw")
+
 	// Check if we have initial files to prepend
 	if len(a.initialFileParts) > 0 {
 		log.Println("Prepending initial files to the first message.")

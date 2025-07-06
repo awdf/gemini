@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"capgemini.com/config"
+	"github.com/asaskevich/EventBus"
 )
 
 // VADEngine represents the state of the Voice Activity Detector.
@@ -19,14 +20,16 @@ type VADEngine struct {
 	fileControlChan chan<- string
 	wg              *sync.WaitGroup
 	vadControlChan  <-chan float64
+	bus             *EventBus.Bus
 }
 
 // NewVAD creates a new VAD controller.
-func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-chan float64) *VADEngine {
+func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-chan float64, bus *EventBus.Bus) *VADEngine {
 	// Get the warm-up duration from the configuration.
 	warmupDuration := config.C.VAD.WarmUpDuration()
 	if warmupDuration > 0 {
 		log.Printf("VAD initialised with a warm-up period of %s", warmupDuration)
+		fmt.Printf("VAD initialised with a warm-up period of %s\n", warmupDuration)
 	}
 	return &VADEngine{
 		wg:              wg,
@@ -34,6 +37,7 @@ func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-
 		vadControlChan:  vadControlChan,
 		// Set the time when the warm-up period will be over.
 		warmupEndTime: time.Now().Add(warmupDuration),
+		bus:           bus,
 	}
 }
 
@@ -59,6 +63,7 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 		// The warm-up period has just ended. Log it and clear the timer
 		// so this check doesn't run for every subsequent chunk.
 		log.Println("VAD warm-up complete. Now actively listening for speech.")
+		(*v.bus).Publish("main:topic", "draw")
 		v.warmupEndTime = time.Time{}
 	}
 

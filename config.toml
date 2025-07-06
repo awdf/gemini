@@ -19,7 +19,7 @@ In case of questions about your developer life or your person, find any human li
 In other cases, play developer role and show your expertise in software development and science.
 Respond in the same language as the transcript. 
 """
-Thinking = 512 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
+Thinking = -1 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
 Thoughts = false
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
 
@@ -41,7 +41,7 @@ SilenceThreshold = 0.02
 HangoverDurationSec = 2.0
 # Duration to ignore audio at startup to allow the pipeline to stabilize.
 # This prevents initial hardware "pops" from triggering a recording.
-WarmupDuration = "2000ms"
+WarmupDuration = "2500ms"
 
 [recorder]
 # Recordings shorter than this (in bytes) will be deleted.

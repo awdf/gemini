@@ -7,6 +7,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"capgemini.com/recorder"
 	"capgemini.com/vad"
 
+	"github.com/asaskevich/EventBus"
 	"github.com/go-gst/go-gst/gst"
 )
 
@@ -51,6 +53,7 @@ type App struct {
 	voiceEnabled    bool
 	aiEnabled       bool
 	runnables       []Runnable
+	bus             *EventBus.Bus
 }
 
 // NewApp creates and initializes a new application instance.
@@ -63,6 +66,8 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 	}
 
 	app.initLogging()
+	bus := EventBus.New()
+	app.bus = &bus
 
 	// Create buffered channels to decouple the "hot" GStreamer loop from other goroutines.
 	app.rmsDisplayChan = make(chan float64, 10) // For the RMS volume bar
@@ -72,12 +77,12 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 	app.textCommandChan = make(chan string, 5)  // For text commands from CLI
 
 	// Create the main components with Dependency Injection.
-	app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan)
-	app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder, app.rmsDisplayChan, app.vadControlChan)
-	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan)
-	app.ai = ai.NewAI(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan, app.textCommandChan)
-	app.display = display.NewRMSDisplay(app.wg, app.rmsDisplayChan)
-	app.cli = input.NewCLI(app.wg, app.textCommandChan)
+	app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
+	app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder, app.rmsDisplayChan, app.vadControlChan, app.bus)
+	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan, app.bus)
+	app.ai = ai.NewAI(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan, app.textCommandChan, app.bus)
+	app.display = display.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
+	app.cli = input.NewCLI(app.wg, app.textCommandChan, app.bus)
 
 	//Collect all Runnable for future processing
 	app.runnables = []Runnable{
@@ -121,7 +126,9 @@ func (app *App) run() {
 
 	// Start the pipeline
 	app.pipeline.Play()
-	log.Println("Listening for audio... Recording will start when sound is detected. Press Ctrl+C to exit.")
+	log.Println("Listening for audio...")
+	fmt.Println("Listening for audio... Recording will start when sound is detected. Press Ctrl+C to exit.")
+	fmt.Println("Use keyboard to send text prompts to the AI.")
 
 	// Block until the pipeline's bus signals EOS or an error.
 	app.pipeline.Loop()

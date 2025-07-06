@@ -13,6 +13,7 @@ import (
 	"capgemini.com/audio" // Import the audio package for WAV constants
 	"capgemini.com/config"
 	"capgemini.com/helpers"
+	"github.com/asaskevich/EventBus"
 
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
@@ -26,9 +27,10 @@ type Recorder struct {
 	wg            *sync.WaitGroup
 	controlChan   <-chan string
 	fileChan      chan<- string
+	bus           *EventBus.Bus
 }
 
-func NewRecorderSink(wg *sync.WaitGroup, controlChan <-chan string, fileChan chan<- string) *Recorder {
+func NewRecorderSink(wg *sync.WaitGroup, controlChan <-chan string, fileChan chan<- string, bus *EventBus.Bus) *Recorder {
 	var r Recorder
 	// Use a second appsink for the recording branch. This allows Go to handle
 	// file I/O, giving us the flexibility to create new files on the fly.
@@ -41,6 +43,7 @@ func NewRecorderSink(wg *sync.WaitGroup, controlChan <-chan string, fileChan cha
 	r.wg = wg
 	r.controlChan = controlChan
 	r.fileChan = fileChan
+	r.bus = bus
 	return &r
 }
 

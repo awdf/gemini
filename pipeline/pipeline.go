@@ -13,6 +13,7 @@ import (
 	"capgemini.com/helpers"
 	"capgemini.com/recorder"
 
+	"github.com/asaskevich/EventBus"
 	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
@@ -26,6 +27,7 @@ type VadPipeline struct {
 	wg             *sync.WaitGroup
 	rmsDisplayChan chan<- float64
 	vadControlChan chan<- float64
+	bus            *EventBus.Bus
 }
 
 // NewVADPipeline sets up a GStreamer pipeline that listens to an audio source,
@@ -33,7 +35,7 @@ type VadPipeline struct {
 // It uses a "tee" element to split the audio stream into two branches:
 // 1. Analysis Branch: -> queue -> appsink (for calculating RMS in Go)
 // 2. Recording Branch: -> queue -> valve -> appsink (for writing to a file in Go)
-func NewVADPipeline(wg *sync.WaitGroup, recorder *recorder.Recorder, rmsDisplayChan chan<- float64, vadControlChan chan<- float64) *VadPipeline {
+func NewVADPipeline(wg *sync.WaitGroup, recorder *recorder.Recorder, rmsDisplayChan chan<- float64, vadControlChan chan<- float64, bus *EventBus.Bus) *VadPipeline {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
 	//Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 
@@ -43,6 +45,7 @@ func NewVADPipeline(wg *sync.WaitGroup, recorder *recorder.Recorder, rmsDisplayC
 
 	p.rmsDisplayChan = rmsDisplayChan
 	p.vadControlChan = vadControlChan
+	p.bus = bus
 	// Create a new pipeline
 	p.pipeline = helpers.Control(gst.NewPipeline("vad-recording-pipeline"))
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"capgemini.com/config"
+	"github.com/asaskevich/EventBus"
 )
 
 // RMSDisplay manages the state and logic for displaying the RMS volume bar.
@@ -19,10 +20,11 @@ type RMSDisplay struct {
 	currentRMS           float64
 	wg                   *sync.WaitGroup
 	rmsChan              <-chan float64
+	bus                  *EventBus.Bus
 }
 
 // NewRMSDisplay creates and initializes a new RMSDisplay instance.
-func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64) *RMSDisplay {
+func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus) *RMSDisplay {
 	return &RMSDisplay{
 		barWidth:             config.C.Display.BarWidth,
 		updateInterval:       config.C.Display.UpdateInterval(),
@@ -30,6 +32,7 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64) *RMSDisplay {
 		currentRMS:           0.0,
 		wg:                   wg,
 		rmsChan:              rmsChan,
+		bus:                  bus,
 	}
 }
 
@@ -59,6 +62,15 @@ func (d *RMSDisplay) printBar() {
 // Run starts the goroutine to update the RMS volume bar display.
 func (d *RMSDisplay) Run() {
 	defer d.wg.Done()
+	(*d.bus).Subscribe("main:topic", func(event string) {
+		if event == "draw" {
+			if config.C.Debug {
+				log.Printf("Display received event: %s\n", event)
+			}
+			d.printBar()
+		}
+	})
+
 	// Refresh the display at a fixed rate (e.g., 20 times per second)
 	// This is fast enough for a smooth UI but prevents overwhelming the terminal.
 	ticker := time.NewTicker(d.updateInterval)
