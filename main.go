@@ -25,11 +25,13 @@ import (
 	"github.com/go-gst/go-gst/gst"
 )
 
-var (
-	voicePtr  = flag.Bool("voice", false, "Enable voice responses from the AI")
-	configPtr = flag.String("config", "config.toml", "Path to the configuration file")
-	aiOffPtr  = flag.Bool("no-ai", false, "Disable AI processing, only record audio")
-)
+// CliFlags holds the parsed command-line flags for the application.
+type CliFlags struct {
+	Voice      bool
+	Transcript bool
+	AIEnabled  bool
+	ConfigPath string
+}
 
 type Runnable interface {
 	Run()
@@ -50,19 +52,17 @@ type App struct {
 	aiOnDemandChan  chan string
 	textCommandChan chan string
 	wg              *sync.WaitGroup
-	voiceEnabled    bool
-	aiEnabled       bool
+	flags           *CliFlags
 	runnables       []Runnable
 	bus             *EventBus.Bus
 }
 
 // NewApp creates and initializes a new application instance.
 // It sets up all components and channels, making the App ready to run.
-func NewApp(voiceEnabled, aiEnabled bool) *App {
+func NewApp(flags *CliFlags) *App {
 	app := &App{
-		wg:           &sync.WaitGroup{},
-		voiceEnabled: voiceEnabled,
-		aiEnabled:    aiEnabled,
+		wg:    &sync.WaitGroup{},
+		flags: flags,
 	}
 
 	app.initLogging()
@@ -76,11 +76,18 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI audio flow
 	app.textCommandChan = make(chan string, 5)  // For text commands from CLI
 
+	//Copy of flags for AI component
+	aiFlags := &ai.Flags{
+		Voice:      flags.Voice,
+		Transcript: flags.Transcript,
+		Enabled:    flags.AIEnabled,
+	}
+
 	// Create the main components with Dependency Injection.
 	app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
 	app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder, app.rmsDisplayChan, app.vadControlChan, app.bus)
 	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan, app.bus)
-	app.ai = ai.NewAI(app.wg, app.pipeline, app.voiceEnabled, app.aiEnabled, app.aiOnDemandChan, app.textCommandChan, app.bus)
+	app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus)
 	app.display = display.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
 	app.cli = input.NewCLI(app.wg, app.textCommandChan, app.bus)
 
@@ -97,18 +104,31 @@ func NewApp(voiceEnabled, aiEnabled bool) *App {
 	return app
 }
 
-func main() {
-	// Parse command-line flags
+// parseFlags defines and parses the command-line flags, returning them in a struct.
+func parseFlags() *CliFlags {
+	flags := &CliFlags{}
+	// Use a local variable for the negated flag.
+	aiOff := flag.Bool("no-ai", false, "Disable AI processing, only record audio")
+
+	flag.BoolVar(&flags.Voice, "voice", false, "Enable voice responses from the AI")
+	flag.BoolVar(&flags.Transcript, "ts", false, "Enable separate transcription step for voice chat")
+	flag.StringVar(&flags.ConfigPath, "config", "config.toml", "Path to the configuration file")
+
 	flag.Parse()
+
+	// The flag is 'no-ai', so we negate it for 'AIEnabled'.
+	flags.AIEnabled = !*aiOff
+	return flags
+}
+
+func main() {
+	flags := parseFlags()
 	flow.EnableControl()
 
-	// Load the configuration
-	config.Load(*configPtr)
-
-	// Initialize GStreamer. This should be called once per application.
+	config.Load(flags.ConfigPath)
 	gst.Init(nil)
 
-	NewApp(*voicePtr, !*aiOffPtr).run()
+	NewApp(flags).run()
 }
 
 func (app *App) run() {
@@ -169,12 +189,17 @@ func (app *App) initLogging() {
 		log.Println("!!! DEBUG MODE ENABLED !!!")
 	}
 
-	if !app.aiEnabled {
+	if !app.flags.AIEnabled {
 		log.Print("AI processing is disabled. The application will only record audio.")
 	}
 
 	// Enable voice responses
-	if app.voiceEnabled {
+	if app.flags.Voice {
 		log.Print("Voice responses enabled")
+	}
+
+	// Enable transcript
+	if app.flags.Transcript {
+		log.Print("Separate transcription step enabled")
 	}
 }

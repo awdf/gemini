@@ -27,6 +27,13 @@ import (
 	"google.golang.org/genai"
 )
 
+// Flags holds the command-line flags that control AI behavior.
+type Flags struct {
+	Voice      bool // Corresponds to the -voice flag
+	Transcript bool // Corresponds to the -ts flag
+	Enabled    bool // Corresponds to the -no-ai flag (negated)
+}
+
 // AI encapsulates the state and logic for interacting with the Gemini AI.
 type AI struct {
 	ctx                 context.Context
@@ -34,8 +41,7 @@ type AI struct {
 	conversationHistory []*genai.Content
 	wg                  *sync.WaitGroup
 	pipeline            *pipeline.VadPipeline
-	fVoice              bool
-	aiEnabled           bool
+	flags               *Flags
 	fileChan            <-chan string
 	textCmdChan         <-chan string
 	initialFileParts    []*genai.Part
@@ -49,8 +55,21 @@ const (
 	youtubeURL2 = "youtu.be"
 )
 
+// Flags for Url Context disabled trigger.
+const (
+	fURLContextDisabled = true
+	fURLContextEnabled  = false
+)
+
+func init() {
+	// Register custom MIME types to ensure correct handling by the AI.
+	// This is the ideal place for package-specific, one-time initializations.
+	mime.AddExtensionType(".md", "text/markdown")
+	mime.AddExtensionType(".wav", "audio/wav")
+}
+
 // NewAI creates a new AI instance, initializing the client and conversation history.
-func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEnabled bool, fileChan <-chan string, textCmdChan <-chan string, bus *EventBus.Bus) *AI {
+func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, flags *Flags, fileChan <-chan string, textCmdChan <-chan string, bus *EventBus.Bus) *AI {
 	ctx := context.Background()
 	client := helpers.Control(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
@@ -62,8 +81,7 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEn
 		client:           client,
 		wg:               wg,
 		pipeline:         pipeline,
-		fVoice:           fVoice,
-		aiEnabled:        aiEnabled,
+		flags:            flags,
 		fileChan:         fileChan,
 		textCmdChan:      textCmdChan,
 		initialFileParts: nil,
@@ -87,7 +105,7 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, fVoice bool, aiEn
 func (a *AI) Run() {
 	defer a.wg.Done()
 
-	if !a.aiEnabled {
+	if !a.flags.Enabled {
 		log.Println("AI Chat processor is disabled. Draining channels to prevent blocking.")
 		// We must still consume from the channels to prevent other goroutines from blocking.
 		for a.fileChan != nil || a.textCmdChan != nil {
@@ -122,9 +140,12 @@ func (a *AI) Run() {
 				continue
 			}
 			log.Printf("Chat: Processing %s", file)
-			a.withPipelinePausedIfVoice(a.pipeline, a.fVoice, func() {
+			a.withPipelinePausedIfVoice(a.pipeline, a.flags.Voice, func() {
 				action := func() error {
-					return a.VoiceQuestion(file, config.C.AI.MainPrompt, a.fVoice)
+					if a.flags.Transcript {
+						return a.VoiceQuestionWithTranscript(file, config.C.AI.MainPrompt, a.flags.Voice)
+					}
+					return a.VoiceQuestion(file, config.C.AI.MainPrompt, a.flags.Voice)
 				}
 				err := a.retryWithBackoff(action)
 				if err != nil {
@@ -140,8 +161,14 @@ func (a *AI) Run() {
 				continue
 			}
 			log.Println("Chat: Processing text prompt...")
-			a.withPipelinePausedIfVoice(a.pipeline, a.fVoice, func() {
-				a.TextQuestion(cmd, a.fVoice)
+			a.withPipelinePausedIfVoice(a.pipeline, a.flags.Voice, func() {
+				action := func() error {
+					return a.TextQuestion(cmd, a.flags.Voice)
+				}
+				err := a.retryWithBackoff(action)
+				if err != nil {
+					log.Printf("ERROR: AI processing failed for text command after all retries: %v", err)
+				}
 			})
 		}
 	}
@@ -192,13 +219,13 @@ func (a *AI) retryWithBackoff(action func() error) error {
 	return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
 }
 
-func (a *AI) TextQuestion(prompt string, fVoice bool) {
+func (a *AI) TextQuestion(prompt string, fVoice bool) error {
 	// Check prompt on any type of URLs it can consist.
 	// The Gemini API treats special URLs as direct content, not as pages to browse.
 	parts, urlContextDisabled, err := a.parsePromptForMultimedia(prompt)
 	if err != nil {
 		log.Printf("ERROR: could not parse prompt for multimedia: %v", err)
-		return // Stop processing if we can't even parse the prompt.
+		return err // Stop processing if we can't even parse the prompt.
 	}
 
 	// Text models are able to use the URLContext tool to parse and understend web content.
@@ -206,7 +233,9 @@ func (a *AI) TextQuestion(prompt string, fVoice bool) {
 	// special URL: file, YouTube
 	if err := a.generateAndProcessContent(parts, fVoice, urlContextDisabled); err != nil {
 		log.Printf("ERROR: processing text question: %v", err)
+		return err
 	}
+	return nil
 }
 
 // It's call of voice chat with tools enabled according to config
@@ -215,7 +244,7 @@ func (a *AI) VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
 	uploadedFile, err := a.client.Files.UploadFromPath(
 		a.ctx,
 		wavPath,
-		nil,
+		&genai.UploadFileConfig{MIMEType: "audio/wav"},
 	)
 	if err != nil {
 		return fmt.Errorf("file upload failed: %w", err)
@@ -225,13 +254,12 @@ func (a *AI) VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
 		genai.NewPartFromText(prompt),
 		genai.NewPartFromURI(uploadedFile.URI, uploadedFile.MIMEType),
 	}
-	//IMPORTANT: TTS models can't use URLContext tool.
-	return a.generateAndProcessContent(parts, fVoice, false)
+	return a.generateAndProcessContent(parts, fVoice, fURLContextDisabled)
 }
 
 // It's forced call of Voice chat with tool enabled ignoring config.
 // Will make 2 requests: one for transcript and second for text chat with transcript
-func (a *AI) VoiceQuestionWithTools(wavPath string, prompt string, fVoice bool) error {
+func (a *AI) VoiceQuestionWithTranscript(wavPath string, prompt string, fVoice bool) error {
 	var save = config.C.AI.EnableTools
 	defer func() {
 		config.C.AI.EnableTools = save
@@ -265,8 +293,7 @@ func (a *AI) VoiceQuestionWithTools(wavPath string, prompt string, fVoice bool) 
 	}
 
 	// The second step is a pure text-based query, so we can reuse the history logic.
-	// IMPORTANT: TTS models can't use URLContext tool.
-	return a.generateAndProcessContent(parts, fVoice, false)
+	return a.generateAndProcessContent(parts, fVoice, fURLContextEnabled)
 }
 
 // generateTranscript performs a dedicated API call to get a transcript from an audio file.
@@ -275,7 +302,7 @@ func (a *AI) generateTranscript(wavPath string) (string, error) {
 	uploadedFile, err := a.client.Files.UploadFromPath(
 		a.ctx,
 		wavPath,
-		nil,
+		&genai.UploadFileConfig{MIMEType: "audio/wav"},
 	)
 	if err != nil {
 		return "", fmt.Errorf("file upload failed: %w", err)
@@ -440,9 +467,13 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlCont
 		log.Println("Using cached content for this request.")
 	}
 
-	if config.C.AI.SystemPrompt != "" {
+	// Construct the system prompt with the current date and time.
+	systemPrompt := config.C.AI.SystemPrompt
+	if systemPrompt != "" {
+		currentTime := time.Now().Format(time.RFC1123)
+		systemPrompt = fmt.Sprintf("Current date and time is %s. %s", currentTime, systemPrompt)
 		// The role for a system instruction is empty.
-		genConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(config.C.AI.SystemPrompt)}, "")
+		genConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(systemPrompt)}, "")
 	}
 
 	// Conditionally enable tools based on the configuration.
@@ -648,6 +679,19 @@ func (a *AI) createPartFromFile(localPath string) (*genai.Part, error) {
 	if mimeType == "" {
 		mimeType = "application/octet-stream" // Fallback
 	}
+
+	// For text-based files, it's often more robust to send them as raw text
+	// rather than uploading them and using a file URI. This avoids potential
+	// conflicts when mixing file types in a single prompt (e.g., audio + other files).
+	if strings.HasPrefix(mimeType, "text/") {
+		log.Printf("Reading text-based file %s as a text part...", localPath)
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read text file %s: %w", localPath, err)
+		}
+		return genai.NewPartFromText(string(data)), nil
+	}
+
 	log.Printf("Uploading %s with MIME type %s...", localPath, mimeType)
 	document, err := a.client.Files.UploadFromPath(
 		a.ctx,
