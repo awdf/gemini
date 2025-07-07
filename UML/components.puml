@@ -1,0 +1,106 @@
+@startuml
+allowmixing
+' Set a theme for a modern look
+!theme vibrant
+
+title Application Component Diagram
+
+' Define a stereotype for components that are run in their own goroutine
+stereotype "Runnable" as r
+
+package "Application Entrypoint" {
+    component [main]
+    component [App]
+}
+
+package "Core Audio Processing" {
+    component [GStreamer Pipeline] as Pipeline <<r>>
+    component [VAD Engine] as VAD <<r>>
+    component [Recorder] as Recorder <<r>>
+}
+
+package "Artificial Intelligence" {
+    component [AI Processor] as AI <<r>>
+    component [Gemini API] as API <<cloud>>
+}
+
+package "Terminal Input/Output" {
+    component [CLI] as CLI <<r>>
+    component [RMS Display] as Display <<r>>
+    component [Formatter]
+}
+
+package "Shared Services" {
+    component [Config]
+    component [EventBus] <<bus>>
+    component [Flow Control] as FlowControl <<r>>
+}
+
+' =============================================
+'           Component Relationships
+' =============================================
+
+main --> App : Creates & Runs
+
+App --> Pipeline : Creates
+App --> VAD : Creates
+App --> Recorder : Creates
+App --> AI : Creates
+App --> CLI : Creates
+App --> Display : Creates
+
+note on link
+  The 'App' component acts as a
+  dependency injector, creating all
+  'Runnable' components and their
+  communication channels.
+end note
+
+' =============================================
+'        Data Flow & Interactions
+' =============================================
+
+' --- Go Channels ---
+interface "rmsDisplayChan" as rmsChan
+interface "vadControlChan" as vadChan
+interface "aiOnDemandChan" as aiChan
+interface "textCommandChan" as textChan
+
+Pipeline -> rmsChan : RMS values
+rmsChan -> Display
+
+Pipeline -> vadChan : Audio data
+vadChan -> VAD
+
+Recorder -> aiChan : WAV filename
+aiChan -> AI
+
+CLI -> textChan : Text prompt
+textChan -> AI
+
+' --- Event Bus ---
+note "The EventBus provides decoupled communication" as BusNote
+VAD .> EventBus : Publishes "recorder:start/stop"
+EventBus .> Recorder : Subscribes
+
+AI .> EventBus : Publishes "draw"
+EventBus .> CLI : Subscribes (redraws prompt)
+EventBus .> Display : Subscribes (redraws soundbar)
+
+' --- Direct Calls & Dependencies ---
+
+AI -> Formatter : Uses for output formatting
+AI ..> "stdout"
+
+AI -> Pipeline : Pauses/Resumes for voice response
+AI -> API : HTTP requests
+
+' --- Shared Services Usage ---
+Config <. App
+Config <. AI
+Config <. VAD
+Config <. Display
+
+FlowControl .> App : Signals Ctrl+C for shutdown
+
+@enduml
