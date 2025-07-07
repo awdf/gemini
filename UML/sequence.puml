@@ -1,0 +1,128 @@
+@startuml
+!theme vibrant
+title Application Interaction Sequence
+
+' Define participants based on the component diagram
+participant "User" as User
+participant "main" as Main
+participant "App" as App
+participant "GStreamer Pipeline" as Pipeline
+participant "VAD Engine" as VAD
+participant "Recorder" as Recorder
+participant "AI Processor" as AI
+participant "CLI" as CLI
+participant "RMS Display" as Display
+participant "Event Bus" as EventBus
+participant "Gemini API" as API
+participant "Flow Control" as FlowControl
+
+' == Initialization Sequence ==
+group Initialization
+    User -> Main : Runs the application
+    activate Main
+    Main -> App : new()
+    activate App
+    App -> App : Creates channels & services (EventBus, Config)
+    App -> Pipeline : new()
+    App -> VAD : new()
+    App -> Recorder : new()
+    App -> AI : new()
+    App -> CLI : new()
+    App -> Display : new()
+    App -> FlowControl : new()
+    Main -> App : Run()
+    App ->> Pipeline : go Start()
+    App ->> VAD : go Start()
+    App ->> Recorder : go Start()
+    App ->> AI : go Start()
+    App ->> CLI : go Start()
+    App ->> Display : go Start()
+    App ->> FlowControl : go Start()
+    note right of App : All 'Runnable' components\n are started in their own goroutines.
+    deactivate App
+    deactivate Main
+end
+
+' == Main Voice Command Loop ==
+group Voice Command
+    User -> Pipeline : Speaks
+    activate Pipeline
+    loop Audio Streaming
+        Pipeline ->> Display : RMS value (via rmsChan)
+        activate Display
+        note right of Display : Updates soundbar
+        deactivate Display
+        Pipeline ->> VAD : Audio chunk (via vadChan)
+        activate VAD
+    end
+    note right of VAD : VAD detects speech
+    VAD -> EventBus : Publishes "recorder:start"
+    activate EventBus
+    EventBus ->> Recorder : "recorder:start"
+    deactivate EventBus
+    activate Recorder
+    note right of Recorder : Starts recording audio to file
+    ... User finishes speaking ...
+    VAD -> EventBus : Publishes "recorder:stop"
+    activate EventBus
+    note right of VAD : VAD detects end of speech
+    deactivate VAD
+    EventBus ->> Recorder : "recorder:stop"
+    deactivate EventBus
+    Recorder ->> AI : WAV filename (via aiChan)
+    deactivate Recorder
+    deactivate Pipeline
+    activate AI
+    AI -> Pipeline : Pause()
+    note right of AI : Prevents audio processing\nwhile AI is thinking.
+    AI -> API : ProcessAudio(wav)
+    activate API
+    API --> AI : Text response
+    deactivate API
+    AI -> AI : Formats response
+    AI -> "stdout" : Prints response
+    AI -> EventBus : Publishes "draw"
+    activate EventBus
+    EventBus ->> CLI : "draw"
+    EventBus ->> Display : "draw"
+    deactivate EventBus
+    note right of CLI : Redraws prompt
+    note right of Display : Clears soundbar
+    AI -> Pipeline : Resume()
+    deactivate AI
+end
+
+' == Alternative Text Command Loop ==
+group Text Command
+    User -> CLI : Enters text prompt
+    activate CLI
+    CLI ->> AI : Text command (via textChan)
+    deactivate CLI
+    activate AI
+    AI -> API : ProcessText(prompt)
+    activate API
+    API --> AI : Text response
+    deactivate API
+    AI -> AI : Formats response
+    AI -> "stdout" : Prints response
+    deactivate AI
+end
+
+' == Shutdown Sequence ==
+group Shutdown
+    User -> FlowControl : Presses Ctrl+C
+    activate FlowControl
+    FlowControl ->> App : SignalShutdown()
+    deactivate FlowControl
+    activate App
+    App ->> Pipeline : Stop()
+    App ->> VAD : Stop()
+    App ->> Recorder : Stop()
+    App ->> AI : Stop()
+    App ->> CLI : Stop()
+    App ->> Display : Stop()
+    note right of App : Gracefully stops all goroutines
+    deactivate App
+end
+
+@enduml

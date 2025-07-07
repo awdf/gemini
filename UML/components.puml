@@ -3,6 +3,10 @@ allowmixing
 ' Set a theme for a modern look
 !theme vibrant
 
+' Enforce a top-to-bottom layout direction. This helps prevent
+' components from spreading out too horizontally and improves readability.
+top to bottom direction
+
 title Application Component Diagram
 
 ' Define a stereotype for components that are run in their own goroutine
@@ -32,7 +36,7 @@ package "Terminal Input/Output" {
 
 package "Shared Services" {
     component [Config]
-    component [EventBus] <<bus>>
+    component [Event Bus] as EventBus<<bus>>
     component [Flow Control] as FlowControl <<r>>
 }
 
@@ -42,19 +46,20 @@ package "Shared Services" {
 
 main --> App : Creates & Runs
 
-App --> Pipeline : Creates
-App --> VAD : Creates
-App --> Recorder : Creates
-App --> AI : Creates
-App --> CLI : Creates
-App --> Display : Creates
-
 note on link
   The 'App' component acts as a
   dependency injector, creating all
   'Runnable' components and their
   communication channels.
 end note
+
+' App creates all the main runnable components.
+App --> Pipeline : Creates
+App --> VAD : Creates
+App --> Recorder : Creates
+App --> AI : Creates
+App --> CLI : Creates
+App --> Display : Creates
 
 ' =============================================
 '        Data Flow & Interactions
@@ -66,41 +71,50 @@ interface "vadControlChan" as vadChan
 interface "aiOnDemandChan" as aiChan
 interface "textCommandChan" as textChan
 
-Pipeline -> rmsChan : RMS values
-rmsChan -> Display
+' Use right-directional arrows to create a clear L-R data flow for channels.
+Pipeline --> rmsChan : RMS values
+rmsChan --> Display
 
-Pipeline -> vadChan : Audio data
-vadChan -> VAD
+Pipeline --> vadChan : Audio data
+vadChan --> VAD
 
-Recorder -> aiChan : WAV filename
-aiChan -> AI
+Recorder --> aiChan : WAV filename
+aiChan --> AI
 
-CLI -> textChan : Text prompt
-textChan -> AI
+CLI --> textChan : Text prompt
+textChan --> AI
 
 ' --- Event Bus ---
 note "The EventBus provides decoupled communication" as BusNote
-VAD .> EventBus : Publishes "recorder:start/stop"
-EventBus .> Recorder : Subscribes
+BusNote .left. EventBus
 
-AI .> EventBus : Publishes "draw"
-EventBus .> CLI : Subscribes (redraws prompt)
-EventBus .> Display : Subscribes (redraws soundbar)
+' Use directional hints to route events "up" into the bus and "down" to subscribers.
+' This helps to visually separate the publishers from the subscribers.
+VAD .up.> EventBus : Publishes "recorder:start/stop"
+AI .up.> EventBus : Publishes "draw"
+
+EventBus .down.> Recorder : Subscribes
+EventBus .down.> CLI : Subscribes (redraws prompt)
+EventBus .down.> Display : Subscribes (redraws soundbar)
 
 ' --- Direct Calls & Dependencies ---
 
 AI -> Formatter : Uses for output formatting
 AI ..> "stdout"
 
-AI -> Pipeline : Pauses/Resumes for voice response
+' Use a dotted line for control signals (like pause/resume) to distinguish from data flow.
+AI .> Pipeline : Pauses/Resumes for voice response
 AI -> API : HTTP requests
 
 ' --- Shared Services Usage ---
-Config <. App
-Config <. AI
-Config <. VAD
-Config <. Display
+' Use dotted dependency arrows for "uses" relationships to the Config service.
+' This helps differentiate these from other connections, addressing the "merged lines" issue.
+App ..> Config
+AI ..> Config
+VAD ..> Config
+Display ..> Config
 
-FlowControl .> App : Signals Ctrl+C for shutdown
+' Use a directional hint for the shutdown signal.
+FlowControl .up.> App : Signals Ctrl+C for shutdown
 
 @enduml
