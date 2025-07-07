@@ -1,0 +1,90 @@
+name: Go CI Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test-and-build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          # Enable caching for Go modules to speed up subsequent runs.
+          cache: true
+
+      - name: Install GStreamer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-good1.0-dev
+
+      - name: Run Linter
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # Using a specific version is recommended for reproducibility.
+          version: v1.59
+
+      - name: Run Go Tests with Coverage
+        # The -race flag detects race conditions, a common issue in concurrent Go programs.
+        # -coverprofile generates a coverage report that can be analyzed.
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+
+      - name: Build Go Application
+        run: go build -v -o assistant .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-binary-${{ runner.os }}
+          path: assistant
+
+  generate-diagrams:
+    name: Generate Diagrams
+    runs-on: ubuntu-latest
+    # This job can run in parallel with test-and-build to save time.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java for PlantUML
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Graphviz
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
+      - name: Cache PlantUML jar
+        id: cache-plantuml
+        uses: actions/cache@v4
+        with:
+          path: plantuml.jar
+          key: ${{ runner.os }}-plantuml-v1.2024.4
+
+      - name: Download PlantUML jar
+        if: steps.cache-plantuml.outputs.cache-hit != 'true'
+        run: wget -O plantuml.jar https://github.com/plantuml/plantuml/releases/download/v1.2024.4/plantuml-1.2024.4.jar
+
+      - name: Generate Diagrams from PUML files
+        run: java -jar plantuml.jar -tpng UML/
+
+      - name: Upload diagram artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: uml-diagrams
+          path: UML/*.png
