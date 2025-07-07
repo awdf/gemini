@@ -1,4 +1,4 @@
-package input
+package inout
 
 import (
 	"bufio"
@@ -18,6 +18,14 @@ type CLI struct {
 	cmdChan chan<- string
 	bus     *EventBus.Bus
 }
+
+const (
+	//IMPORTANT: On such terminals like KDE Konsole move down is not works without reserved next line.
+	// Sequence: reserve next line for soundbar, move up, print, clear line
+	promptPatern = "\n\033[A>\033[K"
+	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
+	soundbarPatern = "\0337\r\033[B\033[K[%s%s]\0338"
+)
 
 // NewCLI creates a new CLI instance.
 func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus) *CLI {
@@ -74,6 +82,5 @@ func (c *CLI) Run() {
 }
 
 func (c *CLI) draw() {
-	log.Println("CLI input handler started. Type a message and press Enter to send.")
-	fmt.Print("> ") // Initial prompt
+	fmt.Print(promptPatern) // Initial prompt
 }

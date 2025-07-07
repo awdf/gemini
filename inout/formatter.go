@@ -1,4 +1,4 @@
-package display
+package inout
 
 import "fmt"
 
@@ -66,7 +66,7 @@ func (f *Formatter) Print(text string) {
 
 // Println prints a formatted line with a specific color prefix.
 func (f *Formatter) Println(prefix, color string) {
-	fmt.Printf("%s%s %s\n", color, prefix, ColorReset)
+	fmt.Printf("%s%s %s", color, prefix, ColorReset)
 }
 
 // Reset prints a final newline and resets the terminal color.

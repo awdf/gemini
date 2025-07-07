@@ -1,4 +1,4 @@
-package display
+package inout
 
 import (
 	"fmt"
@@ -21,6 +21,7 @@ type RMSDisplay struct {
 	wg                   *sync.WaitGroup
 	rmsChan              <-chan float64
 	bus                  *EventBus.Bus
+	warmUpDone           bool
 }
 
 // NewRMSDisplay creates and initializes a new RMSDisplay instance.
@@ -38,6 +39,10 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 
 // printBar encapsulates the expensive printing logic.
 func (d *RMSDisplay) printBar() {
+	if !d.warmUpDone {
+		return
+	}
+
 	// Use a small threshold to avoid printing for near-silent audio.
 	if !math.IsNaN(d.currentRMS) {
 		// Since RMS is now normalized to [0.0, 1.0], we can scale it directly to the bar size.
@@ -53,8 +58,7 @@ func (d *RMSDisplay) printBar() {
 			d.lastPrintedBarLength = currentBarLength
 			bar := strings.Repeat("=", currentBarLength)
 			gap := strings.Repeat(" ", d.barWidth-currentBarLength)
-			// This is the expensive call we are throttling.
-			fmt.Printf("\033[s\n[%s%s]\033[u", bar, gap)
+			fmt.Printf(soundbarPatern, bar, gap)
 		}
 	}
 }
@@ -67,6 +71,8 @@ func (d *RMSDisplay) Run() {
 			if config.C.Debug {
 				log.Printf("Display received event: %s\n", event)
 			}
+			//First event will be fired in VAD, after warm up
+			d.warmUpDone = true
 			d.printBar()
 		}
 	})

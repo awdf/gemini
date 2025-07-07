@@ -19,8 +19,8 @@ import (
 
 	"capgemini.com/audio"
 	"capgemini.com/config"
-	"capgemini.com/display"
 	"capgemini.com/helpers"
+	"capgemini.com/inout"
 	"capgemini.com/pipeline"
 	"github.com/asaskevich/EventBus"
 	"google.golang.org/api/googleapi"
@@ -46,7 +46,7 @@ type AI struct {
 	textCmdChan         <-chan string
 	initialFileParts    []*genai.Part
 	cache               *genai.CachedContent
-	formatter           *display.Formatter
+	formatter           *inout.Formatter
 	bus                 *EventBus.Bus
 }
 
@@ -86,7 +86,7 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, flags *Flags, fil
 		textCmdChan:      textCmdChan,
 		initialFileParts: nil,
 		cache:            nil,
-		formatter:        display.NewFormatter(),
+		formatter:        inout.NewFormatter(),
 		bus:              bus,
 	}
 
@@ -126,6 +126,8 @@ func (a *AI) Run() {
 				if config.C.Debug {
 					log.Printf("AI disabled, discarding command: %s", cmd)
 				}
+				//In case of AI disabled we support CLI and draw it
+				(*a.bus).Publish("main:topic", "draw")
 			}
 		}
 		log.Println("AI Chat work finished (disabled).")
@@ -279,8 +281,8 @@ func (a *AI) VoiceQuestionWithTranscript(wavPath string, prompt string, fVoice b
 
 	//IMPORTANT: Never participate in the voice answer.
 	//Output method is not acceptable here
-	formatter := display.NewFormatter()
-	formatter.Println("Transcript:\n", display.ColorCyan)
+	formatter := inout.NewFormatter()
+	formatter.Println("Transcript:\n", inout.ColorCyan)
 	formatter.Print(transcript)
 	fmt.Println()
 
@@ -334,7 +336,7 @@ func (a *AI) generateTranscript(wavPath string) (string, error) {
 	return resp.Text(), nil
 }
 
-func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool) (string, error) {
+func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool, duration time.Duration) (string, error) {
 	// State flags to print prefixes only once per block and track formatting.
 	var thoughtStarted, answerStarted bool
 	var fullResponseText string // To accumulate the full text for history and a single TTS call
@@ -369,7 +371,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 		for _, part := range candidate.Content.Parts {
 			if part.Thought && part.Text != "" {
 				if !thoughtStarted {
-					a.formatter.Println("Thought:", display.ColorYellow)
+					a.formatter.Println("Thought:", inout.ColorYellow)
 					thoughtStarted, answerStarted = true, false // Reset answer flag
 				}
 				a.formatter.Print(part.Text)
@@ -377,10 +379,11 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 				// By checking for non-empty text, we correctly filter out the intermediate
 				// tool-use parts and only process the final text answer from the model.
 				if !answerStarted {
+					fmt.Println()
 					if fVoice {
-						a.formatter.Println("Voice answer:", display.ColorCyan)
+						a.formatter.Println("Voice answer:\n", inout.ColorCyan)
 					} else {
-						a.formatter.Println("Answer:", display.ColorCyan)
+						a.formatter.Println("Answer:\n", inout.ColorCyan)
 					}
 					answerStarted, thoughtStarted = true, false
 				}
@@ -393,16 +396,15 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 	}
 	// After the stream is finished, reset the color and print a final newline.
 	a.formatter.Reset()
-
 	// If any sources were found during the tool-use, print them.
 	if len(sources) > 0 {
-		a.formatter.Println("Sources:", display.ColorYellow)
+		a.formatter.Println("Sources:", inout.ColorYellow)
 		for uri, title := range sources {
 			if title != "" {
-				a.formatter.Println(title, display.ColorCyan)
-				a.formatter.Println(uri, display.ColorBlue)
+				a.formatter.Println(title, inout.ColorCyan)
+				a.formatter.Println(uri, inout.ColorBlue)
 			} else {
-				a.formatter.Println(uri, display.ColorBlue)
+				a.formatter.Println(uri, inout.ColorBlue)
 			}
 		}
 	}
@@ -416,6 +418,10 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 			log.Printf("ERROR: Text-to-speech failed: %v", err)
 		}
 	}
+
+	// Print execution time metric
+	a.formatter.Println(fmt.Sprintf("Request execution time: %.2fs\n", duration.Seconds()), inout.ColorGray)
+
 	return fullResponseText, nil
 }
 
@@ -442,6 +448,8 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, fVoice bool, act
 // generateAndProcessContent is a universal method to generate content from a set of parts,
 // process the streamed response, and update the conversation history.
 func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlContextDisabled bool) error {
+	startTime := time.Now()
+
 	defer (*a.bus).Publish("main:topic", "draw")
 
 	// Check if we have initial files to prepend
@@ -500,8 +508,9 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlCont
 		contents,
 		genConfig,
 	)
+	duration := time.Since(startTime)
 
-	fullResponse, err := a.Output(resp, fVoice)
+	fullResponse, err := a.Output(resp, fVoice, duration)
 	if err != nil {
 		return err // The caller can decide how to log/handle this.
 	}

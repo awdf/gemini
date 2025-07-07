@@ -14,9 +14,8 @@ import (
 
 	"capgemini.com/ai"
 	"capgemini.com/config"
-	"capgemini.com/display"
 	"capgemini.com/flow"
-	"capgemini.com/input"
+	"capgemini.com/inout"
 	"capgemini.com/pipeline"
 	"capgemini.com/recorder"
 	"capgemini.com/vad"
@@ -44,8 +43,8 @@ type App struct {
 	recorder        *recorder.Recorder
 	vadEngine       *vad.VADEngine
 	ai              *ai.AI
-	cli             *input.CLI
-	display         *display.RMSDisplay
+	cli             *inout.CLI
+	display         *inout.RMSDisplay
 	rmsDisplayChan  chan float64
 	vadControlChan  chan float64
 	fileControlChan chan string
@@ -88,8 +87,8 @@ func NewApp(flags *CliFlags) *App {
 	app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder, app.rmsDisplayChan, app.vadControlChan, app.bus)
 	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan, app.bus)
 	app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus)
-	app.display = display.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
-	app.cli = input.NewCLI(app.wg, app.textCommandChan, app.bus)
+	app.display = inout.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
+	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus)
 
 	//Collect all Runnable for future processing
 	app.runnables = []Runnable{
@@ -146,9 +145,7 @@ func (app *App) run() {
 
 	// Start the pipeline
 	app.pipeline.Play()
-	log.Println("Listening for audio...")
-	fmt.Println("Listening for audio... Recording will start when sound is detected. Press Ctrl+C to exit.")
-	fmt.Println("Use keyboard to send text prompts to the AI.")
+	fmt.Println("Listening for audio... Recording will start when sound is detected. Press Ctrl+C to exit.\nUse keyboard to send text prompts to the AI.")
 
 	// Block until the pipeline's bus signals EOS or an error.
 	app.pipeline.Loop()
