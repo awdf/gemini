@@ -127,7 +127,7 @@ func (a *AI) Run() {
 					log.Printf("AI disabled, discarding command: %s", cmd)
 				}
 				//In case of AI disabled we support CLI and draw it
-				(*a.bus).Publish("main:topic", "draw")
+				(*a.bus).Publish("main:topic", "draw:ai.run")
 			}
 		}
 		log.Println("AI Chat work finished (disabled).")
@@ -341,6 +341,9 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 	var thoughtStarted, answerStarted bool
 	var fullResponseText string // To accumulate the full text for history and a single TTS call
 
+	//Stop other output
+	(*a.bus).Publish("main:topic", "mute:ai.output")
+
 	// sources will store unique source URIs and their titles.
 	sources := make(map[string]string)
 
@@ -409,6 +412,12 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 		}
 	}
 
+	// Print execution time metric
+	a.formatter.Println(fmt.Sprintf("Request execution time: %.2fs\n", duration.Seconds()), inout.ColorGray)
+
+	//Restore other output
+	(*a.bus).Publish("main:topic", "draw:ai.output")
+
 	// After the stream is finished, if voice was enabled and we have text,
 	// make a single API call to generate the audio.
 	if fVoice && len(fullResponseText) > 0 {
@@ -418,9 +427,6 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 			log.Printf("ERROR: Text-to-speech failed: %v", err)
 		}
 	}
-
-	// Print execution time metric
-	a.formatter.Println(fmt.Sprintf("Request execution time: %.2fs\n", duration.Seconds()), inout.ColorGray)
 
 	return fullResponseText, nil
 }
@@ -449,8 +455,6 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, fVoice bool, act
 // process the streamed response, and update the conversation history.
 func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlContextDisabled bool) error {
 	startTime := time.Now()
-
-	defer (*a.bus).Publish("main:topic", "draw")
 
 	// Check if we have initial files to prepend
 	if len(a.initialFileParts) > 0 {

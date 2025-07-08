@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 
 	"capgemini.com/config"
@@ -17,6 +18,7 @@ type CLI struct {
 	wg      *sync.WaitGroup
 	cmdChan chan<- string
 	bus     *EventBus.Bus
+	muted   bool
 }
 
 const (
@@ -33,6 +35,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus) *CLI {
 		wg:      wg,
 		cmdChan: cmdChan,
 		bus:     bus,
+		muted:   true,
 	}
 }
 
@@ -46,8 +49,13 @@ func (c *CLI) Run() {
 			log.Printf("CLI received event: %s\n", event)
 		}
 
-		if event == "draw" {
+		switch {
+		case strings.HasPrefix(event, "mute:"):
+			c.muted = true
+		case strings.HasPrefix(event, "draw:"):
+			c.muted = false
 			c.draw()
+		default:
 		}
 	})
 
@@ -82,5 +90,8 @@ func (c *CLI) Run() {
 }
 
 func (c *CLI) draw() {
+	if c.muted {
+		return
+	}
 	fmt.Print(promptPatern) // Initial prompt
 }

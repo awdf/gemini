@@ -63,7 +63,7 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 		// The warm-up period has just ended. Log it and clear the timer
 		// so this check doesn't run for every subsequent chunk.
 		log.Println("VAD warm-up complete. Now actively listening for speech.")
-		(*v.bus).Publish("main:topic", "draw")
+		(*v.bus).Publish("main:topic", "draw:vad.processAudioChunk")
 		v.warmupEndTime = time.Time{}
 	}
 

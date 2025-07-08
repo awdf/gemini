@@ -22,6 +22,7 @@ type RMSDisplay struct {
 	rmsChan              <-chan float64
 	bus                  *EventBus.Bus
 	warmUpDone           bool
+	muted                bool
 }
 
 // NewRMSDisplay creates and initializes a new RMSDisplay instance.
@@ -34,12 +35,13 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 		wg:                   wg,
 		rmsChan:              rmsChan,
 		bus:                  bus,
+		muted:                true,
 	}
 }
 
 // printBar encapsulates the expensive printing logic.
 func (d *RMSDisplay) printBar() {
-	if !d.warmUpDone {
+	if !d.warmUpDone || d.muted {
 		return
 	}
 
@@ -61,19 +63,28 @@ func (d *RMSDisplay) printBar() {
 			fmt.Printf(soundbarPatern, bar, gap)
 		}
 	}
+
+	if config.C.Debug {
+		log.Printf("PrintBar RMS: %f", d.currentRMS)
+	}
 }
 
 // Run starts the goroutine to update the RMS volume bar display.
 func (d *RMSDisplay) Run() {
 	defer d.wg.Done()
+
 	(*d.bus).Subscribe("main:topic", func(event string) {
-		if event == "draw" {
-			if config.C.Debug {
-				log.Printf("Display received event: %s\n", event)
-			}
+		if config.C.Debug {
+			log.Printf("RMSDisplay received event: %s\n", event)
+		}
+		switch {
+		case strings.HasPrefix(event, "mute:"):
+			d.muted = true
+		case strings.HasPrefix(event, "draw:"):
 			//First event will be fired in VAD, after warm up
 			d.warmUpDone = true
-			d.printBar()
+			d.muted = false
+		default:
 		}
 	})
 
