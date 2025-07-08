@@ -37,6 +37,7 @@ type AIConfig struct {
 	CacheDir            string
 	CacheSystemPrompt   string
 	EnableCache         bool
+	VoiceHistory        bool
 	Retry               RetryConfig
 }
 
@@ -107,7 +108,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Voice = "Kore"
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}" // You can set this directly or use an environment variable.
-	defaultConfig.AI.MainPrompt = "Based on the transcript, please provide a transcript and concise and accurate response. Respond in the same language as the transcript."
+	defaultConfig.AI.MainPrompt = "Based on the transcript, please provide concise and accurate response. Respond in the same language as the transcript."
 	defaultConfig.AI.SystemPrompt = "You are a helpful voice assistant."
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
@@ -115,6 +116,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.CacheDir = "cache"
 	defaultConfig.AI.CacheSystemPrompt = "The following files are provided as context for our conversation."
 	defaultConfig.AI.EnableCache = false
+	defaultConfig.AI.VoiceHistory = true
 	defaultConfig.AI.Retry.MaxRetries = 3
 	defaultConfig.AI.Retry.InitialDelayMs = 1000
 	defaultConfig.AI.Retry.MaxDelayMs = 10000

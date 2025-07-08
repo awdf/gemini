@@ -44,7 +44,6 @@ type AI struct {
 	flags               *Flags
 	fileChan            <-chan string
 	textCmdChan         <-chan string
-	initialFileParts    []*genai.Part
 	cache               *genai.CachedContent
 	formatter           *inout.Formatter
 	bus                 *EventBus.Bus
@@ -77,23 +76,22 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, flags *Flags, fil
 	}))
 
 	ai := &AI{
-		ctx:              ctx,
-		client:           client,
-		wg:               wg,
-		pipeline:         pipeline,
-		flags:            flags,
-		fileChan:         fileChan,
-		textCmdChan:      textCmdChan,
-		initialFileParts: nil,
-		cache:            nil,
-		formatter:        inout.NewFormatter(),
-		bus:              bus,
+		ctx:         ctx,
+		client:      client,
+		wg:          wg,
+		pipeline:    pipeline,
+		flags:       flags,
+		fileChan:    fileChan,
+		textCmdChan: textCmdChan,
+		cache:       nil,
+		formatter:   inout.NewFormatter(),
+		bus:         bus,
 	}
 
 	if config.C.AI.EnableCache {
 		ai.uploadCache()
 	} else {
-		log.Println("AI Caching is disabled. Preparing files to be included in the first message.")
+		log.Println("AI Caching is disabled. Preparing files to be included as initial context.")
 		ai.prepareInitialFiles()
 	}
 
@@ -142,12 +140,12 @@ func (a *AI) Run() {
 				continue
 			}
 			log.Printf("Chat: Processing %s", file)
-			a.withPipelinePausedIfVoice(a.pipeline, a.flags.Voice, func() {
+			a.withPipelinePausedIfVoice(a.pipeline, func() {
 				action := func() error {
 					if a.flags.Transcript {
-						return a.VoiceQuestionWithTranscript(file, config.C.AI.MainPrompt, a.flags.Voice)
+						return a.VoiceQuestionWithTranscript(file, config.C.AI.MainPrompt)
 					}
-					return a.VoiceQuestion(file, config.C.AI.MainPrompt, a.flags.Voice)
+					return a.VoiceQuestion(file, config.C.AI.MainPrompt)
 				}
 				err := a.retryWithBackoff(action)
 				if err != nil {
@@ -163,9 +161,9 @@ func (a *AI) Run() {
 				continue
 			}
 			log.Println("Chat: Processing text prompt...")
-			a.withPipelinePausedIfVoice(a.pipeline, a.flags.Voice, func() {
+			a.withPipelinePausedIfVoice(a.pipeline, func() {
 				action := func() error {
-					return a.TextQuestion(cmd, a.flags.Voice)
+					return a.TextQuestion(cmd)
 				}
 				err := a.retryWithBackoff(action)
 				if err != nil {
@@ -221,7 +219,7 @@ func (a *AI) retryWithBackoff(action func() error) error {
 	return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
 }
 
-func (a *AI) TextQuestion(prompt string, fVoice bool) error {
+func (a *AI) TextQuestion(prompt string) error {
 	// Check prompt on any type of URLs it can consist.
 	// The Gemini API treats special URLs as direct content, not as pages to browse.
 	parts, urlContextDisabled, err := a.parsePromptForMultimedia(prompt)
@@ -233,7 +231,7 @@ func (a *AI) TextQuestion(prompt string, fVoice bool) error {
 	// Text models are able to use the URLContext tool to parse and understend web content.
 	// In case of exception urlContextDisabled is true, means a special URL was found.
 	// special URL: file, YouTube
-	if err := a.generateAndProcessContent(parts, fVoice, urlContextDisabled); err != nil {
+	if err := a.generateAndProcessContent(parts, urlContextDisabled, false); err != nil {
 		log.Printf("ERROR: processing text question: %v", err)
 		return err
 	}
@@ -242,7 +240,7 @@ func (a *AI) TextQuestion(prompt string, fVoice bool) error {
 
 // It's call of voice chat with tools enabled according to config
 // Will make one call for transcript and chat
-func (a *AI) VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
+func (a *AI) VoiceQuestion(wavPath string, prompt string) error {
 	uploadedFile, err := a.client.Files.UploadFromPath(
 		a.ctx,
 		wavPath,
@@ -253,15 +251,15 @@ func (a *AI) VoiceQuestion(wavPath string, prompt string, fVoice bool) error {
 	}
 
 	parts := []*genai.Part{
-		genai.NewPartFromText(prompt),
 		genai.NewPartFromURI(uploadedFile.URI, uploadedFile.MIMEType),
+		genai.NewPartFromText(prompt),
 	}
-	return a.generateAndProcessContent(parts, fVoice, fURLContextDisabled)
+	return a.generateAndProcessContent(parts, fURLContextDisabled, true)
 }
 
 // It's forced call of Voice chat with tool enabled ignoring config.
 // Will make 2 requests: one for transcript and second for text chat with transcript
-func (a *AI) VoiceQuestionWithTranscript(wavPath string, prompt string, fVoice bool) error {
+func (a *AI) VoiceQuestionWithTranscript(wavPath string, prompt string) error {
 	var save = config.C.AI.EnableTools
 	defer func() {
 		config.C.AI.EnableTools = save
@@ -295,7 +293,7 @@ func (a *AI) VoiceQuestionWithTranscript(wavPath string, prompt string, fVoice b
 	}
 
 	// The second step is a pure text-based query, so we can reuse the history logic.
-	return a.generateAndProcessContent(parts, fVoice, fURLContextEnabled)
+	return a.generateAndProcessContent(parts, fURLContextEnabled, false)
 }
 
 // generateTranscript performs a dedicated API call to get a transcript from an audio file.
@@ -336,7 +334,7 @@ func (a *AI) generateTranscript(wavPath string) (string, error) {
 	return resp.Text(), nil
 }
 
-func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoice bool, duration time.Duration) (string, error) {
+func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], duration time.Duration) (string, error) {
 	// State flags to print prefixes only once per block and track formatting.
 	var thoughtStarted, answerStarted bool
 	var fullResponseText string // To accumulate the full text for history and a single TTS call
@@ -383,7 +381,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 				// tool-use parts and only process the final text answer from the model.
 				if !answerStarted {
 					fmt.Println()
-					if fVoice {
+					if a.flags.Voice {
 						a.formatter.Println("Voice answer:\n", inout.ColorCyan)
 					} else {
 						a.formatter.Println("Answer:\n", inout.ColorCyan)
@@ -420,7 +418,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 
 	// After the stream is finished, if voice was enabled and we have text,
 	// make a single API call to generate the audio.
-	if fVoice && len(fullResponseText) > 0 {
+	if a.flags.Voice && len(fullResponseText) > 0 {
 		if err := a.AnswerWithVoice(fullResponseText); err != nil {
 			// Log the error but don't fail the whole operation, as the user
 			// has already received the text response.
@@ -434,8 +432,8 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], fVoic
 // withPipelinePausedIfVoice pauses and resumes the pipeline if voice is enabled,
 // executing the provided action in between. It uses a defer to ensure the pipeline
 // is always resumed.
-func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, fVoice bool, action func()) {
-	if !fVoice {
+func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, action func()) {
+	if !a.flags.Voice {
 		action()
 		return
 	}
@@ -453,19 +451,12 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, fVoice bool, act
 
 // generateAndProcessContent is a universal method to generate content from a set of parts,
 // process the streamed response, and update the conversation history.
-func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlContextDisabled bool) error {
+func (a *AI) generateAndProcessContent(parts []*genai.Part, urlContextDisabled bool, isVoicePrompt bool) error {
 	startTime := time.Now()
 
-	// Check if we have initial files to prepend
-	if len(a.initialFileParts) > 0 {
-		log.Println("Prepending initial files to the first message.")
-		// Prepend the initial file parts to the current message parts
-		parts = append(a.initialFileParts, parts...)
-		// Clear the initial parts so they are only sent once
-		a.initialFileParts = nil
-	}
 	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
-	contents := append(a.conversationHistory, userContent)
+	// Create the content for this API call, including history.
+	contentsForAPI := append(a.conversationHistory, userContent)
 
 	genConfig := &genai.GenerateContentConfig{
 		ThinkingConfig: &genai.ThinkingConfig{
@@ -509,23 +500,30 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, fVoice bool, urlCont
 	resp := a.client.Models.GenerateContentStream(
 		a.ctx,
 		config.C.AI.Model,
-		contents,
+		contentsForAPI,
 		genConfig,
 	)
 	duration := time.Since(startTime)
 
-	fullResponse, err := a.Output(resp, fVoice, duration)
+	fullResponse, err := a.Output(resp, duration)
 	if err != nil {
-		return err // The caller can decide how to log/handle this.
+		return err
 	}
 
-	// If successful, update history.
-	a.conversationHistory = append(a.conversationHistory, userContent)
-	save := []*genai.Part{
-		genai.NewPartFromText(fullResponse),
+	// If successful, update history for the next turn.
+	modelResponseContent := genai.NewContentFromParts(
+		[]*genai.Part{genai.NewPartFromText(fullResponse)},
+		genai.RoleModel,
+	)
+
+	// Conditionally add user's prompt to history.
+	// Text prompts are always added. Voice prompts are added based on config.
+	if !isVoicePrompt || config.C.AI.VoiceHistory {
+		a.conversationHistory = append(a.conversationHistory, userContent, modelResponseContent)
+	} else {
+		log.Println("Skipping voice prompt in conversation history as per configuration.")
+		a.conversationHistory = append(a.conversationHistory, modelResponseContent)
 	}
-	modelResponseContent := genai.NewContentFromParts(save, genai.RoleModel)
-	a.conversationHistory = append(a.conversationHistory, modelResponseContent)
 	return nil
 }
 
@@ -583,40 +581,72 @@ func (a *AI) AnswerWithVoice(prompt string) error {
 	return fmt.Errorf("no audio data received from API")
 }
 
-// prepareInitialFiles reads files from the cache directory and prepares them to be
-// included as context in the first message when caching is disabled.
-func (a *AI) prepareInitialFiles() {
-	cacheDir := config.C.AI.CacheDir
+// findCacheableFiles scans a directory for files that can be cached or used as initial context.
+// It filters out directories and special files like .gitkeep.
+func findCacheableFiles(cacheDir string) ([]fs.DirEntry, error) {
 	if cacheDir == "" {
-		return // Silently return if no dir is configured
+		return nil, nil // Not an error, just no directory configured.
+	}
+
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		log.Printf("Cache directory '%s' not found, skipping.", cacheDir)
+		return nil, nil
 	}
 
 	files, err := os.ReadDir(cacheDir)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("ERROR: failed to read cache directory %s: %v", cacheDir, err)
-		}
-		return
+		return nil, fmt.Errorf("failed to read cache directory %s: %w", cacheDir, err)
 	}
 
-	var filesToInclude []fs.DirEntry
+	var filesToProcess []fs.DirEntry
 	for _, file := range files {
 		if !file.IsDir() && file.Name() != ".gitkeep" {
-			filesToInclude = append(filesToInclude, file)
+			filesToProcess = append(filesToProcess, file)
 		}
+	}
+
+	if len(filesToProcess) == 0 {
+		return nil, nil
+	}
+
+	return filesToProcess, nil
+}
+
+// addInitialContextTurn adds a user message and a canned model response to the
+// conversation history and prints the response to the user.
+func (a *AI) addInitialContextTurn(userContent *genai.Content, modelResponseText string, logMessage string) {
+	modelContent := genai.NewContentFromParts(
+		[]*genai.Part{genai.NewPartFromText(modelResponseText)},
+		genai.RoleModel,
+	)
+
+	// Add both to the conversation history.
+	a.conversationHistory = append(a.conversationHistory, userContent, modelContent)
+
+	log.Println(logMessage)
+}
+
+func (a *AI) prepareInitialFiles() {
+	cacheDir := config.C.AI.CacheDir
+
+	filesToInclude, err := findCacheableFiles(cacheDir)
+	if err != nil {
+		log.Printf("ERROR: could not scan for initial files: %v", err)
+		return
 	}
 
 	if len(filesToInclude) == 0 {
 		return
 	}
 
-	log.Printf("Found %d files to include in the first message.", len(filesToInclude))
+	log.Printf("Found %d files to include as initial context.", len(filesToInclude))
 
 	var parts []*genai.Part
 	// Add the system prompt for the files first.
 	if config.C.AI.CacheSystemPrompt != "" {
 		parts = append(parts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
 	}
+	initialPartsLen := len(parts)
 
 	for _, file := range filesToInclude {
 		localPath := filepath.Join(cacheDir, file.Name())
@@ -627,37 +657,25 @@ func (a *AI) prepareInitialFiles() {
 		}
 		parts = append(parts, part)
 	}
-	a.initialFileParts = parts
+
+	// Only add the context turn if at least one file was successfully processed.
+	if len(parts) > initialPartsLen {
+		userContent := genai.NewContentFromParts(parts, genai.RoleUser)
+		modelResponseText := "OK. I have received the files and will use them as context. How can I help you?"
+		logMessage := "Initial file context and canned response have been added to the conversation history."
+		a.addInitialContextTurn(userContent, modelResponseText, logMessage)
+	}
 }
 
 // uploadCache finds all files in the configured cache directory, uploads them,
 // and creates a single cache for the model to use in subsequent conversations.
 func (a *AI) uploadCache() {
 	cacheDir := config.C.AI.CacheDir
-	if cacheDir == "" {
-		log.Println("AI.CacheDir is not configured, skipping cache upload.")
-		return
-	}
 
-	log.Printf("Checking for files in cache directory: %s", cacheDir)
-
-	// Check if cache directory exists.
-	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
-		log.Printf("Cache directory '%s' not found, skipping cache upload.", cacheDir)
-		return
-	}
-
-	files, err := os.ReadDir(cacheDir)
+	filesToCache, err := findCacheableFiles(cacheDir)
 	if err != nil {
-		log.Printf("ERROR: failed to read cache directory %s: %v", cacheDir, err)
+		log.Printf("ERROR: could not scan for cacheable files: %v", err)
 		return
-	}
-
-	var filesToCache []fs.DirEntry
-	for _, file := range files {
-		if !file.IsDir() && file.Name() != ".gitkeep" {
-			filesToCache = append(filesToCache, file)
-		}
 	}
 
 	if len(filesToCache) == 0 {
@@ -682,6 +700,14 @@ func (a *AI) uploadCache() {
 		log.Println("Creating a single cache for all provided files...")
 		if err := a.createAndStoreCache(cacheContents); err != nil {
 			log.Printf("ERROR: Failed to create and store the model cache: %v", err)
+		} else {
+			userContent := genai.NewContentFromParts(
+				[]*genai.Part{genai.NewPartFromText(config.C.AI.CacheSystemPrompt)},
+				genai.RoleUser,
+			)
+			modelResponseText := "OK. I have received the files in a cache for context. How can I help you?"
+			logMessage := "Initial file cache context and canned response have been added to the conversation history."
+			a.addInitialContextTurn(userContent, modelResponseText, logMessage)
 		}
 	}
 }

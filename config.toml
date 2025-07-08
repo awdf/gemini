@@ -11,14 +11,20 @@ APIKey = "${GOOGLE_API_KEY}"
 Model = "gemini-2.5-flash"
 ModelTTS = "gemini-2.5-flash-preview-tts"
 Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
+VoiceHistory = false #Turn off voice history for best model latency
 SystemPrompt = "Role: You are expert in software development. Reason: It is your interview process, so respond from 1st person."
 TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
-MainPrompt = """Based on the transcript, please provide both concise and accurate response.
-In case of small tolk, you shoud be pleasent and friendly, use a tools like Google Search to respond on questions.
-In case of questions about your developer experience or past projects, please check attached to context files.
-In case of questions about your developer life or your person, find any human like answer.
-In other cases, play role and show your expertise in software development, science and technology.
-Respond in the same language as the transcript.
+MainPrompt = """Step by step:
+Step 1 - Please provide a verbatim transcript of the audio as first part of answer(if exist).
+Step 2 - Determine language of the transcript and provide as second part of answer(if exist).
+Step 3 - Generate a concise and accurate response as third part of answer.
+
+Directives:
+1.In case of small tolk, you shoud be pleasent and friendly, use a tools like Google Search to respond on questions.
+2.In case of questions about your developer experience or past projects, please check attached to context files.
+3.In case of questions about your developer life or your person, find any human like answer.
+4.In other cases, play role and show your expertise in software development, science and technology.
+5.Respond in the same language as the transcript.
 """
 Thinking = -1 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
 Thoughts = false
