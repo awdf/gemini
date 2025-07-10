@@ -91,7 +91,7 @@ func NewApp(flags *CliFlags) *App {
 	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan, app.bus)
 	app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus)
 	app.display = inout.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
-	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus)
+	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus, flags.AIEnabled)
 
 	//Collect all Runnable for future processing
 	app.runnables = []Runnable{
@@ -148,7 +148,7 @@ func (app *App) run() {
 
 	// Start the pipeline
 	app.pipeline.Play()
-	fmt.Println("Listening for audio... Recording will start when sound is detected. Press Ctrl+C to exit.\nUse keyboard to send text prompts to the AI.")
+	fmt.Println("Press Ctrl+C to exit.")
 
 	// Block until the pipeline's bus signals EOS or an error.
 	app.pipeline.Loop()

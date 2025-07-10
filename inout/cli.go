@@ -15,10 +15,11 @@ import (
 
 // CLI handles reading user input from the command line.
 type CLI struct {
-	wg      *sync.WaitGroup
-	cmdChan chan<- string
-	bus     *EventBus.Bus
-	muted   bool
+	wg        *sync.WaitGroup
+	cmdChan   chan<- string
+	bus       *EventBus.Bus
+	muted     bool
+	aiEnabled bool
 }
 
 const (
@@ -30,12 +31,17 @@ const (
 )
 
 // NewCLI creates a new CLI instance.
-func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus) *CLI {
+func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnabled bool) *CLI {
+	if aiEnabled {
+		fmt.Println("Use keyboard to send text prompts to the AI.")
+	}
+
 	return &CLI{
-		wg:      wg,
-		cmdChan: cmdChan,
-		bus:     bus,
-		muted:   true,
+		wg:        wg,
+		cmdChan:   cmdChan,
+		bus:       bus,
+		muted:     true,
+		aiEnabled: aiEnabled,
 	}
 }
 
@@ -43,6 +49,14 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus) *CLI {
 func (c *CLI) Run() {
 	defer close(c.cmdChan)
 	defer c.wg.Done()
+
+	if !c.aiEnabled {
+		log.Println("AI is disabled, CLI input will not be processed.")
+		// Block until shutdown, but don't read from stdin.
+		<-*flow.GetListener()
+		log.Println("CLI input handler shutting down (AI disabled).")
+		return
+	}
 
 	(*c.bus).Subscribe("main:topic", func(event string) {
 		if config.C.Debug {

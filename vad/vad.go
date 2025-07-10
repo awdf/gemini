@@ -27,6 +27,7 @@ type VADEngine struct {
 func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-chan float64, bus *EventBus.Bus) *VADEngine {
 	// Get the warm-up duration from the configuration.
 	warmupDuration := config.C.VAD.WarmUpDuration()
+	fmt.Println("Listening for audio... Recording will start when sound is detected. ")
 	if warmupDuration > 0 {
 		log.Printf("VAD initialised with a warm-up period of %s", warmupDuration)
 		fmt.Printf("VAD initialised with a warm-up period of %s\n", warmupDuration)
