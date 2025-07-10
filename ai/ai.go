@@ -143,9 +143,9 @@ func (a *AI) Run() {
 			a.withPipelinePausedIfVoice(a.pipeline, func() {
 				action := func() error {
 					if a.flags.Transcript {
-						return a.VoiceQuestionWithTranscript(file, config.C.AI.MainPrompt)
+						return a.VoiceQuestionWithTranscript(file, config.C.AI.VoicePrompt)
 					}
-					return a.VoiceQuestion(file, config.C.AI.MainPrompt)
+					return a.VoiceQuestion(file, config.C.AI.VoicePrompt)
 				}
 				err := a.retryWithBackoff(action)
 				if err != nil {
@@ -380,11 +380,11 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 				// By checking for non-empty text, we correctly filter out the intermediate
 				// tool-use parts and only process the final text answer from the model.
 				if !answerStarted {
-					fmt.Println()
+					a.formatter.Clear()
 					if a.flags.Voice {
-						a.formatter.Println("Voice answer:\n", inout.ColorCyan)
+						a.formatter.Println("Voice answer:", inout.ColorCyan)
 					} else {
-						a.formatter.Println("Answer:\n", inout.ColorCyan)
+						a.formatter.Println("Answer:", inout.ColorCyan)
 					}
 					answerStarted, thoughtStarted = true, false
 				}

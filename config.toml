@@ -14,7 +14,7 @@ Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
 VoiceHistory = false #Turn off voice history for best model latency
 SystemPrompt = "Role: You are expert in software development. Reason: It is your interview process, so respond from 1st person."
 TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
-MainPrompt = """Step by step:
+VoicePrompt = """Step by step:
 Step 1 - Please provide a verbatim transcript of the audio as first part of answer(if exist).
 Step 2 - Determine language of the transcript and provide as second part of answer(if exist).
 Step 3 - Generate a concise and accurate response as third part of answer.
@@ -26,7 +26,7 @@ Directives:
 4.In other cases, play role and show your expertise in software development, science and technology.
 5.Respond in the same language as the transcript.
 """
-Thinking = -1 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
+Thinking = 0 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
 Thoughts = false
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
 
@@ -63,6 +63,6 @@ UpdateIntervalMs = 50
 
 [pipeline]
 # Physical sound device for input (Default system device by default)
-Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+# Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 # GStreamer source buffer time in microseconds. Helps prevent race conditions.
 BufferTimeUs = 500000

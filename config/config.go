@@ -29,7 +29,7 @@ type AIConfig struct {
 	ModelTTS            string
 	Voice               string
 	APIKey              string
-	MainPrompt          string
+	VoicePrompt         string
 	SystemPrompt        string
 	Thinking            int32
 	Thoughts            bool
@@ -108,7 +108,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Voice = "Kore"
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}" // You can set this directly or use an environment variable.
-	defaultConfig.AI.MainPrompt = "Based on the transcript, please provide concise and accurate response. Respond in the same language as the transcript."
+	defaultConfig.AI.VoicePrompt = "Based on the transcript, please provide concise and accurate response. Respond in the same language as the transcript."
 	defaultConfig.AI.SystemPrompt = "You are a helpful voice assistant."
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false

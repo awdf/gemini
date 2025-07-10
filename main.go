@@ -82,6 +82,9 @@ func NewApp(flags *CliFlags) *App {
 		Enabled:    flags.AIEnabled,
 	}
 
+	//Initial message to AI. Build start context.
+	app.textCommandChan <- "Ready?"
+
 	// Create the main components with Dependency Injection.
 	app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
 	app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder, app.rmsDisplayChan, app.vadControlChan, app.bus)
