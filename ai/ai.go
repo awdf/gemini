@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -29,9 +30,8 @@ import (
 
 // Flags holds the command-line flags that control AI behavior.
 type Flags struct {
-	Voice      bool // Corresponds to the -voice flag
-	Transcript bool // Corresponds to the -ts flag
-	Enabled    bool // Corresponds to the -no-ai flag (negated)
+	// Enabled is the master switch for the AI component. Other toggles are in config.
+	Enabled bool // Corresponds to the -no-ai flag (negated)
 }
 
 // AI encapsulates the state and logic for interacting with the Gemini AI.
@@ -47,6 +47,7 @@ type AI struct {
 	cache               *genai.CachedContent
 	formatter           *inout.Formatter
 	bus                 *EventBus.Bus
+	initialContextAdded bool
 }
 
 const (
@@ -76,16 +77,17 @@ func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, flags *Flags, fil
 	}))
 
 	ai := &AI{
-		ctx:         ctx,
-		client:      client,
-		wg:          wg,
-		pipeline:    pipeline,
-		flags:       flags,
-		fileChan:    fileChan,
-		textCmdChan: textCmdChan,
-		cache:       nil,
-		formatter:   inout.NewFormatter(),
-		bus:         bus,
+		ctx:                 ctx,
+		client:              client,
+		wg:                  wg,
+		pipeline:            pipeline,
+		flags:               flags,
+		fileChan:            fileChan,
+		textCmdChan:         textCmdChan,
+		cache:               nil,
+		formatter:           inout.NewFormatter(),
+		bus:                 bus,
+		initialContextAdded: false,
 	}
 
 	if config.C.AI.EnableCache {
@@ -132,6 +134,8 @@ func (a *AI) Run() {
 		return
 	}
 
+	(*a.bus).Subscribe("ai:topic", a.handleEvents)
+
 	for a.fileChan != nil || a.textCmdChan != nil {
 		select {
 		case file, ok := <-a.fileChan:
@@ -142,7 +146,7 @@ func (a *AI) Run() {
 			log.Printf("Chat: Processing %s", file)
 			a.withPipelinePausedIfVoice(a.pipeline, func() {
 				action := func() error {
-					if a.flags.Transcript {
+					if config.C.AI.Transcript {
 						return a.VoiceQuestionWithTranscript(file, config.C.AI.VoicePrompt)
 					}
 					return a.VoiceQuestion(file, config.C.AI.VoicePrompt)
@@ -174,6 +178,69 @@ func (a *AI) Run() {
 	}
 
 	log.Println("AI Chat work finished")
+}
+
+// handleEvents processes commands sent to the AI component via the event bus.
+func (a *AI) handleEvents(event string) {
+	if config.C.Debug {
+		log.Printf("AI component received event: %s\n", event)
+	}
+	parts := strings.SplitN(event, ":", 2)
+	if len(parts) < 2 {
+		log.Printf("WARNING: received malformed AI event: %s", event)
+		return
+	}
+	command, payload := parts[0], parts[1]
+
+	switch command {
+	case "save":
+		if err := a.saveConversationHistory(payload); err != nil {
+			log.Printf("ERROR: failed to save conversation history to %s: %v", payload, err)
+		}
+	}
+}
+
+// saveConversationHistory writes the current conversation to a text file.
+func (a *AI) saveConversationHistory(filename string) error {
+	f, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create history file: %w", err)
+	}
+	defer f.Close()
+
+	writer := bufio.NewWriter(f)
+
+	historyToSave := a.conversationHistory
+	// If initial context was added, the first two entries are the file context
+	// and the canned response. We skip them for a cleaner history file.
+	if a.initialContextAdded && len(historyToSave) >= 2 {
+		historyToSave = historyToSave[2:]
+	}
+
+	for _, content := range historyToSave {
+		role := content.Role
+		if role == "" {
+			role = "system" // System instructions have an empty role.
+		}
+
+		// Concatenate text from all parts of the content.
+		var textBuilder strings.Builder
+		for _, part := range content.Parts {
+			// In older library versions, Part is a struct. Access the Text field directly.
+			if part != nil && part.Text != "" {
+				textBuilder.WriteString(part.Text)
+			}
+		}
+		if _, err := writer.WriteString(fmt.Sprintf("--- %s ---\n%s\n\n", strings.ToUpper(role), textBuilder.String())); err != nil {
+			return err
+		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	log.Printf("Conversation history successfully saved to %s", filename)
+	return nil
 }
 
 // retryWithBackoff wraps an action with a retry mechanism, using exponential backoff for specific, transient errors.
@@ -370,27 +437,31 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 		}
 
 		for _, part := range candidate.Content.Parts {
-			if part.Thought && part.Text != "" {
+			if part == nil {
+				continue
+			}
+
+			// A part represents a "thought" if it's a function call.
+			// This logic is based on older, struct-based genai.Part.
+			if part.FunctionCall != nil {
 				if !thoughtStarted {
 					a.formatter.Println("Thought:", inout.ColorYellow)
 					thoughtStarted, answerStarted = true, false // Reset answer flag
 				}
-				a.formatter.Print(part.Text)
-			} else if part.Text != "" {
-				// By checking for non-empty text, we correctly filter out the intermediate
-				// tool-use parts and only process the final text answer from the model.
+				// We can format the function call to be readable.
+				thoughtText := fmt.Sprintf("Tool Call: %s(%v)\n", part.FunctionCall.Name, part.FunctionCall.Args)
+				a.formatter.Print(thoughtText)
+			} else if part.Text != "" { // A part is part of the answer if it has text.
 				if !answerStarted {
 					a.formatter.Clear()
-					if a.flags.Voice {
+					if config.C.AI.VoiceEnabled {
 						a.formatter.Println("Voice answer:", inout.ColorCyan)
 					} else {
 						a.formatter.Println("Answer:", inout.ColorCyan)
 					}
 					answerStarted, thoughtStarted = true, false
 				}
-
 				a.formatter.Print(part.Text)
-
 				fullResponseText += part.Text
 			}
 		}
@@ -418,7 +489,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 
 	// After the stream is finished, if voice was enabled and we have text,
 	// make a single API call to generate the audio.
-	if a.flags.Voice && len(fullResponseText) > 0 {
+	if config.C.AI.VoiceEnabled && len(fullResponseText) > 0 {
 		if err := a.AnswerWithVoice(fullResponseText); err != nil {
 			// Log the error but don't fail the whole operation, as the user
 			// has already received the text response.
@@ -433,7 +504,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 // executing the provided action in between. It uses a defer to ensure the pipeline
 // is always resumed.
 func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, action func()) {
-	if !a.flags.Voice {
+	if !config.C.AI.VoiceEnabled {
 		action()
 		return
 	}
@@ -623,6 +694,7 @@ func (a *AI) addInitialContextTurn(userContent *genai.Content, modelResponseText
 	// Add both to the conversation history.
 	a.conversationHistory = append(a.conversationHistory, userContent, modelContent)
 
+	a.initialContextAdded = true
 	log.Println(logMessage)
 }
 
@@ -701,8 +773,11 @@ func (a *AI) uploadCache() {
 		if err := a.createAndStoreCache(cacheContents); err != nil {
 			log.Printf("ERROR: Failed to create and store the model cache: %v", err)
 		} else {
+			// This is a placeholder user message to create a valid conversation turn.
+			// The actual context (files and system prompt) is in the cache itself.
+			placeholderUserPrompt := "I have provided some files for context."
 			userContent := genai.NewContentFromParts(
-				[]*genai.Part{genai.NewPartFromText(config.C.AI.CacheSystemPrompt)},
+				[]*genai.Part{genai.NewPartFromText(placeholderUserPrompt)},
 				genai.RoleUser,
 			)
 			modelResponseText := "OK. I have received the files in a cache for context. How can I help you?"

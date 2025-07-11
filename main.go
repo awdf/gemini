@@ -77,9 +77,8 @@ func NewApp(flags *CliFlags) *App {
 
 	//Copy of flags for AI component
 	aiFlags := &ai.Flags{
-		Voice:      flags.Voice,
-		Transcript: flags.Transcript,
-		Enabled:    flags.AIEnabled,
+		// Voice and Transcript are now managed via the global config.
+		Enabled: flags.AIEnabled,
 	}
 
 	//Initial message to AI. Build start context.
@@ -128,6 +127,14 @@ func main() {
 	flow.EnableControl()
 
 	config.Load(flags.ConfigPath)
+
+	// Command-line flags override config file settings for convenience.
+	if flags.Voice {
+		config.C.AI.VoiceEnabled = true
+	}
+	if flags.Transcript {
+		config.C.AI.Transcript = true
+	}
 	gst.Init(nil)
 
 	NewApp(flags).run()

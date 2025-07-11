@@ -38,6 +38,8 @@ type AIConfig struct {
 	CacheSystemPrompt   string
 	EnableCache         bool
 	VoiceHistory        bool
+	VoiceEnabled        bool
+	Transcript          bool
 	Retry               RetryConfig
 }
 
@@ -117,6 +119,8 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.CacheSystemPrompt = "The following files are provided as context for our conversation."
 	defaultConfig.AI.EnableCache = false
 	defaultConfig.AI.VoiceHistory = true
+	defaultConfig.AI.VoiceEnabled = false
+	defaultConfig.AI.Transcript = false
 	defaultConfig.AI.Retry.MaxRetries = 3
 	defaultConfig.AI.Retry.InitialDelayMs = 1000
 	defaultConfig.AI.Retry.MaxDelayMs = 10000
