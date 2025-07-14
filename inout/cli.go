@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"capgemini.com/config"
 	"capgemini.com/flow"
@@ -97,17 +98,48 @@ func (c *CLI) Run() {
 		case <-*flow.GetListener(): // Listens for Ctrl+C
 			log.Println("CLI input handler shutting down.")
 			return
-		case line, ok := <-inputChan:
+		case firstLine, ok := <-inputChan:
 			if !ok {
 				log.Println("Stdin closed, CLI input handler shutting down.")
 				return
 			}
-			if line != "" {
-				if strings.HasPrefix(line, "/") {
-					c.command(line[1:])
-					continue
+
+			// If the first line looks like a command, process it immediately
+			// and don't wait for more lines. This preserves the existing behavior
+			// for single-line commands and prevents multi-line pastes from being
+			// misinterpreted as a single, large command.
+			if strings.HasPrefix(firstLine, "/") {
+				c.command(firstLine[1:])
+				continue
+			}
+
+			// It's not a command, so it might be part of a multi-line paste.
+			// We'll collect subsequent lines that arrive in a very short window.
+			lines := []string{firstLine}
+			pasteTimeout := time.NewTimer(50 * time.Millisecond) // A small window to catch subsequent pasted lines.
+
+		collecting:
+			for {
+				select {
+				case nextLine, ok := <-inputChan:
+					if !ok {
+						pasteTimeout.Stop()
+						break collecting
+					}
+					lines = append(lines, nextLine)
+					// Reset the timer each time a new line arrives quickly.
+					if !pasteTimeout.Stop() {
+						<-pasteTimeout.C // Drain the channel if Stop() returns false.
+					}
+					pasteTimeout.Reset(50 * time.Millisecond)
+				case <-pasteTimeout.C:
+					break collecting // Timer fired, we're done collecting.
 				}
-				c.cmdChan <- line
+			}
+
+			fullPrompt := strings.Join(lines, "\n")
+			if fullPrompt != "" {
+				c.cmdChan <- fullPrompt
 			} else {
 				c.draw()
 			}
