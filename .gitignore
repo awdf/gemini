@@ -1,6 +1,7 @@
 *.wav
 *.com
 *.log
+*.txt
 .vscode
 _**
 cache/*

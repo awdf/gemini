@@ -16,11 +16,11 @@ const (
 	ColorDarkGray    = "\033[90m" // For subtle text like sources
 	ColorRed         = "\033[91m" //Reserved
 	ColorGreen       = "\033[92m" //Reserved
-	ColorYellow      = "\033[93m" // For *italic* text
+	ColorYellow      = "\033[93m" //Reserved
 	ColorBlue        = "\033[94m" //Reserved
 	ColorMagenta     = "\033[95m" //Reserved
 	ColorCyan        = "\033[96m" // For `inline code` blocks
-	ColorWhite       = "\033[97m" // For special emphasis
+	ColorWhite       = "\033[97m" // For *italic* text
 )
 
 // Formatter handles stateful, formatted printing to the terminal,
@@ -75,7 +75,7 @@ func (f *Formatter) Print(text string) {
 		if runes[i] == '*' {
 			f.inItalic = !f.inItalic
 			if f.inItalic {
-				fmt.Print(ColorYellow)
+				fmt.Print(ColorWhite)
 			} else {
 				fmt.Print(ColorReset)
 			}

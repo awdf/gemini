@@ -56,18 +56,6 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	// Check if the warm-up period is active.
-	if !v.warmupEndTime.IsZero() {
-		if time.Now().Before(v.warmupEndTime) {
-			return // Still in warm-up, so ignore this audio chunk.
-		}
-		// The warm-up period has just ended. Log it and clear the timer
-		// so this check doesn't run for every subsequent chunk.
-		log.Println("VAD warm-up complete. Now actively listening for speech.")
-		(*v.bus).Publish("main:topic", "draw:vad.processAudioChunk")
-		v.warmupEndTime = time.Time{}
-	}
-
 	isLoud := rms > config.C.VAD.SilenceThreshold
 
 	if isLoud {
@@ -103,6 +91,21 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 func (v *VADEngine) Run() {
 	defer close(v.fileControlChan)
 	defer v.wg.Done()
+	log.Println("VAD work started")
+
+	// Handle warm-up period by simply waiting for the duration to pass.
+	// This prevents the VAD from triggering immediately on startup noise.
+	if !v.warmupEndTime.IsZero() && time.Now().Before(v.warmupEndTime) {
+		// done := make(chan struct{})
+		duration := time.Until(v.warmupEndTime)
+		log.Printf("VAD warm-up started. Waiting for %s.", duration.Round(time.Second))
+		// go inout.DisplayWaiting("WarmingUp...", done)
+		time.Sleep(duration)
+		log.Println("VAD warm-up complete. Now actively listening for speech.")
+		// close(done)
+	}
+
+	(*v.bus).Publish("main:topic", "draw:vad.run")
 
 	for rms := range v.vadControlChan {
 		if config.C.Debug {

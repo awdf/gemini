@@ -568,13 +568,22 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, urlContextDisabled b
 		}
 	}
 
+	// Start the waiting animation in a separate goroutine.
+	done := make(chan struct{})
+	go inout.DisplayWaiting("Thinking...", done)
+
+	// This call is blocking and can take a long time for complex prompts.
+	// It waits for the server to do pre-processing (like transcribing a video)
+	// before it returns the iterator.
 	resp := a.client.Models.GenerateContentStream(
 		a.ctx,
 		config.C.AI.Model,
 		contentsForAPI,
 		genConfig,
 	)
+	//Measures "Time To First Byte" (TTFB)
 	duration := time.Since(startTime)
+	close(done) // Signal the waiting display to stop.
 
 	fullResponse, err := a.Output(resp, duration)
 	if err != nil {
