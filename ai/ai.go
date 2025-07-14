@@ -347,7 +347,7 @@ func (a *AI) VoiceQuestionWithTranscript(wavPath string, prompt string) error {
 	//IMPORTANT: Never participate in the voice answer.
 	//Output method is not acceptable here
 	formatter := inout.NewFormatter()
-	formatter.Println("Transcript:\n", inout.ColorCyan)
+	formatter.Println("Transcript:\n", inout.ColorDarkCyan)
 	formatter.Print(transcript)
 	fmt.Println()
 
@@ -445,7 +445,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 			// This logic is based on older, struct-based genai.Part.
 			if part.FunctionCall != nil {
 				if !thoughtStarted {
-					a.formatter.Println("Thought:", inout.ColorYellow)
+					a.formatter.Println("Thought:", inout.ColorDarkYellow)
 					thoughtStarted, answerStarted = true, false // Reset answer flag
 				}
 				// We can format the function call to be readable.
@@ -455,9 +455,9 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 				if !answerStarted {
 					a.formatter.Clear()
 					if config.C.AI.VoiceEnabled {
-						a.formatter.Println("Voice answer:", inout.ColorCyan)
+						a.formatter.Println("Voice answer:", inout.ColorDarkCyan)
 					} else {
-						a.formatter.Println("Answer:", inout.ColorCyan)
+						a.formatter.Println("Answer:", inout.ColorDarkCyan)
 					}
 					answerStarted, thoughtStarted = true, false
 				}
@@ -470,19 +470,19 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 	a.formatter.Reset()
 	// If any sources were found during the tool-use, print them.
 	if len(sources) > 0 {
-		a.formatter.Println("Sources:", inout.ColorYellow)
+		a.formatter.Println("Sources:", inout.ColorDarkYellow)
 		for uri, title := range sources {
 			if title != "" {
-				a.formatter.Println(title, inout.ColorCyan)
-				a.formatter.Println(uri, inout.ColorBlue)
+				a.formatter.Println(title, inout.ColorDarkCyan)
+				a.formatter.Println(uri, inout.ColorDarkBlue)
 			} else {
-				a.formatter.Println(uri, inout.ColorBlue)
+				a.formatter.Println(uri, inout.ColorDarkBlue)
 			}
 		}
 	}
 
 	// Print execution time metric
-	a.formatter.Println(fmt.Sprintf("Request execution time: %.2fs\n", duration.Seconds()), inout.ColorGray)
+	a.formatter.Println(fmt.Sprintf("Request execution time: %.2fs\n", duration.Seconds()), inout.ColorDarkGray)
 
 	//Restore other output
 	(*a.bus).Publish("main:topic", "draw:ai.output")

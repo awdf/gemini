@@ -3,21 +3,33 @@ package inout
 import "fmt"
 
 // ANSI color codes for terminal output.
+// https://github.com/ChrisMaunder/How-to-Change-Text-Color-in-a-Linux-Terminal
 const (
-	ColorReset  = "\033[0m"
-	ColorYellow = "\033[33m" // For "Thought:" prefix
-	ColorCyan   = "\033[36m" // For "Answer:" prefix
-	ColorWhite  = "\033[97m" // For **bold** text
-	ColorGreen  = "\033[32m" // For ```code``` blocks
-	ColorGray   = "\033[90m" // For subtle text like sources
-	ColorBlue   = "\033[34m" // For links highlighting
+	ColorReset       = "\033[0m"
+	ColorBlack       = "\033[30m" //Reserved
+	ColorDarkRed     = "\033[31m" // For errors or warnings
+	ColorDarkGreen   = "\033[32m" // For ```code``` blocks
+	ColorDarkYellow  = "\033[33m" // For "Thought:" prefix
+	ColorDarkBlue    = "\033[34m" // For links highlighting
+	ColorDarkMagenta = "\033[35m" // For **bold** text
+	ColorDarkCyan    = "\033[36m" // For "Answer:" prefix
+	ColorDarkGray    = "\033[90m" // For subtle text like sources
+	ColorRed         = "\033[91m" //Reserved
+	ColorGreen       = "\033[92m" //Reserved
+	ColorYellow      = "\033[93m" // For *italic* text
+	ColorBlue        = "\033[94m" //Reserved
+	ColorMagenta     = "\033[95m" //Reserved
+	ColorCyan        = "\033[96m" // For `inline code` blocks
+	ColorWhite       = "\033[97m" // For special emphasis
 )
 
 // Formatter handles stateful, formatted printing to the terminal,
 // including markdown-like syntax and ANSI colors.
 type Formatter struct {
-	inBold      bool
-	inCodeBlock bool
+	inBold       bool
+	inCodeBlock  bool
+	inInlineCode bool
+	inItalic     bool
 }
 
 // NewFormatter creates a new terminal text formatter.
@@ -33,7 +45,7 @@ func (f *Formatter) Print(text string) {
 		if i+2 < len(runes) && runes[i] == '`' && runes[i+1] == '`' && runes[i+2] == '`' {
 			f.inCodeBlock = !f.inCodeBlock
 			if f.inCodeBlock {
-				fmt.Print(ColorGreen)
+				fmt.Print(ColorDarkGreen)
 			} else {
 				fmt.Print(ColorReset)
 			}
@@ -51,11 +63,33 @@ func (f *Formatter) Print(text string) {
 		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
 			f.inBold = !f.inBold
 			if f.inBold {
-				fmt.Print(ColorWhite)
+				fmt.Print(ColorDarkMagenta)
 			} else {
 				fmt.Print(ColorReset)
 			}
 			i++ // Advance past the marker.
+			continue
+		}
+
+		// Check for italic marker.
+		if runes[i] == '*' {
+			f.inItalic = !f.inItalic
+			if f.inItalic {
+				fmt.Print(ColorYellow)
+			} else {
+				fmt.Print(ColorReset)
+			}
+			continue
+		}
+
+		// Check for inline code marker.
+		if runes[i] == '`' {
+			f.inInlineCode = !f.inInlineCode
+			if f.inInlineCode {
+				fmt.Print(ColorCyan)
+			} else {
+				fmt.Print(ColorReset)
+			}
 			continue
 		}
 
