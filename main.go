@@ -192,9 +192,7 @@ func (app *App) initLogging() {
 	log.SetPrefix("\x20")
 	log.Println("### Application started!!!")
 
-	if config.C.Debug {
-		log.Println("!!! DEBUG MODE ENABLED !!!")
-	}
+	config.DebugPrintln("!!! DEBUG MODE ENABLED !!!")
 
 	if !app.flags.AIEnabled {
 		log.Print("AI processing is disabled. The application will only record audio.")

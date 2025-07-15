@@ -233,7 +233,7 @@ func (p *VadPipeline) Run() {
 			continue
 		}
 
-		if config.C.Debug {
+		if config.C.Trace {
 			log.Println("Puller goroutine: received sample")
 		}
 

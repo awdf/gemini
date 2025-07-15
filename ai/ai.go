@@ -115,17 +115,14 @@ func (a *AI) Run() {
 					a.fileChan = nil
 					continue
 				}
-				if config.C.Debug {
-					log.Printf("AI disabled, discarding file: %s", file)
-				}
+				config.DebugPrintf("AI disabled, discarding file: %s", file)
 			case cmd, ok := <-a.textCmdChan:
 				if !ok {
 					a.textCmdChan = nil
 					continue
 				}
-				if config.C.Debug {
-					log.Printf("AI disabled, discarding command: %s", cmd)
-				}
+
+				config.DebugPrintf("AI disabled, discarding command: %s", cmd)
 				//In case of AI disabled we support CLI and draw it
 				(*a.bus).Publish("main:topic", "draw:ai.run")
 			}
@@ -182,9 +179,7 @@ func (a *AI) Run() {
 
 // handleEvents processes commands sent to the AI component via the event bus.
 func (a *AI) handleEvents(event string) {
-	if config.C.Debug {
-		log.Printf("AI component received event: %s\n", event)
-	}
+	config.DebugPrintf("AI component received event: %s\n", event)
 	parts := strings.SplitN(event, ":", 2)
 	if len(parts) < 2 {
 		log.Printf("WARNING: received malformed AI event: %s", event)

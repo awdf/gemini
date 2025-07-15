@@ -14,6 +14,7 @@ var C Config
 // Config defines the structure of the configuration file.
 type Config struct {
 	Debug    bool
+	Trace    bool
 	LogFile  string
 	AI       AIConfig
 	VAD      VADConfig
@@ -104,6 +105,7 @@ func createDefaultConfig(path string) {
 	defaultConfig := C // Start with zero-value struct
 	// Populate with default values
 	defaultConfig.Debug = false
+	defaultConfig.Trace = false
 	defaultConfig.LogFile = "app.log"
 	defaultConfig.AI.Model = "gemini-2.5-flash"
 	defaultConfig.AI.ModelTTS = "gemini-2.5-flash-preview-tts"
@@ -139,6 +141,21 @@ func createDefaultConfig(path string) {
 
 	if err := toml.NewEncoder(f).Encode(defaultConfig); err != nil {
 		log.Fatalf("Failed to write to default config file: %v", err)
+	}
+}
+func IsDebug() bool {
+	return C.Debug || C.Trace
+}
+
+func DebugPrintf(format string, args ...interface{}) {
+	if IsDebug() {
+		log.Printf(format, args...)
+	}
+}
+
+func DebugPrintln(args ...interface{}) {
+	if IsDebug() {
+		log.Println(args...)
 	}
 }
 

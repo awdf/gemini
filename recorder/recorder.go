@@ -59,7 +59,7 @@ func (r *Recorder) Run() {
 
 	for {
 
-		if config.C.Debug {
+		if config.C.Trace {
 			log.Println("Write to file")
 		}
 

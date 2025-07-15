@@ -69,25 +69,24 @@ func (c *CLI) Run() {
 		return
 	}
 
-	(*c.bus).Subscribe("main:topic", func(event string) {
-		// if config.C.Debug {
-		log.Printf("CLI received event: %s\n", event)
-		// }
+	(*c.bus).SubscribeAsync("main:topic", func(event string) {
+
+		config.DebugPrintf("CLI received event: %s\n", event)
 
 		switch {
-		case strings.HasPrefix(event, "ready:"):
-			c.warmUpDone = true
-			c.muted = false
-			c.draw() // Initial prompt
 		case strings.HasPrefix(event, "mute:"):
 			c.muted = true
 		case strings.HasPrefix(event, "draw:"):
 			c.muted = false
 			c.draw() //Next prompts
+		case strings.HasPrefix(event, "ready:"):
+			c.warmUpDone = true
+			c.muted = false
+			c.draw() // Initial prompt
 		default:
-			log.Printf("CLI drop event: %s\n", event)
+			config.DebugPrintf("CLI drop event: %s\n", event)
 		}
-	})
+	}, false)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	inputChan := make(chan string)
@@ -162,7 +161,7 @@ func (c *CLI) draw() {
 	// Publish a separate event for the sound bar AFTER the CLI prompt is printed.
 	// This creates a specific drawing order and prevents a race condition
 	// where the sound bar could be drawn before or over the prompt.
-	(*c.bus).Publish("main:topic", "bar:cli.run")
+	(*c.bus).Publish("main:topic", "show:cli.run")
 }
 
 func (c *CLI) command(cmd string) {
@@ -172,9 +171,7 @@ func (c *CLI) command(cmd string) {
 
 	switch commandName {
 	case "exit":
-		// Simulate Ctrl+C to trigger a graceful shutdown.
-		p, _ := os.FindProcess(os.Getpid())
-		p.Signal(os.Interrupt)
+		flow.Quit()
 	case "save":
 		(*c.bus).Publish("ai:topic", "save:history.txt")
 		fmt.Println("Conversation history save requested to history.txt.")

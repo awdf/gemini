@@ -2,7 +2,8 @@
 LogFile = "app.log"
 
 # Enable or disable debug logging for all modules.
-Debug = false 
+Debug = false
+Trace = false
 
 [ai]
 # The API Key for the AI service. Can be set directly or via an environment variable.
@@ -49,7 +50,7 @@ SilenceThreshold = 0.02
 HangoverDurationSec = 2.0
 # Duration to ignore audio at startup to allow the pipeline to stabilize.
 # This prevents initial hardware "pops" from triggering a recording.
-WarmupDuration = "2000ms"
+WarmupDuration = "12000ms"
 
 [recorder]
 # Recordings shorter than this (in bytes) will be deleted.

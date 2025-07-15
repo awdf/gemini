@@ -65,7 +65,7 @@ func (d *RMSDisplay) printBar() {
 		}
 	}
 
-	if config.C.Debug {
+	if config.C.Trace {
 		log.Printf("PrintBar RMS: %f", d.currentRMS)
 	}
 }
@@ -74,29 +74,27 @@ func (d *RMSDisplay) printBar() {
 func (d *RMSDisplay) Run() {
 	defer d.wg.Done()
 
-	(*d.bus).Subscribe("main:topic", func(event string) {
-		// if config.C.Debug {
-		log.Printf("RMSDisplay received event: %s\n", event)
-		// }
+	(*d.bus).SubscribeAsync("main:topic", func(event string) {
+		config.DebugPrintf("Bar received event: %s\n", event)
 		switch {
-		case strings.HasPrefix(event, "ready:"):
-			d.warmUpDone = true
-			d.muted = false
 		case strings.HasPrefix(event, "mute:"):
 			d.muted = true
 		case strings.HasPrefix(event, "draw:"):
 			d.muted = false
-		case strings.HasPrefix(event, "bar:"):
+		case strings.HasPrefix(event, "show:"):
 			// This event is fired by the CLI *after* it has printed its prompt.
 			// Listening for this specific event, instead of the more generic 'draw:',
 			// ensures that the sound bar is always drawn *after* the CLI prompt,
 			// preventing UI rendering race conditions.
 			d.muted = false
 			d.printBar()
+		case strings.HasPrefix(event, "ready:"):
+			d.warmUpDone = true
+			d.muted = false
 		default:
-			log.Printf("RMSDisplay drop event: %s\n", event)
+			config.DebugPrintf("Bar drop event: %s\n", event)
 		}
-	})
+	}, false)
 
 	// Refresh the display at a fixed rate (e.g., 20 times per second)
 	// This is fast enough for a smooth UI but prevents overwhelming the terminal.
@@ -104,7 +102,7 @@ func (d *RMSDisplay) Run() {
 	defer ticker.Stop()
 
 	for {
-		if config.C.Debug {
+		if config.C.Trace {
 			log.Println("Display RMS")
 		}
 		select {

@@ -56,6 +56,22 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	// Check if the warm-up period is active.
+	if !v.warmupEndTime.IsZero() {
+		if time.Now().Before(v.warmupEndTime) {
+			return // Still in warm-up, so ignore this audio chunk.
+		}
+		// The warm-up period has just ended. Log it and clear the timer
+		// so this check doesn't run for every subsequent chunk.
+		log.Println("VAD warm-up complete. Now actively listening for speech.")
+		go func() {
+			//It is blocking call, and we can't wait here,
+			// otherwise vadControlChan channel get overhead
+			(*v.bus).Publish("main:topic", "ready:vad.processAudioChunk")
+		}()
+		v.warmupEndTime = time.Time{}
+	}
+
 	isLoud := rms > config.C.VAD.SilenceThreshold
 
 	if isLoud {
@@ -64,8 +80,7 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 			v.isRecording = true
 			v.fileCounter++
 			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
-
-			log.Printf(">>> Sound detected! RMS: %.2f, Starting recording...\n", rms)
+			config.DebugPrintf(">>> Sound detected! RMS: %.2f, Starting recording...\n", rms)
 			v.fileControlChan <- "START:" + newFilename
 		}
 		// If it's loud, we are not in a hangover period, so reset the timer.
@@ -77,8 +92,7 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 		} else if time.Now().After(v.silenceEndTime) {
 			// Hangover period is over. Stop recording.
 			v.isRecording = false
-
-			log.Println("<<< Silence detected. Stopping recording.")
+			config.DebugPrintln("<<< Silence detected. Stopping recording.")
 			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
 			v.fileControlChan <- "STOP:" + newFilename
 		}
@@ -93,23 +107,9 @@ func (v *VADEngine) Run() {
 	defer v.wg.Done()
 	log.Println("VAD work started")
 
-	// Handle warm-up period by simply waiting for the duration to pass.
-	// This prevents the VAD from triggering immediately on startup noise.
-	if !v.warmupEndTime.IsZero() && time.Now().Before(v.warmupEndTime) {
-		// done := make(chan struct{})
-		duration := time.Until(v.warmupEndTime)
-		log.Printf("VAD warm-up started. Waiting for %s.", duration.Round(time.Second))
-		// go inout.DisplayWaiting("WarmingUp...", done)
-		time.Sleep(duration)
-		log.Println("VAD warm-up complete. Now actively listening for speech.")
-		// close(done)
-	}
-
-	(*v.bus).Publish("main:topic", "draw:vad.run")
-
 	for rms := range v.vadControlChan {
-		if config.C.Debug {
-			log.Println("VAD received RMS")
+		if config.C.Trace {
+			log.Printf("VAD received RMS: %.2f\n", rms)
 		}
 		v.ProcessAudioChunk(rms)
 	}
