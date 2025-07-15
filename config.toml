@@ -49,7 +49,7 @@ SilenceThreshold = 0.02
 HangoverDurationSec = 2.0
 # Duration to ignore audio at startup to allow the pipeline to stabilize.
 # This prevents initial hardware "pops" from triggering a recording.
-WarmupDuration = "2500ms"
+WarmupDuration = "2000ms"
 
 [recorder]
 # Recordings shorter than this (in bytes) will be deleted.

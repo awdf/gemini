@@ -36,6 +36,7 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 		rmsChan:              rmsChan,
 		bus:                  bus,
 		muted:                true,
+		warmUpDone:           false,
 	}
 }
 
@@ -74,17 +75,26 @@ func (d *RMSDisplay) Run() {
 	defer d.wg.Done()
 
 	(*d.bus).Subscribe("main:topic", func(event string) {
-		if config.C.Debug {
-			log.Printf("RMSDisplay received event: %s\n", event)
-		}
+		// if config.C.Debug {
+		log.Printf("RMSDisplay received event: %s\n", event)
+		// }
 		switch {
+		case strings.HasPrefix(event, "ready:"):
+			d.warmUpDone = true
+			d.muted = false
 		case strings.HasPrefix(event, "mute:"):
 			d.muted = true
 		case strings.HasPrefix(event, "draw:"):
-			//First event will be fired in VAD, after warm up
-			d.warmUpDone = true
 			d.muted = false
+		case strings.HasPrefix(event, "bar:"):
+			// This event is fired by the CLI *after* it has printed its prompt.
+			// Listening for this specific event, instead of the more generic 'draw:',
+			// ensures that the sound bar is always drawn *after* the CLI prompt,
+			// preventing UI rendering race conditions.
+			d.muted = false
+			d.printBar()
 		default:
+			log.Printf("RMSDisplay drop event: %s\n", event)
 		}
 	})
 

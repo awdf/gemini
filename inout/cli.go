@@ -16,11 +16,12 @@ import (
 
 // CLI handles reading user input from the command line.
 type CLI struct {
-	wg        *sync.WaitGroup
-	cmdChan   chan<- string
-	bus       *EventBus.Bus
-	muted     bool
-	aiEnabled bool
+	wg         *sync.WaitGroup
+	cmdChan    chan<- string
+	bus        *EventBus.Bus
+	muted      bool
+	aiEnabled  bool
+	warmUpDone bool
 }
 
 const (
@@ -46,11 +47,12 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 	}
 
 	return &CLI{
-		wg:        wg,
-		cmdChan:   cmdChan,
-		bus:       bus,
-		muted:     true,
-		aiEnabled: aiEnabled,
+		wg:         wg,
+		cmdChan:    cmdChan,
+		bus:        bus,
+		muted:      true,
+		aiEnabled:  aiEnabled,
+		warmUpDone: false,
 	}
 }
 
@@ -68,17 +70,22 @@ func (c *CLI) Run() {
 	}
 
 	(*c.bus).Subscribe("main:topic", func(event string) {
-		if config.C.Debug {
-			log.Printf("CLI received event: %s\n", event)
-		}
+		// if config.C.Debug {
+		log.Printf("CLI received event: %s\n", event)
+		// }
 
 		switch {
+		case strings.HasPrefix(event, "ready:"):
+			c.warmUpDone = true
+			c.muted = false
+			c.draw() // Initial prompt
 		case strings.HasPrefix(event, "mute:"):
 			c.muted = true
 		case strings.HasPrefix(event, "draw:"):
 			c.muted = false
-			c.draw()
+			c.draw() //Next prompts
 		default:
+			log.Printf("CLI drop event: %s\n", event)
 		}
 	})
 
@@ -148,10 +155,14 @@ func (c *CLI) Run() {
 }
 
 func (c *CLI) draw() {
-	if c.muted {
+	if c.muted || !c.warmUpDone {
 		return
 	}
 	fmt.Print(promptPatern) // Initial prompt
+	// Publish a separate event for the sound bar AFTER the CLI prompt is printed.
+	// This creates a specific drawing order and prevents a race condition
+	// where the sound bar could be drawn before or over the prompt.
+	(*c.bus).Publish("main:topic", "bar:cli.run")
 }
 
 func (c *CLI) command(cmd string) {
