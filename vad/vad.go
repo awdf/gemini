@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"gemini/config"
-
 	"github.com/asaskevich/EventBus"
+
+	"gemini/config"
 )
 
 // Engine represents the state of the Voice Activity Detector.
@@ -66,7 +66,7 @@ func (v *Engine) ProcessAudioChunk(rms float64) {
 		// so this check doesn't run for every subsequent chunk.
 		log.Println("VAD warm-up complete. Now actively listening for speech.")
 		go func() {
-			//It is blocking call, and we can't wait here,
+			// It is blocking call, and we can't wait here,
 			// otherwise vadControlChan channel get overhead
 			(*v.bus).Publish("main:topic", "ready:vad.processAudioChunk")
 		}()
