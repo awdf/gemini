@@ -18,15 +18,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asaskevich/EventBus"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/genai"
+
 	"gemini/audio"
 	"gemini/config"
 	"gemini/helpers"
 	"gemini/inout"
 	"gemini/pipeline"
-
-	"github.com/asaskevich/EventBus"
-	"google.golang.org/api/googleapi"
-	"google.golang.org/genai"
 )
 
 // Flags holds the command-line flags that control AI behavior.
@@ -70,7 +70,14 @@ func init() {
 }
 
 // NewAI creates a new AI instance, initializing the client and conversation history.
-func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, flags *Flags, fileChan <-chan string, textCmdChan <-chan string, bus *EventBus.Bus) *AI {
+func NewAI(
+	wg *sync.WaitGroup,
+	pipeline *pipeline.VadPipeline,
+	flags *Flags,
+	fileChan <-chan string,
+	textCmdChan <-chan string,
+	bus *EventBus.Bus,
+) *AI {
 	ctx := context.Background()
 	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
@@ -124,7 +131,7 @@ func (a *AI) Run() {
 				}
 
 				config.DebugPrintf("AI disabled, discarding command: %s", cmd)
-				//In case of AI disabled we support CLI and draw it
+				// In case of AI disabled we support CLI and draw it
 				(*a.bus).Publish("main:topic", "draw:ai.run")
 			}
 		}
@@ -303,7 +310,10 @@ func (a *AI) TextQuestion(prompt string) error {
 
 // It's call of voice chat with tools enabled according to config
 // Will make one call for transcript and chat
-func (a *AI) VoiceQuestion(wavPath string, prompt string) error {
+func (a *AI) VoiceQuestion(
+	wavPath string,
+	prompt string,
+) error {
 	uploadedFile, err := a.client.Files.UploadFromPath(
 		a.ctx,
 		wavPath,
@@ -322,8 +332,11 @@ func (a *AI) VoiceQuestion(wavPath string, prompt string) error {
 
 // It's forced call of Voice chat with tool enabled ignoring config.
 // Will make 2 requests: one for transcript and second for text chat with transcript
-func (a *AI) VoiceQuestionWithTranscript(wavPath string, prompt string) error {
-	var save = config.C.AI.EnableTools
+func (a *AI) VoiceQuestionWithTranscript(
+	wavPath string,
+	prompt string,
+) error {
+	save := config.C.AI.EnableTools
 	defer func() {
 		config.C.AI.EnableTools = save
 	}()
@@ -340,8 +353,8 @@ func (a *AI) VoiceQuestionWithTranscript(wavPath string, prompt string) error {
 		return nil // Not an error, just silence or non-speech audio.
 	}
 
-	//IMPORTANT: Never participate in the voice answer.
-	//Output method is not acceptable here
+	// IMPORTANT: Never participate in the voice answer.
+	// Output method is not acceptable here
 	formatter := inout.NewFormatter()
 	formatter.Println("Transcript:\n", inout.ColorDarkCyan)
 	formatter.Print(transcript)
@@ -402,7 +415,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 	var thoughtStarted, answerStarted bool
 	var fullResponseText string // To accumulate the full text for history and a single TTS call
 
-	//Stop other output
+	// Stop other output
 	(*a.bus).Publish("main:topic", "mute:ai.output")
 
 	// sources will store unique source URIs and their titles.
@@ -480,7 +493,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 	// Print execution time metric
 	a.formatter.Println(fmt.Sprintf("Request execution time: %.2fs\n", duration.Seconds()), inout.ColorDarkGray)
 
-	//Restore other output
+	// Restore other output
 	(*a.bus).Publish("main:topic", "draw:ai.output")
 
 	// After the stream is finished, if voice was enabled and we have text,
@@ -518,7 +531,11 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, action func()) {
 
 // generateAndProcessContent is a universal method to generate content from a set of parts,
 // process the streamed response, and update the conversation history.
-func (a *AI) generateAndProcessContent(parts []*genai.Part, urlContextDisabled bool, isVoicePrompt bool) error {
+func (a *AI) generateAndProcessContent(
+	parts []*genai.Part,
+	urlContextDisabled bool,
+	isVoicePrompt bool,
+) error {
 	startTime := time.Now()
 
 	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
@@ -577,7 +594,7 @@ func (a *AI) generateAndProcessContent(parts []*genai.Part, urlContextDisabled b
 		contentsForAPI,
 		genConfig,
 	)
-	//Measures "Time To First Byte" (TTFB)
+	// Measures "Time To First Byte" (TTFB)
 	duration := time.Since(startTime)
 	close(done) // Signal the waiting display to stop.
 
@@ -690,7 +707,11 @@ func findCacheableFiles(cacheDir string) ([]fs.DirEntry, error) {
 
 // addInitialContextTurn adds a user message and a canned model response to the
 // conversation history and prints the response to the user.
-func (a *AI) addInitialContextTurn(userContent *genai.Content, modelResponseText string, logMessage string) {
+func (a *AI) addInitialContextTurn(
+	userContent *genai.Content,
+	modelResponseText string,
+	logMessage string,
+) {
 	modelContent := genai.NewContentFromParts(
 		[]*genai.Part{genai.NewPartFromText(modelResponseText)},
 		genai.RoleModel,
@@ -916,7 +937,7 @@ func (a *AI) parsePromptForMultimedia(prompt string) ([]*genai.Part, bool, error
 	var textBuilder strings.Builder
 	multimediaFound := false
 
-	var wordAppend = func(word *string) {
+	wordAppend := func(word *string) {
 		if textBuilder.Len() > 0 {
 			textBuilder.WriteString(" ")
 		}

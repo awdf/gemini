@@ -12,6 +12,9 @@ import (
 	"os"
 	"sync"
 
+	"github.com/asaskevich/EventBus"
+	"github.com/go-gst/go-gst/gst"
+
 	"gemini/ai"
 	"gemini/config"
 	"gemini/flow"
@@ -19,9 +22,6 @@ import (
 	"gemini/pipeline"
 	"gemini/recorder"
 	"gemini/vad"
-
-	"github.com/asaskevich/EventBus"
-	"github.com/go-gst/go-gst/gst"
 )
 
 // CliFlags holds the parsed command-line flags for the application.
@@ -75,13 +75,13 @@ func NewApp(flags *CliFlags) *App {
 	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI audio flow
 	app.textCommandChan = make(chan string, 5)  // For text commands from CLI
 
-	//Copy of flags for AI component
+	// Copy of flags for AI component
 	aiFlags := &ai.Flags{
 		// Voice and Transcript are now managed via the global config.
 		Enabled: flags.AIEnabled,
 	}
 
-	//Initial message to AI. Build start context.
+	// Initial message to AI. Build start context.
 	app.textCommandChan <- "Ready?"
 
 	// Create the main components with Dependency Injection.
@@ -92,7 +92,7 @@ func NewApp(flags *CliFlags) *App {
 	app.display = inout.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
 	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus, flags.AIEnabled)
 
-	//Collect all Runnable for future processing
+	// Collect all Runnable for future processing
 	app.runnables = []Runnable{
 		app.pipeline,
 		app.display,
@@ -184,7 +184,7 @@ func (app *App) shutdown() {
 func (app *App) initLogging() {
 	// Set up logging
 	var err error
-	app.logFile, err = os.OpenFile(config.C.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	app.logFile, err = os.OpenFile(config.C.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Fatalf("error opening log file %s: %v", config.C.LogFile, err)
 	}

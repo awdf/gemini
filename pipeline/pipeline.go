@@ -7,16 +7,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asaskevich/EventBus"
+	"github.com/go-gst/go-glib/glib"
+	"github.com/go-gst/go-gst/gst"
+	"github.com/go-gst/go-gst/gst/app"
+
 	"gemini/audio" // Import the audio package for WAV constants
 	"gemini/config"
 	"gemini/flow"
 	"gemini/helpers"
 	"gemini/recorder"
-
-	"github.com/asaskevich/EventBus"
-	"github.com/go-gst/go-glib/glib"
-	"github.com/go-gst/go-gst/gst"
-	"github.com/go-gst/go-gst/gst/app"
 )
 
 type VadPipeline struct {
@@ -35,9 +35,15 @@ type VadPipeline struct {
 // It uses a "tee" element to split the audio stream into two branches:
 // 1. Analysis Branch: -> queue -> appsink (for calculating RMS in Go)
 // 2. Recording Branch: -> queue -> valve -> appsink (for writing to a file in Go)
-func NewVADPipeline(wg *sync.WaitGroup, recorder *recorder.Recorder, rmsDisplayChan chan<- float64, vadControlChan chan<- float64, bus *EventBus.Bus) *VadPipeline {
+func NewVADPipeline(
+	wg *sync.WaitGroup,
+	recorder *recorder.Recorder,
+	rmsDisplayChan chan<- float64,
+	vadControlChan chan<- float64,
+	bus *EventBus.Bus,
+) *VadPipeline {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
-	//Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
+	// Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 
 	var p VadPipeline
 	p.recorder = recorder

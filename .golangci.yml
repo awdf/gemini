@@ -18,6 +18,9 @@ linters-settings:
       - prefix(gemini) # Your local package prefix
   # Configure gofumpt for stricter formatting.
   gofumpt:
+    # Explicitly set the module path for gofumpt. This ensures that golangci-lint
+    # runs it with the same understanding of local packages as the standalone tool.
+    module-path: gemini
     extra-rules: true
   # Configure goimports to use local prefixes.
   goimports:

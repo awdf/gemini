@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asaskevich/EventBus"
+
 	"gemini/config"
 	"gemini/helpers"
-
-	"github.com/asaskevich/EventBus"
 )
 
 // RMSDisplay manages the state and logic for displaying the RMS volume bar.

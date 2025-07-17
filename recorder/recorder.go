@@ -10,14 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"gemini/audio" // Import the audio package for WAV constants
-	"gemini/config"
-	"gemini/helpers"
-
 	"github.com/asaskevich/EventBus"
-
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
+
+	"gemini/audio"
+	"gemini/config"
+	"gemini/helpers"
 )
 
 type Recorder struct {
