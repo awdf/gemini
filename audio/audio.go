@@ -9,8 +9,6 @@ import (
 
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
-
-	"gemini/helpers"
 )
 
 // Constants for WAV header based on the pipeline's capsfilter:
