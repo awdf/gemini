@@ -11,6 +11,7 @@ import (
 
 	"gemini/config"
 	"gemini/flow"
+	"gemini/helpers"
 
 	"github.com/asaskevich/EventBus"
 )
@@ -70,7 +71,7 @@ func (c *CLI) Run() {
 		return
 	}
 
-	(*c.bus).SubscribeAsync("main:topic", func(event string) {
+	helpers.Verify((*c.bus).SubscribeAsync("main:topic", func(event string) {
 
 		config.DebugPrintf("CLI received event: %s\n", event)
 
@@ -87,7 +88,7 @@ func (c *CLI) Run() {
 		default:
 			config.DebugPrintf("CLI drop event: %s\n", event)
 		}
-	}, false)
+	}, false))
 
 	scanner := bufio.NewScanner(os.Stdin)
 	inputChan := make(chan string)

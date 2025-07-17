@@ -65,14 +65,14 @@ const (
 func init() {
 	// Register custom MIME types to ensure correct handling by the AI.
 	// This is the ideal place for package-specific, one-time initializations.
-	mime.AddExtensionType(".md", "text/markdown")
-	mime.AddExtensionType(".wav", "audio/wav")
+	helpers.Verify(mime.AddExtensionType(".md", "text/markdown"))
+	helpers.Verify(mime.AddExtensionType(".wav", "audio/wav"))
 }
 
 // NewAI creates a new AI instance, initializing the client and conversation history.
 func NewAI(wg *sync.WaitGroup, pipeline *pipeline.VadPipeline, flags *Flags, fileChan <-chan string, textCmdChan <-chan string, bus *EventBus.Bus) *AI {
 	ctx := context.Background()
-	client := helpers.Control(genai.NewClient(ctx, &genai.ClientConfig{
+	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
 		Backend: genai.BackendGeminiAPI,
 	}))
@@ -132,7 +132,7 @@ func (a *AI) Run() {
 		return
 	}
 
-	(*a.bus).Subscribe("ai:topic", a.handleEvents)
+	helpers.Verify((*a.bus).Subscribe("ai:topic", a.handleEvents))
 
 	for a.fileChan != nil || a.textCmdChan != nil {
 		select {
@@ -651,7 +651,7 @@ func (a *AI) AnswerWithVoice(prompt string) error {
 	log.Println("Audio response generated. Play audio...")
 	if len(audioData) > 0 {
 		// Use the centralized audio playback function.
-		return audio.PlayRawPCM(audioData, audio.TTS_SAMPLE_RATE, audio.TTS_CHANNELS)
+		return audio.PlayRawPCM(audioData, audio.TTSSampleRate, audio.TTSChannels)
 	}
 
 	return fmt.Errorf("no audio data received from API")

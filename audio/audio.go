@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"gemini/helpers"
+
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
 )
@@ -12,19 +14,19 @@ import (
 // Constants for WAV header based on the pipeline's capsfilter:
 // audio/x-raw, format=S16LE, layout=interleaved, channels=2, rate=48000
 const (
-	WAV_HEADER_SIZE     = 44 // Standard WAV header size
-	WAV_CHANNELS        = 2
-	WAV_SAMPLE_RATE     = 48000
-	WAV_BITS_PER_SAMPLE = 16
-	WAV_BYTE_RATE       = WAV_SAMPLE_RATE * WAV_CHANNELS * (WAV_BITS_PER_SAMPLE / 8) // 192000 bytes/sec
-	WAV_BLOCK_ALIGN     = WAV_CHANNELS * (WAV_BITS_PER_SAMPLE / 8)                   // 4 bytes per sample frame
+	WavHeaderSize    = 44 // Standard WAV header size
+	WavChannels      = 2
+	WavSampleRate    = 48000
+	WavBitsPerSample = 16
+	WavByteRate      = WavSampleRate * WavChannels * (WavBitsPerSample / 8) // 192000 bytes/sec
+	WavBlockAlign    = WavChannels * (WavBitsPerSample / 8)                 // 4 bytes per sample frame
 )
 
 // Constants for Gemini TTS audio format:
 // 24000 Hz, 1 channel (mono), 16-bit signed little-endian.
 const (
-	TTS_CHANNELS    = 1
-	TTS_SAMPLE_RATE = 24000
+	TTSChannels   = 1
+	TTSSampleRate = 24000
 )
 
 // WavFile encapsulates the state and operations for a single WAV audio file.
@@ -57,7 +59,7 @@ func NewWavFile(filename string) (*WavFile, error) {
 // writeWAVHeader writes a placeholder WAV header to the file.
 // The dataSize and fileSize will need to be updated later.
 func writeWAVHeader(f *os.File) error {
-	header := make([]byte, WAV_HEADER_SIZE)
+	header := make([]byte, WavHeaderSize)
 
 	// RIFF chunk
 	copy(header[0:4], []byte("RIFF"))
@@ -68,11 +70,11 @@ func writeWAVHeader(f *os.File) error {
 	copy(header[12:16], []byte("fmt "))
 	binary.LittleEndian.PutUint32(header[16:20], 16) // Subchunk1Size (16 for PCM)
 	binary.LittleEndian.PutUint16(header[20:22], 1)  // AudioFormat (1 for PCM)
-	binary.LittleEndian.PutUint16(header[22:24], WAV_CHANNELS)
-	binary.LittleEndian.PutUint32(header[24:28], WAV_SAMPLE_RATE)
-	binary.LittleEndian.PutUint32(header[28:32], WAV_BYTE_RATE)
-	binary.LittleEndian.PutUint16(header[32:34], WAV_BLOCK_ALIGN)
-	binary.LittleEndian.PutUint16(header[34:36], WAV_BITS_PER_SAMPLE)
+	binary.LittleEndian.PutUint16(header[22:24], WavChannels)
+	binary.LittleEndian.PutUint32(header[24:28], WavSampleRate)
+	binary.LittleEndian.PutUint32(header[28:32], WavByteRate)
+	binary.LittleEndian.PutUint16(header[32:34], WavBlockAlign)
+	binary.LittleEndian.PutUint16(header[34:36], WavBitsPerSample)
 
 	// DATA sub-chunk
 	copy(header[36:40], []byte("data"))
@@ -93,7 +95,7 @@ func (w *WavFile) updateHeader() error {
 
 	// Update ChunkSize (total file size - 8)
 	// We write the resulting 4 bytes at the correct offset.
-	_, err = f.WriteAt(binary.LittleEndian.AppendUint32(nil, uint32(w.bytesWritten+WAV_HEADER_SIZE-8)), 4) // Write at offset 4
+	_, err = f.WriteAt(binary.LittleEndian.AppendUint32(nil, uint32(w.bytesWritten+WavHeaderSize-8)), 4) // Write at offset 4
 	if err != nil {
 		return fmt.Errorf("failed to write RIFF chunk size: %w", err)
 	}
@@ -142,47 +144,27 @@ func (w *WavFile) Size() int64 {
 // It creates a temporary pipeline to play the provided byte slice.
 func PlayRawPCM(data []byte, rate, channels int) error {
 	// Create a new pipeline
-	pipeline, err := gst.NewPipeline("audio-player")
-	if err != nil {
-		return fmt.Errorf("failed to create pipeline: %w", err)
-	}
+	pipeline := helpers.Check(gst.NewPipeline("audio-player"))
 
 	// Create elements
-	appsrc, err := app.NewAppSrc()
-	if err != nil {
-		return fmt.Errorf("failed to create appsrc: %w", err)
-	}
+	appsrc := helpers.Check(app.NewAppSrc())
 
 	// We must use a capsfilter to describe this format to the pipeline,
 	// as there is no WAV header.
-	capsfilter, err := gst.NewElement("capsfilter")
-	if err != nil {
-		return fmt.Errorf("failed to create capsfilter: %w", err)
-	}
-	capsfilter.SetProperty("caps", gst.NewCapsFromString(
+	capsfilter := helpers.Check(gst.NewElement("capsfilter"))
+	helpers.Verify(capsfilter.SetProperty("caps", gst.NewCapsFromString(
 		fmt.Sprintf("audio/x-raw, format=S16LE, layout=interleaved, channels=%d, rate=%d", channels, rate),
-	))
+	)))
 
-	audioconvert, err := gst.NewElement("audioconvert")
-	if err != nil {
-		return fmt.Errorf("failed to create audioconvert: %w", err)
-	}
-	audioresample, err := gst.NewElement("audioresample")
-	if err != nil {
-		return fmt.Errorf("failed to create audioresample: %w", err)
-	}
-	audiosink, err := gst.NewElement("autoaudiosink")
-	if err != nil {
-		return fmt.Errorf("failed to create autoaudiosink: %w", err)
-	}
+	audioconvert := helpers.Check(gst.NewElement("audioconvert"))
+	audioresample := helpers.Check(gst.NewElement("audioresample"))
+	audiosink := helpers.Check(gst.NewElement("autoaudiosink"))
 
 	// Add elements to the pipeline
-	pipeline.AddMany(appsrc.Element, capsfilter, audioconvert, audioresample, audiosink)
+	helpers.Verify(pipeline.AddMany(appsrc.Element, capsfilter, audioconvert, audioresample, audiosink))
 
 	// Link elements
-	if err = gst.ElementLinkMany(appsrc.Element, capsfilter, audioconvert, audioresample, audiosink); err != nil {
-		return fmt.Errorf("failed to link elements: %w", err)
-	}
+	helpers.Verify(gst.ElementLinkMany(appsrc.Element, capsfilter, audioconvert, audioresample, audiosink))
 
 	// Push the audio data into appsrc
 	buffer := gst.NewBufferFromBytes(data)
@@ -196,7 +178,7 @@ func PlayRawPCM(data []byte, rate, channels int) error {
 	}
 
 	// Start playing
-	pipeline.SetState(gst.StatePlaying)
+	helpers.Verify(pipeline.SetState(gst.StatePlaying))
 
 	// Wait for the pipeline to finish by watching the bus for an EOS or Error message.
 	bus := pipeline.GetBus()
@@ -206,6 +188,6 @@ func PlayRawPCM(data []byte, rate, channels int) error {
 	}
 
 	// Clean up
-	pipeline.SetState(gst.StateNull)
+	helpers.Verify(pipeline.SetState(gst.StateNull))
 	return nil
 }

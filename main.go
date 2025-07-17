@@ -41,7 +41,7 @@ type App struct {
 	logFile         *os.File
 	pipeline        *pipeline.VadPipeline
 	recorder        *recorder.Recorder
-	vadEngine       *vad.VADEngine
+	vadEngine       *vad.Engine
 	ai              *ai.AI
 	cli             *inout.CLI
 	display         *inout.RMSDisplay

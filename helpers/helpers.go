@@ -1,9 +1,15 @@
 package helpers
 
-// Control is a helper function to check errors during GStreamer element creation.
-func Control[T any](object T, err error) T {
-	if err != nil {
-		panic(err)
+// Check is a helper function to check errors during GStreamer element creation.
+func Check[T any](object T, err ...interface{}) T {
+	if len(err) > 0 {
+		if e, ok := err[0].(error); ok {
+			if e != nil {
+				panic(e)
+			}
+		} else if err[0] != nil {
+			panic(err[0])
+		}
 	}
 	return object
 }
