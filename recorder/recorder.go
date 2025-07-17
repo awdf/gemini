@@ -129,7 +129,9 @@ func (r *Recorder) finalizeAndSend() {
 	// Conditionally remove the file if it's too short (likely just noise).
 	if size < config.C.Recorder.MinFileSizeBytes {
 		log.Printf("Recording %s is too short (%d bytes), deleting.", filename, size)
-		os.Remove(filename)
+		if err := os.Remove(filename); err != nil {
+			log.Printf("WARNING: failed to remove short recording %s: %v", filename, err)
+		}
 	} else {
 		log.Printf("Finished recording to %s (%d bytes), sending for processing.", filename, size)
 		r.fileChan <- filename

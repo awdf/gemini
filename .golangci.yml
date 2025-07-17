@@ -10,8 +10,12 @@ run:
 linters-settings:
   # Configure gci to handle your local package prefix.
   # This ensures project imports are grouped correctly.
+  # The `local-prefixes` option is deprecated. The new `sections` configuration is used instead.
   gci:
-    local-prefixes: gemini
+    sections:
+      - standard # Imports from the standard library
+      - default # Imports from 3rd party libraries
+      - prefix(gemini) # Your local package prefix
   # Configure gofumpt for stricter formatting.
   gofumpt:
     extra-rules: true
@@ -46,4 +50,3 @@ linters:
 issues:
   # Maximum issues of the same type. 0 is unlimited.
   max-same-issues: 0
-
