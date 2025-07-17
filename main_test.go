@@ -17,11 +17,14 @@ func TestMain(t *testing.T) {
 	}
 
 	localAudioPath := "/home/awdf/Workspace/go/src/capgemini/recording-1.wav"
-	uploadedFile, _ := client.Files.UploadFromPath(
+	uploadedFile, err := client.Files.UploadFromPath(
 		ctx,
 		localAudioPath,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("UploadFromPath failed: %v", err)
+	}
 
 	parts := []*genai.Part{
 		genai.NewPartFromText("Generate a transcript of the speech."),
@@ -31,12 +34,15 @@ func TestMain(t *testing.T) {
 		genai.NewContentFromParts(parts, genai.RoleUser),
 	}
 
-	result, _ := client.Models.GenerateContent(
+	result, err := client.Models.GenerateContent(
 		ctx,
-		"gemini-2.5-flash",
+		"gemini-1.5-flash",
 		contents,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("GenerateContent failed: %v", err)
+	}
 	fmt.Println(result.Text())
 	t.Log(result.Text())
 }

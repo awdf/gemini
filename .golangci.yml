@@ -1,0 +1,49 @@
+# .golangci.yml
+# This configuration file ensures that local linting and CI linting are consistent.
+
+run:
+  # Timeout for analysis, 5 minutes is a good starting point.
+  timeout: 5m
+  # Set the Go version for the linter to match your project and CI.
+  go: '1.21'
+
+linters-settings:
+  # Configure gci to handle your local package prefix.
+  # This ensures project imports are grouped correctly.
+  gci:
+    local-prefixes: gemini
+  # Configure gofumpt for stricter formatting.
+  gofumpt:
+    extra-rules: true
+  # Configure goimports to use local prefixes.
+  goimports:
+    local-prefixes: gemini
+  # Configure misspell.
+  misspell:
+    locale: US
+
+linters:
+  # The GitHub action enables a default set of linters. We will do the same
+  # and add a few very useful ones for code quality and consistency.
+  # Default linters: errcheck, gosimple, govet, ineffassign, staticcheck, typecheck, unused.
+  disable-all: true
+  enable:
+    # Default linters
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    # Recommended additions
+    - gci # Import grouping and ordering
+    - gofumpt # Stricter formatter than gofmt
+    - goimports # Organizes imports
+    - misspell # Finds common misspellings
+    - revive # Fast, configurable, drop-in replacement for golint
+
+issues:
+  # Maximum issues of the same type. 0 is unlimited.
+  max-same-issues: 0
+
