@@ -2,9 +2,9 @@ name: Go CI Pipeline
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "develop" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "develop" ]
 
 jobs:
   test-and-build:
@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.24'
           # Enable caching for Go modules to speed up subsequent runs.
           cache: true
 
@@ -30,7 +30,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           # Using a specific version is recommended for reproducibility.
-          version: v1.59
+          version: v1.64
 
       - name: Run Go Tests with Coverage
         # The -race flag detects race conditions, a common issue in concurrent Go programs.

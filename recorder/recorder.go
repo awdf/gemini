@@ -10,14 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"gemini/audio" // Import the audio package for WAV constants
-	"gemini/config"
-	"gemini/helpers"
-
 	"github.com/asaskevich/EventBus"
-
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
+
+	"gemini/audio"
+	"gemini/config"
+	"gemini/helpers"
 )
 
 type Recorder struct {
@@ -35,7 +34,7 @@ func NewRecorderSink(wg *sync.WaitGroup, controlChan <-chan string, fileChan cha
 	var r Recorder
 	// Use a second appsink for the recording branch. This allows Go to handle
 	// file I/O, giving us the flexibility to create new files on the fly.
-	r.recordingSink = helpers.Control(app.NewAppSink())
+	r.recordingSink = helpers.Check(app.NewAppSink())
 	helpers.Verify(r.recordingSink.SetProperty("sync", false))
 	r.recordingSink.SetDrop(false) // Do not drop data; ensure all samples are received for recording.
 	// Set a max buffer to prevent runaway memory usage and add stability.

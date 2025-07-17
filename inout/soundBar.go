@@ -8,9 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"gemini/config"
-
 	"github.com/asaskevich/EventBus"
+
+	"gemini/config"
+	"gemini/helpers"
 )
 
 // RMSDisplay manages the state and logic for displaying the RMS volume bar.
@@ -75,7 +76,7 @@ func (d *RMSDisplay) printBar() {
 func (d *RMSDisplay) Run() {
 	defer d.wg.Done()
 
-	(*d.bus).SubscribeAsync("main:topic", func(event string) {
+	helpers.Verify((*d.bus).SubscribeAsync("main:topic", func(event string) {
 		config.DebugPrintf("Bar received event: %s\n", event)
 		switch {
 		case strings.HasPrefix(event, "mute:"):
@@ -95,7 +96,7 @@ func (d *RMSDisplay) Run() {
 		default:
 			config.DebugPrintf("Bar drop event: %s\n", event)
 		}
-	}, false)
+	}, false))
 
 	// Refresh the display at a fixed rate (e.g., 20 times per second)
 	// This is fast enough for a smooth UI but prevents overwhelming the terminal.

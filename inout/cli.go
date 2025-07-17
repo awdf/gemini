@@ -9,10 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asaskevich/EventBus"
+
 	"gemini/config"
 	"gemini/flow"
-
-	"github.com/asaskevich/EventBus"
+	"gemini/helpers"
 )
 
 // CLI handles reading user input from the command line.
@@ -26,7 +27,7 @@ type CLI struct {
 }
 
 const (
-	//IMPORTANT: On such terminals like KDE Konsole move down is not works without reserved next line.
+	// IMPORTANT: On such terminals like KDE Konsole move down is not works without reserved next line.
 	// Sequence: reserve next line for soundbar, move up, print, clear line
 	promptPatern = "\n\033[A>\033[K"
 	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
@@ -70,8 +71,7 @@ func (c *CLI) Run() {
 		return
 	}
 
-	(*c.bus).SubscribeAsync("main:topic", func(event string) {
-
+	helpers.Verify((*c.bus).SubscribeAsync("main:topic", func(event string) {
 		config.DebugPrintf("CLI received event: %s\n", event)
 
 		switch {
@@ -79,7 +79,7 @@ func (c *CLI) Run() {
 			c.muted = true
 		case strings.HasPrefix(event, "draw:"):
 			c.muted = false
-			c.draw() //Next prompts
+			c.draw() // Next prompts
 		case strings.HasPrefix(event, "ready:"):
 			c.warmUpDone = true
 			c.muted = false
@@ -87,7 +87,7 @@ func (c *CLI) Run() {
 		default:
 			config.DebugPrintf("CLI drop event: %s\n", event)
 		}
-	}, false)
+	}, false))
 
 	scanner := bufio.NewScanner(os.Stdin)
 	inputChan := make(chan string)

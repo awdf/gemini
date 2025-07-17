@@ -5,7 +5,7 @@ run:
   # Timeout for analysis, 5 minutes is a good starting point.
   timeout: 5m
   # Set the Go version for the linter to match your project and CI.
-  go: '1.21'
+  go: '1.24'
 
 linters-settings:
   # Configure gci to handle your local package prefix.
@@ -18,6 +18,9 @@ linters-settings:
       - prefix(gemini) # Your local package prefix
   # Configure gofumpt for stricter formatting.
   gofumpt:
+    # Explicitly set the module path for gofumpt. This ensures that golangci-lint
+    # runs it with the same understanding of local packages as the standalone tool.
+    module-path: gemini
     extra-rules: true
   # Configure goimports to use local prefixes.
   goimports:
