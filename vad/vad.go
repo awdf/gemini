@@ -11,8 +11,8 @@ import (
 	"github.com/asaskevich/EventBus"
 )
 
-// VADEngine represents the state of the Voice Activity Detector.
-type VADEngine struct {
+// Engine represents the state of the Voice Activity Detector.
+type Engine struct {
 	mu              sync.Mutex
 	isRecording     bool
 	silenceEndTime  time.Time
@@ -25,15 +25,15 @@ type VADEngine struct {
 }
 
 // NewVAD creates a new VAD controller.
-func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-chan float64, bus *EventBus.Bus) *VADEngine {
+func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-chan float64, bus *EventBus.Bus) *Engine {
 	// Get the warm-up duration from the configuration.
 	warmupDuration := config.C.VAD.WarmUpDuration()
 	fmt.Println("Listening for audio... Recording will start when sound is detected. ")
 	if warmupDuration > 0 {
-		log.Printf("VAD initialised with a warm-up period of %s", warmupDuration)
-		fmt.Printf("VAD initialised with a warm-up period of %s\n", warmupDuration)
+		log.Printf("VAD initialized with a warm-up period of %s", warmupDuration)
+		fmt.Printf("VAD initialized with a warm-up period of %s\n", warmupDuration)
 	}
-	return &VADEngine{
+	return &Engine{
 		wg:              wg,
 		fileControlChan: fileControlChan,
 		vadControlChan:  vadControlChan,
@@ -45,7 +45,7 @@ func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-
 
 // SetFileCounter sets the starting number for the file counter to avoid overwriting
 // existing recordings.
-func (v *VADEngine) SetFileCounter(start int) {
+func (v *Engine) SetFileCounter(start int) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.fileCounter = start
@@ -53,7 +53,7 @@ func (v *VADEngine) SetFileCounter(start int) {
 
 // ProcessAudioChunk analyzes an audio chunk's RMS value and updates the recording state.
 // It controls the 'valve' element to start or stop the flow of data to the filesink.
-func (v *VADEngine) ProcessAudioChunk(rms float64) {
+func (v *Engine) ProcessAudioChunk(rms float64) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -103,7 +103,7 @@ func (v *VADEngine) ProcessAudioChunk(rms float64) {
 // Run is a dedicated goroutine that listens for RMS values and controls the
 // recording valve. Isolating this GStreamer state change into its own goroutine
 // is critical for preventing deadlocks.
-func (v *VADEngine) Run() {
+func (v *Engine) Run() {
 	defer close(v.fileControlChan)
 	defer v.wg.Done()
 	log.Println("VAD work started")

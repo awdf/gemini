@@ -143,6 +143,7 @@ func createDefaultConfig(path string) {
 		log.Fatalf("Failed to write to default config file: %v", err)
 	}
 }
+
 func IsDebug() bool {
 	return C.Debug || C.Trace
 }

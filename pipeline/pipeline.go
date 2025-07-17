@@ -47,12 +47,12 @@ func NewVADPipeline(wg *sync.WaitGroup, recorder *recorder.Recorder, rmsDisplayC
 	p.vadControlChan = vadControlChan
 	p.bus = bus
 	// Create a new pipeline
-	p.pipeline = helpers.Control(gst.NewPipeline("vad-recording-pipeline"))
+	p.pipeline = helpers.Check(gst.NewPipeline("vad-recording-pipeline"))
 
 	// Create elements
 	// On modern Linux systems, PipeWire is often the underlying audio server.
 	// Reverting to pulsesrc as pipewiresrc is not working in this environment.
-	source := helpers.Control(gst.NewElementWithName("pulsesrc", "pulse-source"))
+	source := helpers.Check(gst.NewElementWithName("pulsesrc", "pulse-source"))
 	if config.C.Pipeline.Device != "" {
 		helpers.Verify(source.SetProperty("device", config.C.Pipeline.Device))
 	}
@@ -61,32 +61,32 @@ func NewVADPipeline(wg *sync.WaitGroup, recorder *recorder.Recorder, rmsDisplayC
 	// This helps prevent race conditions in complex pipelines. Value is in microseconds.
 	helpers.Verify(source.SetProperty("buffer-time", config.C.Pipeline.BufferTimeUs))
 
-	audioconvert := helpers.Control(gst.NewElementWithName("audioconvert", "audio-convert"))
+	audioconvert := helpers.Check(gst.NewElementWithName("audioconvert", "audio-convert"))
 
-	audioresample := helpers.Control(gst.NewElementWithName("audioresample", "audio-resample"))
+	audioresample := helpers.Check(gst.NewElementWithName("audioresample", "audio-resample"))
 
 	// Add a capsfilter to enforce a common, stable format before the tee.
 	// This is the most robust position, as it allows the source and converters
 	// to negotiate freely, then standardizes the stream before it is split.
-	capsfilter := helpers.Control(gst.NewElement("capsfilter"))
+	capsfilter := helpers.Check(gst.NewElement("capsfilter"))
 	helpers.Verify(capsfilter.SetProperty("caps", gst.NewCapsFromString(
 		fmt.Sprintf("audio/x-raw, format=S16LE, layout=interleaved, channels=%d, rate=%d",
-			audio.WAV_CHANNELS, audio.WAV_SAMPLE_RATE),
+			audio.WavChannels, audio.WavSampleRate),
 	)))
 
-	tee := helpers.Control(gst.NewElement("tee"))
+	tee := helpers.Check(gst.NewElement("tee"))
 
 	// --- Analysis Branch Elements ---
-	analysisQueue := helpers.Control(gst.NewElement("queue"))
+	analysisQueue := helpers.Check(gst.NewElement("queue"))
 
-	p.vadSink = helpers.Control(app.NewAppSink())
+	p.vadSink = helpers.Check(app.NewAppSink())
 	helpers.Verify(p.vadSink.SetProperty("sync", false)) // Don't synchronize on clock, get data as fast as possible
 	p.vadSink.SetDrop(false)
 	// Set the maximum number of buffers that can be queued. This is critical for stability.
 	p.vadSink.SetMaxBuffers(10)
 
 	// --- Recording Branch Elements ---
-	recordingQueue := helpers.Control(gst.NewElement("queue"))
+	recordingQueue := helpers.Check(gst.NewElement("queue"))
 
 	// Add all elements to the pipeline
 	helpers.Verify(p.pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, p.vadSink.Element, recordingQueue, recorder.Element))
@@ -137,11 +137,11 @@ func (p *VadPipeline) SendEvent(event *gst.Event) {
 // goroutines other than the main GStreamer/GLib thread.
 func (p *VadPipeline) setPipelineStateAndWait(state gst.State) {
 	done := make(chan struct{})
-	glib.IdleAdd(func() bool {
+	helpers.Check(glib.IdleAdd(func() bool {
 		helpers.Verify(p.pipeline.SetState(state))
 		close(done)
 		return false // Do not call again
-	})
+	}))
 	<-done
 }
 
@@ -149,10 +149,10 @@ func (p *VadPipeline) Play() {
 	// This method is called from a glib.IdleAdd context, so it's
 	// executing on the main GStreamer thread. It's safe to set the state directly
 	// without scheduling another task, which would cause a deadlock.
-	glib.IdleAdd(func() bool {
+	helpers.Check(glib.IdleAdd(func() bool {
 		helpers.Verify(p.pipeline.SetState(gst.StatePlaying))
 		return false // Do not call again
-	})
+	}))
 }
 
 func (p *VadPipeline) Pause() {
@@ -187,10 +187,10 @@ func (p *VadPipeline) Abort(reason string) {
 }
 
 func (p *VadPipeline) Quit() {
-	glib.IdleAdd(func() bool {
+	helpers.Check(glib.IdleAdd(func() bool {
 		p.loop.Quit()
 		return false // Do not call again
-	})
+	}))
 }
 
 // Run is a dedicated goroutine that only pulls samples from the GStreamer pipeline.

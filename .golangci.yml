@@ -5,7 +5,7 @@ run:
   # Timeout for analysis, 5 minutes is a good starting point.
   timeout: 5m
   # Set the Go version for the linter to match your project and CI.
-  go: '1.21'
+  go: '1.24'
 
 linters-settings:
   # Configure gci to handle your local package prefix.
