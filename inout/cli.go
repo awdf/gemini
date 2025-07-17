@@ -9,8 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"capgemini.com/config"
-	"capgemini.com/flow"
+	"gemini/config"
+	"gemini/flow"
+
 	"github.com/asaskevich/EventBus"
 )
 

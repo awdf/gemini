@@ -18,11 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"capgemini.com/audio"
-	"capgemini.com/config"
-	"capgemini.com/helpers"
-	"capgemini.com/inout"
-	"capgemini.com/pipeline"
+	"gemini/audio"
+	"gemini/config"
+	"gemini/helpers"
+	"gemini/inout"
+	"gemini/pipeline"
+
 	"github.com/asaskevich/EventBus"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/genai"

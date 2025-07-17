@@ -10,9 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"capgemini.com/audio" // Import the audio package for WAV constants
-	"capgemini.com/config"
-	"capgemini.com/helpers"
+	"gemini/audio" // Import the audio package for WAV constants
+	"gemini/config"
+	"gemini/helpers"
+
 	"github.com/asaskevich/EventBus"
 
 	"github.com/go-gst/go-gst/gst"

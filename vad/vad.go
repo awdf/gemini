@@ -6,7 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"capgemini.com/config"
+	"gemini/config"
+
 	"github.com/asaskevich/EventBus"
 )
 
