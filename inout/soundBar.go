@@ -25,6 +25,7 @@ type RMSDisplay struct {
 	bus                  *EventBus.Bus
 	warmUpDone           bool
 	muted                bool
+	Mu                   sync.RWMutex
 }
 
 // NewRMSDisplay creates and initializes a new RMSDisplay instance.
@@ -44,6 +45,8 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 
 // printBar encapsulates the expensive printing logic.
 func (d *RMSDisplay) printBar() {
+	d.Mu.Lock() // Full lock because we write to lastPrintedBarLength
+	defer d.Mu.Unlock()
 	if !d.warmUpDone || d.muted {
 		return
 	}
@@ -78,18 +81,16 @@ func (d *RMSDisplay) Run() {
 
 	helpers.Verify((*d.bus).SubscribeAsync("main:topic", func(event string) {
 		config.DebugPrintf("Bar received event: %s\n", event)
+		d.Mu.Lock() // Full lock to write state
+		defer d.Mu.Unlock()
 		switch {
 		case strings.HasPrefix(event, "mute:"):
 			d.muted = true
 		case strings.HasPrefix(event, "draw:"):
 			d.muted = false
 		case strings.HasPrefix(event, "show:"):
-			// This event is fired by the CLI *after* it has printed its prompt.
-			// Listening for this specific event, instead of the more generic 'draw:',
-			// ensures that the sound bar is always drawn *after* the CLI prompt,
-			// preventing UI rendering race conditions.
 			d.muted = false
-			d.printBar()
+			// The main loop's ticker will handle the redraw, avoiding deadlocks.
 		case strings.HasPrefix(event, "ready:"):
 			d.warmUpDone = true
 			d.muted = false
@@ -113,7 +114,9 @@ func (d *RMSDisplay) Run() {
 				log.Println("Display work finished")
 				return // Channel is closed.
 			}
+			d.Mu.Lock()        // Full lock to write state
 			d.currentRMS = rms // Keep track of the latest RMS value.
+			d.Mu.Unlock()
 		case <-ticker.C:
 			// Ticker fired. Time to update the display.
 			d.printBar()

@@ -5,12 +5,15 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 )
 
 var (
 	signalChan = make(chan os.Signal, 1000)
 	listeners  = make([]*chan os.Signal, 0)
+	exitFunc   = log.Fatalf // For testability
+	mu         sync.Mutex
 )
 
 func EnableControl() {
@@ -23,6 +26,8 @@ func EnableControl() {
 }
 
 func GetListener() *chan os.Signal {
+	mu.Lock()
+	defer mu.Unlock()
 	ch := make(chan os.Signal, 1)
 	listeners = append(listeners, &ch)
 	return &ch
@@ -32,12 +37,19 @@ func Terminate() {
 	signalChan <- syscall.SIGTERM
 }
 
-func Quit() {
+var Quit = func() {
 	signalChan <- syscall.SIGQUIT
 }
 
 func Interrupt() {
 	signalChan <- syscall.SIGINT
+}
+
+// Reset is a test helper to clear listeners between tests.
+func Reset() {
+	mu.Lock()
+	defer mu.Unlock()
+	listeners = make([]*chan os.Signal, 0)
 }
 
 func processSignal() {
@@ -56,11 +68,19 @@ func processSignal() {
 }
 
 func handle(sig os.Signal) {
-	if len(listeners) == 0 {
-		log.Fatalf("service exiting, reason - signal \"%s\"", sig)
+	mu.Lock()
+	// Make a copy of the listeners slice to avoid holding the lock while sending
+	// on channels, which could lead to deadlocks if a listener calls back into
+	// this package.
+	listenersCopy := make([]*chan os.Signal, len(listeners))
+	copy(listenersCopy, listeners)
+	mu.Unlock()
+
+	if len(listenersCopy) == 0 {
+		exitFunc("service exiting, reason - signal \"%s\"", sig)
 	}
 
-	for _, l := range listeners {
+	for _, l := range listenersCopy {
 		*l <- sig
 	}
 }
