@@ -11,6 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMain is the entry point for all tests in this package. It handles the
+// global initialization of GStreamer.
+func TestMain(m *testing.M) {
+	gst.Init(nil)
+	os.Exit(m.Run())
+}
+
 // TestWavFile_Lifecycle covers the creation, writing, and closing of a WavFile.
 func TestWavFile_Lifecycle(t *testing.T) {
 	tempDir := t.TempDir()
@@ -75,13 +82,19 @@ func TestNewWavFile_ErrorHandling(t *testing.T) {
 
 // TestPlayRawPCM verifies that the GStreamer pipeline for playing audio can be
 // constructed and run without immediate errors. This test requires a working
-// GStreamer installation but not necessarily an active audio device.
+// GStreamer installation and an active audio device.
 func TestPlayRawPCM(t *testing.T) {
-	gst.Init(nil)
+	// In a CI environment without a running audio server, creating an 'autoaudiosink'
+	// will fail. We skip this test if we can't create the sink element, making
+	// the test suite more robust.
+	_, err := gst.NewElement("autoaudiosink")
+	if err != nil {
+		t.Skipf("Skipping test: could not create autoaudiosink element, likely no audio server. Error: %v", err)
+	}
 
 	// Create a small, silent audio buffer (10ms of mono audio at TTS rate).
 	data := make([]byte, TTSSampleRate/100*1*(16/8))
 
-	err := PlayRawPCM(data, TTSSampleRate, TTSChannels)
+	err = PlayRawPCM(data, TTSSampleRate, TTSChannels)
 	assert.NoError(t, err, "PlayRawPCM should execute without pipeline errors on a configured system")
 }

@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/genai"
 )
 
@@ -56,8 +59,29 @@ func TestGeminiAPI_Transcription(t *testing.T) {
 	modelName := "gemini-1.5-flash-latest"
 
 	// Use the older client.Models.GenerateContent method
-	resp, err := client.Models.GenerateContent(ctx, modelName, contents, nil)
-	require.NoError(t, err, "GenerateContent failed for model %s", modelName)
+	var resp *genai.GenerateContentResponse
+	// Add a retry loop to make the integration test more resilient to transient
+	// backend errors like 503 (Service Unavailable) or 429 (Rate Limiting).
+	// This pattern is common for tests that interact with external services.
+	maxRetries := 3
+	delay := 2 * time.Second
+	for i := 0; i < maxRetries; i++ {
+		resp, err = client.Models.GenerateContent(ctx, modelName, contents, nil)
+		if err == nil {
+			break // Success
+		}
+
+		var gerr *googleapi.Error
+		// Check for specific, retryable error codes.
+		if errors.As(err, &gerr) && (gerr.Code == 503 || gerr.Code == 429 || gerr.Code == 500) {
+			t.Logf("Received retryable error (%d), retrying in %v... (attempt %d/%d)", gerr.Code, delay, i+1, maxRetries)
+			time.Sleep(delay)
+			delay *= 2 // Exponential backoff
+			continue
+		}
+		break // Non-retryable error
+	}
+	require.NoError(t, err, "GenerateContent failed for model %s after retries", modelName)
 
 	require.NotNil(t, resp, "GenerateContent returned a nil response")
 	require.NotEmpty(t, resp.Candidates, "GenerateContent returned no candidates")

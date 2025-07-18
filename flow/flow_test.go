@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -13,16 +14,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMain(m *testing.M) {
+	// Start the signal processing goroutine once for all tests in this package.
+	// This prevents goroutine leaks between tests and race conditions caused
+	// by multiple, concurrent signal processors.
+	EnableControl()
+	os.Exit(m.Run())
+}
+
 // setup is a helper function to reset the state of the flow package before each test.
 // It's crucial because the package uses global variables.
 func setup() func() {
 	// Reset listeners before each test to ensure isolation.
-	listeners = make([]*chan os.Signal, 0)
-
-	// The signal processing goroutine is started by EnableControl.
-	// In a real application, this is called once. For tests, we can call it
-	// but acknowledge that stopping the background goroutine is complex.
-	// The tests are designed to work with this running goroutine.
+	Reset()
 
 	// Return a teardown function.
 	return func() {
@@ -35,9 +39,6 @@ func setup() func() {
 func TestGetListenerAndSignalDispatch(t *testing.T) {
 	teardown := setup()
 	defer teardown()
-
-	// Start the signal processor.
-	EnableControl()
 
 	listenerChan := GetListener()
 	require.NotNil(t, listenerChan, "GetListener should return a non-nil channel pointer")
@@ -56,8 +57,6 @@ func TestGetListenerAndSignalDispatch(t *testing.T) {
 func TestMultipleListeners(t *testing.T) {
 	teardown := setup()
 	defer teardown()
-
-	EnableControl()
 
 	listener1 := GetListener()
 	listener2 := GetListener()
@@ -94,9 +93,33 @@ func TestMultipleListeners(t *testing.T) {
 	wg.Wait()
 }
 
+// syncBuffer is a bytes.Buffer that is safe for concurrent use.
+// The standard bytes.Buffer is not safe for concurrent reads and writes, which
+// can cause a data race when a test's main goroutine reads from the buffer
+// while a background goroutine (like our signal handler) writes to it via the
+// global logger.
+type syncBuffer struct {
+	b bytes.Buffer
+	m sync.Mutex
+}
+
+// Write appends the contents of p to the buffer, growing the buffer as needed.
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.m.Lock()
+	defer s.m.Unlock()
+	return s.b.Write(p)
+}
+
+// String returns the contents of the unread portion of the buffer as a string.
+func (s *syncBuffer) String() string {
+	s.m.Lock()
+	defer s.m.Unlock()
+	return s.b.String()
+}
+
 func TestSigPipeIsIgnored(t *testing.T) {
 	// Capture log output to verify the "ignored" message.
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	log.SetOutput(&logBuf)
 	originalFlags := log.Flags()
 	log.SetFlags(0) // Remove timestamp for consistent output.
@@ -108,7 +131,6 @@ func TestSigPipeIsIgnored(t *testing.T) {
 	teardown := setup()
 	defer teardown()
 
-	EnableControl()
 	listener := GetListener()
 
 	// Send SIGPIPE directly to the internal channel.
@@ -122,8 +144,12 @@ func TestSigPipeIsIgnored(t *testing.T) {
 		// This is the expected outcome.
 	}
 
-	// Check that the correct log message was printed.
-	assert.Contains(t, logBuf.String(), "SIGPIPE ignored", "Log should indicate that SIGPIPE was ignored")
+	// Use require.Eventually to poll for the log message. This is safer than a
+	// fixed sleep, as it waits for the concurrent `processSignal` goroutine
+	// to write the log message without racing on the buffer access.
+	require.Eventually(t, func() bool {
+		return strings.Contains(logBuf.String(), "SIGPIPE ignored")
+	}, 500*time.Millisecond, 10*time.Millisecond, "Log should indicate that SIGPIPE was ignored")
 }
 
 func TestHandle_FatalOnNoListeners(t *testing.T) {
@@ -140,7 +166,7 @@ func TestHandle_FatalOnNoListeners(t *testing.T) {
 	defer func() { exitFunc = originalExitFunc }()
 
 	// 2. Ensure there are no listeners.
-	listeners = make([]*chan os.Signal, 0)
+	Reset()
 
 	// 3. Call the function under test directly.
 	// We call handle() directly instead of going through the channel
