@@ -1,10 +1,8 @@
-name: Go CI Pipeline
+name: Master Pipeline
 
 on:
   push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
+    branches: [ "master" 
 
 jobs:
   test-and-build:
