@@ -11,6 +11,7 @@ import (
 var (
 	signalChan = make(chan os.Signal, 1000)
 	listeners  = make([]*chan os.Signal, 0)
+	exitFunc   = log.Fatalf // For testability
 )
 
 func EnableControl() {
@@ -32,7 +33,7 @@ func Terminate() {
 	signalChan <- syscall.SIGTERM
 }
 
-func Quit() {
+var Quit = func() {
 	signalChan <- syscall.SIGQUIT
 }
 
@@ -57,7 +58,7 @@ func processSignal() {
 
 func handle(sig os.Signal) {
 	if len(listeners) == 0 {
-		log.Fatalf("service exiting, reason - signal \"%s\"", sig)
+		exitFunc("service exiting, reason - signal \"%s\"", sig)
 	}
 
 	for _, l := range listeners {

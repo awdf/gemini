@@ -100,9 +100,10 @@ func (c *CLI) Run() {
 		close(inputChan)
 	}()
 
+	shutdownChan := flow.GetListener()
 	for {
 		select {
-		case <-*flow.GetListener(): // Listens for Ctrl+C
+		case <-*shutdownChan: // Listens for Ctrl+C
 			log.Println("CLI input handler shutting down.")
 			return
 		case firstLine, ok := <-inputChan:

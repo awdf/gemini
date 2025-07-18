@@ -203,18 +203,18 @@ func (p *VadPipeline) Quit() {
 // It calculates the RMS and passes it to other goroutines for processing, but never
 // modifies the pipeline state itself. This separation of concerns is key to avoiding deadlocks.
 func (p *VadPipeline) Run() {
+	// Defer WaitGroup.Done() first so it's the last thing to execute. This
+	// ensures that other deferred cleanup actions (like closing channels)
+	// complete before this goroutine is marked as finished, preventing race
+	// conditions in tests that wait on this signal.
+	defer p.wg.Done()
+
 	// When this goroutine exits for any reason (e.g., EOS, error), we must
 	// ensure the main GStreamer loop is also terminated to prevent a hang.
 	defer p.Quit()
 
-	// This goroutine is the producer for the display and VAD channels.
-	// By Go convention, the producer is responsible for closing the channel
-	// to signal to consumers that no more data will be sent.
 	defer close(p.rmsDisplayChan)
 	defer close(p.vadControlChan)
-	defer p.wg.Done()
-
-	p.vadSink.GetState(gst.StatePlaying, gst.ClockTimeNone)
 
 	// Give the pipeline a moment to settle. If the source failed to start,
 	// this delay gives the GStreamer bus time to deliver an error message
