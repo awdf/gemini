@@ -1,0 +1,53 @@
+name: Go CI Pipeline
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  test-and-build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          # Enable caching for Go modules to speed up subsequent runs.
+          cache: true
+
+      - name: Install GStreamer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-good1.0-dev
+
+      - name: Run Linter
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # Using a specific version is recommended for reproducibility.
+          version: v1.64
+
+      - name: Run Go Tests with Coverage
+        # The -race flag detects race conditions, a common issue in concurrent Go programs.
+        # -coverprofile generates a coverage report that can be analyzed.
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+
+      - name: Build Go Application
+        run: go build -v -o assistant .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-binary-${{ runner.os }}
+          path: assistant
