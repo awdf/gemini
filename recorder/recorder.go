@@ -17,6 +17,7 @@ import (
 	"gemini/audio"
 	"gemini/config"
 	"gemini/helpers"
+	"gemini/vad"
 )
 
 type Recorder struct {
@@ -74,8 +75,8 @@ func (r *Recorder) Run() {
 				return
 			}
 
-			if strings.HasPrefix(cmd, "START:") {
-				filename := strings.TrimPrefix(cmd, "START:")
+			if strings.HasPrefix(cmd, vad.MarkerStart) {
+				filename := strings.TrimPrefix(cmd, vad.MarkerStart)
 				// If a previous file was being written, finalize it first.
 				if r.currentWav != nil {
 					log.Printf("Warning: START received while a recording was in progress. Finalizing previous file.")
@@ -90,8 +91,8 @@ func (r *Recorder) Run() {
 				} else {
 					r.isWriting = true
 				}
-			} else if strings.HasPrefix(cmd, "STOP:") {
-				filename := strings.TrimPrefix(cmd, "STOP:")
+			} else if strings.HasPrefix(cmd, vad.MarkerStop) {
+				filename := strings.TrimPrefix(cmd, vad.MarkerStop)
 				// Check that the STOP command is for the file we think we are writing.
 				if r.currentWav != nil && r.currentWav.Filename() != filename {
 					log.Printf("Warning: STOP command for '%s' received, but current recording is '%s'. Finalizing current recording.", filename, r.currentWav.Filename())

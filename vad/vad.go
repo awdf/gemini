@@ -11,6 +11,11 @@ import (
 	"gemini/config"
 )
 
+const (
+	MarkerStart = "START:"
+	MarkerStop  = "STOP:"
+)
+
 // Engine represents the state of the Voice Activity Detector.
 type Engine struct {
 	mu              sync.Mutex
@@ -82,7 +87,7 @@ func (v *Engine) ProcessAudioChunk(rms float64) {
 			v.fileCounter++
 			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
 			config.DebugPrintf(">>> Sound detected! RMS: %.2f, Starting recording...\n", rms)
-			v.fileControlChan <- "START:" + newFilename
+			v.fileControlChan <- MarkerStart + newFilename
 		}
 		// If it's loud, we are not in a hangover period, so reset the timer.
 		v.silenceEndTime = time.Time{}
@@ -95,7 +100,7 @@ func (v *Engine) ProcessAudioChunk(rms float64) {
 			v.isRecording = false
 			config.DebugPrintln("<<< Silence detected. Stopping recording.")
 			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
-			v.fileControlChan <- "STOP:" + newFilename
+			v.fileControlChan <- MarkerStop + newFilename
 		}
 	}
 }
