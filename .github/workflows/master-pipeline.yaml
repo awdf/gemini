@@ -2,7 +2,7 @@ name: Master Pipeline
 
 on:
   push:
-    branches: [ "master" 
+    branches: [ "master" ]
 
 jobs:
   test-and-build:
