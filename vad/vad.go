@@ -12,112 +12,131 @@ import (
 )
 
 const (
+	// MarkerStart is the prefix for a message indicating recording should start.
 	MarkerStart = "START:"
-	MarkerStop  = "STOP:"
+	// MarkerStop is the prefix for a message indicating recording should stop.
+	MarkerStop = "STOP:"
 )
 
-// Engine represents the state of the Voice Activity Detector.
+// Engine implements a simple Voice Activity Detection (VAD) logic.
+// It analyzes a stream of RMS audio levels and determines when speech starts and stops.
 type Engine struct {
-	mu              sync.Mutex
-	isRecording     bool
-	silenceEndTime  time.Time
-	warmupEndTime   time.Time
-	fileCounter     int
-	fileControlChan chan<- string
+	mu              sync.RWMutex
 	wg              *sync.WaitGroup
+	fileControlChan chan<- string
 	vadControlChan  <-chan float64
 	bus             *EventBus.Bus
+	isRecording     bool
+	fileCounter     int
+	silenceEndTime  time.Time
+	warmupEndTime   time.Time
 }
 
-// NewVAD creates a new VAD controller.
+// NewVAD creates a new VAD engine.
 func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-chan float64, bus *EventBus.Bus) *Engine {
-	// Get the warm-up duration from the configuration.
 	warmupDuration := config.C.VAD.WarmUpDuration()
-	fmt.Println("Listening for audio... Recording will start when sound is detected. ")
+	fmt.Println("Listening for audio... Recording will start when sound is detected.")
 	if warmupDuration > 0 {
 		log.Printf("VAD initialized with a warm-up period of %s", warmupDuration)
 		fmt.Printf("VAD initialized with a warm-up period of %s\n", warmupDuration)
 	}
+
 	return &Engine{
 		wg:              wg,
 		fileControlChan: fileControlChan,
 		vadControlChan:  vadControlChan,
-		// Set the time when the warm-up period will be over.
-		warmupEndTime: time.Now().Add(warmupDuration),
-		bus:           bus,
+		bus:             bus,
+		warmupEndTime:   time.Now().Add(warmupDuration),
 	}
 }
 
-// SetFileCounter sets the starting number for the file counter to avoid overwriting
-// existing recordings.
-func (v *Engine) SetFileCounter(start int) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	v.fileCounter = start
+// SetFileCounter sets the initial index for recording filenames.
+// This should be called before the Run method is started.
+func (e *Engine) SetFileCounter(i int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.fileCounter = i
 }
 
-// ProcessAudioChunk analyzes an audio chunk's RMS value and updates the recording state.
-// It controls the 'valve' element to start or stop the flow of data to the filesink.
-func (v *Engine) ProcessAudioChunk(rms float64) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
+// IsRecording returns true if the VAD engine currently detects speech.
+// This is useful for testing.
+func (e *Engine) IsRecording() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.isRecording
+}
 
-	// Check if the warm-up period is active.
-	if !v.warmupEndTime.IsZero() {
-		if time.Now().Before(v.warmupEndTime) {
-			return // Still in warm-up, so ignore this audio chunk.
-		}
-		// The warm-up period has just ended. Log it and clear the timer
-		// so this check doesn't run for every subsequent chunk.
-		log.Println("VAD warm-up complete. Now actively listening for speech.")
-		go func() {
-			// It is blocking call, and we can't wait here,
-			// otherwise vadControlChan channel get overhead
-			(*v.bus).Publish("main:topic", "ready:vad.processAudioChunk")
-		}()
-		v.warmupEndTime = time.Time{}
-	}
-
-	isLoud := rms > config.C.VAD.SilenceThreshold
-
-	if isLoud {
-		// If we detect sound, and we are not currently recording, we need to start.
-		if !v.isRecording {
-			v.isRecording = true
-			v.fileCounter++
-			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
-			config.DebugPrintf(">>> Sound detected! RMS: %.2f, Starting recording...\n", rms)
-			v.fileControlChan <- MarkerStart + newFilename
-		}
-		// If it's loud, we are not in a hangover period, so reset the timer.
-		v.silenceEndTime = time.Time{}
-	} else if v.isRecording { // is silent, but we were recording
-		if v.silenceEndTime.IsZero() {
-			// First moment of silence, start the hangover timer.
-			v.silenceEndTime = time.Now().Add(config.C.VAD.HangoverDuration())
-		} else if time.Now().After(v.silenceEndTime) {
-			// Hangover period is over. Stop recording.
-			v.isRecording = false
-			config.DebugPrintln("<<< Silence detected. Stopping recording.")
-			newFilename := fmt.Sprintf("recording-%d.wav", v.fileCounter)
-			v.fileControlChan <- MarkerStop + newFilename
-		}
-	}
+// FileCounter returns the current recording file index.
+// This is useful for testing.
+func (e *Engine) FileCounter() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.fileCounter
 }
 
 // Run is a dedicated goroutine that listens for RMS values and controls the
 // recording valve. Isolating this GStreamer state change into its own goroutine
 // is critical for preventing deadlocks.
-func (v *Engine) Run() {
-	defer close(v.fileControlChan)
-	defer v.wg.Done()
+func (e *Engine) Run() {
+	defer e.wg.Done()
+	defer close(e.fileControlChan)
 	log.Println("VAD work started")
 
-	for rms := range v.vadControlChan {
+	warmupOver := e.warmupEndTime.IsZero() || time.Now().After(e.warmupEndTime)
+
+	for rms := range e.vadControlChan {
 		if config.C.Trace {
 			log.Printf("VAD received RMS: %.2f\n", rms)
 		}
-		v.ProcessAudioChunk(rms)
+
+		// Handle warmup period
+		if !warmupOver {
+			if time.Now().Before(e.warmupEndTime) {
+				continue // Still in warm-up, ignore audio.
+			}
+			// Warm-up has just completed.
+			log.Println("VAD warm-up complete. Now actively listening for speech.")
+			(*e.bus).Publish("main:topic", "ready:vad.run")
+			warmupOver = true
+		}
+
+		isLoud := rms > config.C.VAD.SilenceThreshold
+		hangover := config.C.VAD.HangoverDuration()
+
+		var startCmd, stopCmd string
+
+		e.mu.Lock()
+		isRecording := e.isRecording
+		if isLoud {
+			if !isRecording {
+				e.isRecording = true
+				e.fileCounter++
+				filename := fmt.Sprintf("recording-%d.wav", e.fileCounter)
+				config.DebugPrintf(">>> Sound detected! RMS: %.2f, Starting recording to %s\n", rms, filename)
+				startCmd = MarkerStart + filename
+			}
+			e.silenceEndTime = time.Time{} // Reset silence timer
+		} else if isRecording { // is silent, but we were recording
+			if e.silenceEndTime.IsZero() {
+				// First moment of silence, set the end time for the hangover period.
+				e.silenceEndTime = time.Now().Add(hangover)
+			} else if time.Now().After(e.silenceEndTime) {
+				// Hangover period is over. Stop recording.
+				e.isRecording = false
+				filename := fmt.Sprintf("recording-%d.wav", e.fileCounter)
+				config.DebugPrintln("<<< Silence detected. Stopping recording for " + filename)
+				stopCmd = MarkerStop + filename
+			}
+		}
+		e.mu.Unlock()
+
+		// Send on channels outside the lock to prevent deadlocks.
+		if startCmd != "" {
+			e.fileControlChan <- startCmd
+		}
+		if stopCmd != "" {
+			e.fileControlChan <- stopCmd
+		}
 	}
 	log.Println("VAD work finished")
 }

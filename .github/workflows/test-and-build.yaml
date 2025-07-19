@@ -34,17 +34,20 @@ jobs:
         # -coverprofile generates a coverage report that can be analyzed.
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
-      - name: Upload coverage report
+      - name: Generate HTML coverage report
+        run: go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload HTML coverage report
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
-          path: coverage.out
+          name: coverage-report-html
+          path: coverage.html
 
       - name: Build Go Application
-        run: go build -v -o assistant .
+        run: go build -v -o gemini .
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: assistant-binary-${{ runner.os }}
-          path: assistant
+          name: gemini-binary-${{ runner.os }}
+          path: gemini

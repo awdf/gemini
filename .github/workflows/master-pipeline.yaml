@@ -7,5 +7,5 @@ on:
 
 jobs:
   call-test-and-build-workflow:
-    name: Call Reusable Test and Build
+    name: Build and Test
     uses: ./.github/workflows/test-and-build.yaml
