@@ -180,14 +180,13 @@ func (p *VadPipeline) Loop() {
 
 func (p *VadPipeline) Abort(reason string) {
 	log.Println(reason)
-	// Schedule sending the EOS event to be called from the main GStreamer thread.
-	// This is the safest way to shut down the pipeline from a different thread.
-	// The bus watch (setup in mainLoop) will receive the EOS message and then
-	// quit the main loop, preventing a deadlock.
-	helpers.Check(glib.IdleAdd(func() bool {
-		p.pipeline.SendEvent(gst.NewEOSEvent())
-		return false // Do not call again
-	}))
+	// Send the EOS event to the pipeline to initiate a graceful shutdown.
+	// gst_element_send_event() is thread-safe, so we can call it directly
+	// from this goroutine. Scheduling it on the main GLib loop (via IdleAdd)
+	// would cause a deadlock, because SendEvent can block until the bus
+	// message it generates is processed, but the bus message can only be
+	// processed by the main loop, which would be blocked.
+	p.pipeline.SendEvent(gst.NewEOSEvent())
 }
 
 func (p *VadPipeline) Quit() {
