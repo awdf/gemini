@@ -12,7 +12,7 @@ APIKey = "${GOOGLE_API_KEY}"
 Model = "gemini-2.5-flash"
 ModelTTS = "gemini-2.5-flash-preview-tts"
 Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
-VoiceHistory = false #Turn off voice history for best model latency
+VoiceHistory = false # Turn off(false) voice history for best model latency
 SystemPrompt = "Role: You are expert in software development. Context: It is your interview process, so respond from 1st person."
 TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 VoicePrompt = """Step by step:
@@ -29,7 +29,7 @@ Directives:
 6.In other cases, play role and show your expertise in software development, science and technology.
 """
 Thinking = -1 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
-Thoughts = false
+Thoughts = false # Turn off(false)
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
 
 #Enable it manualy in case of model support cache. Paid tier 1+.
@@ -45,7 +45,7 @@ MaxDelayMs = 10000 # Maximum wait time in milliseconds for exponential backoff.
 
 [vad]
 # The normalized RMS level below which we consider the audio to be silent.
-SilenceThreshold = 0.02
+SilenceThreshold = 0.02 # Range 0.0 - 1.0
 # The amount of time in seconds to continue recording after the audio level drops below the silence threshold.
 HangoverDurationSec = 2.0
 # Duration to ignore audio at startup to allow the pipeline to stabilize.
@@ -64,11 +64,11 @@ BarWidth = 100
 UpdateIntervalMs = 50
 
 [pipeline]
-# Physical sound device for input (Default system device by default)
+# GStreamer source buffer time in microseconds. Helps prevent race conditions.
+BufferTimeUs = 500000# Physical sound device for input (Default system device by default)
+
 # List devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 #
 # Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 # Device = "alsa_output.usb-JBL_Quantum_400_0079CM-0265355EM-00.analog-stereo.monitor"
 # Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"
-# GStreamer source buffer time in microseconds. Helps prevent race conditions.
-BufferTimeUs = 500000

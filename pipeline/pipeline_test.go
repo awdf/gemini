@@ -216,8 +216,8 @@ func TestVadPipeline_Abort(t *testing.T) {
 
 	p := &VadPipeline{
 		pipeline: pipeline,
-		loop:     glib.NewMainLoop(glib.MainContextDefault(), false),
 	}
+	p.mainLoop() // Set up the bus watch to handle EOS and create the loop.
 
 	// 2. Start the pipeline's main loop in a goroutine
 	loopExited := make(chan struct{})
