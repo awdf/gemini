@@ -2,6 +2,7 @@ package recorder
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -30,7 +31,9 @@ func TestMain(m *testing.M) {
 	// The implementation reads from ".", so we don't set config.C.Recorder.Path.
 	// Instead, tests will manage the working directory.
 	testDir := "test_recordings"
-	os.MkdirAll(testDir, 0o755)
+	if err := os.MkdirAll(testDir, 0o755); err != nil {
+		log.Fatalf("failed to create test directory %s: %v", testDir, err)
+	}
 	// Ensure the directory is clean before starting.
 	// Initialize GStreamer for this test package.
 	gst.Init(nil)
@@ -143,7 +146,7 @@ func TestRecorder_Run_RecordingCycle(t *testing.T) {
 	require.NoError(t, err)
 
 	src, _ := gst.NewElement("audiotestsrc")
-	src.Set("num-buffers", 50) // Generate a limited number of buffers
+	require.NoError(t, src.Set("num-buffers", 50)) // Generate a limited number of buffers
 	conv, _ := gst.NewElement("audioconvert")
 	resample, _ := gst.NewElement("audioresample")
 
@@ -176,7 +179,7 @@ func TestRecorder_Run_RecordingCycle(t *testing.T) {
 	// Wait for the pipeline to finish naturally by reaching EOS
 	pBus := pipeline.GetBus()
 	pBus.TimedPopFiltered(gst.ClockTime(5*time.Second), gst.MessageEOS)
-	pipeline.SetState(gst.StateNull)
+	assert.NoError(t, pipeline.SetState(gst.StateNull))
 
 	// The recorder's Run loop exits when its control channel is closed.
 	// The pipeline EOS does not close the recorder's control channel.

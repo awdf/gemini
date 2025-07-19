@@ -33,7 +33,7 @@ func TestMain(m *testing.M) {
 
 // newTestAI is a helper to create an AI instance for testing.
 // It uses nil for dependencies that are not relevant to the specific test.
-func newTestAI(t *testing.T) *AI {
+func newTestAI(_ *testing.T) *AI {
 	bus := EventBus.New()
 	return &AI{
 		ctx:       context.Background(),
@@ -205,7 +205,7 @@ func TestFindCacheableFiles(t *testing.T) {
 	})
 }
 
-func TestRun_Disabled(t *testing.T) {
+func TestRun_Disabled(_ *testing.T) {
 	wg := &sync.WaitGroup{}
 	bus := EventBus.New()
 	fileChan := make(chan string, 2)
