@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 	testDir := "test_recordings"
 	os.MkdirAll(testDir, 0o755)
 	// Ensure the directory is clean before starting.
-
+	// Initialize GStreamer for this test package.
 	gst.Init(nil)
 	code := m.Run()
 
@@ -76,41 +76,44 @@ func TestProcessExistingRecordings(t *testing.T) {
 	t.Run("with existing files", func(t *testing.T) {
 		// Create a subdirectory for this specific test run to keep it clean.
 		subDir := filepath.Join(testDir, "existing_files")
-		require.NoError(t, os.Mkdir(subDir, 0o755))
-		require.NoError(t, os.Chdir(subDir))
+		require.NoError(t, os.Mkdir(subDir, 0o755), "should create sub-directory for test")
+
+		// Change into the subdir for the test and ensure we change back.
+		currentWD, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(subDir), "should change into sub-directory")
+		t.Cleanup(func() { require.NoError(t, os.Chdir(currentWD)) })
 
 		// Create dummy files
 		// The implementation expects "recording-N.wav".
 		require.NoError(t, os.WriteFile("recording-1.wav", []byte("dummy"), 0o644))
 		require.NoError(t, os.WriteFile("recording-5.wav", []byte("dummy"), 0o644))
 		require.NoError(t, os.WriteFile("recording-3.wav", []byte("dummy"), 0o644))
-		require.NoError(t, os.WriteFile("not_a_recording.txt", []byte("dummy"), 0o644))
-		require.NoError(t, os.WriteFile("output_final.wav", []byte("dummy"), 0o644))
+		require.NoError(t, os.WriteFile("not-a-recording.txt", []byte("dummy"), 0o644))
+		require.NoError(t, os.WriteFile("recording-final.wav", []byte("dummy"), 0o644))
 
 		lastIndex := rec.ProcessExistingRecordings()
 		assert.Equal(t, 5, lastIndex, "should return the highest index from existing files")
 
 		// Check that the files were queued. The implementation sends just the filename.
-		assert.Len(t, fileChan, 3)
+		require.Len(t, fileChan, 3, "should have queued 3 valid recording files")
 		assert.Equal(t, "recording-1.wav", <-fileChan)
 		assert.Equal(t, "recording-3.wav", <-fileChan)
 		assert.Equal(t, "recording-5.wav", <-fileChan)
-
-		// Go back to the parent test directory
-		require.NoError(t, os.Chdir(testDir))
 	})
 
 	t.Run("with no files", func(t *testing.T) {
 		// Create a new empty subdir for this subtest
 		subDir := filepath.Join(testDir, "no_files")
 		require.NoError(t, os.Mkdir(subDir, 0o755))
-		require.NoError(t, os.Chdir(subDir))
+
+		currentWD, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(subDir), "should change into sub-directory")
+		t.Cleanup(func() { require.NoError(t, os.Chdir(currentWD)) })
 
 		lastIndex := rec.ProcessExistingRecordings()
 		assert.Equal(t, 0, lastIndex, "should return 0 when no files exist")
-
-		// Go back to the parent test directory
-		require.NoError(t, os.Chdir(testDir))
 	})
 }
 
