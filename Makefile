@@ -11,26 +11,27 @@ LINTER=golangci-lint
 # Build variables, reserved project name gemini
 BINARY_NAME=gemini
 
+# PlantUML parameters
+PLANTUML_JAR=plantuml.jar
+PLANTUML_VERSION=1.2024.4
+PLANTUML_URL=https://github.com/plantuml/plantuml/releases/download/v$(PLANTUML_VERSION)/plantuml-$(PLANTUML_VERSION).jar
+UML_DIR=UML
+
 # Default target executed when you just run `make`
-.PHONY: all
+.PHONY: all build launch test coverage lint diagrams clean help
 all: test lint build
 
 # Build the application binary. This matches the build step in your CI.
-.PHONY: build
 build:
 	@echo "Building $(BINARY_NAME)..."
 	$(GO_BUILD) -v -o $(BINARY_NAME) .
 
 # Launch the application. This target depends on `build` to ensure the binary is up-to-date.
-# Renamed from 'run' to 'launch' for better IDE/plugin integration.
-# You can pass arguments to the application like this: make launch ARGS="--voice --no-ai"
-.PHONY: launch
 launch: build
 	@echo "Launching $(BINARY_NAME)..."
 	./$(BINARY_NAME) $(ARGS)
 
 # Run tests with race detector and coverage. This matches the test step in your CI.
-.PHONY: test
 test:
 	@echo "Running tests and generating coverage report..."
 	$(GO_TEST) -v -race -coverprofile=coverage.out -covermode=atomic ./...
@@ -38,26 +39,45 @@ test:
 	$(GO_CMD) tool cover -html=coverage.out -o coverage.html
 
 # View the HTML coverage report in the default browser. Depends on `test` to ensure the report is fresh.
-.PHONY: coverage
 coverage: test
 	@echo "Opening coverage report..."
 	@xdg-open coverage.html 2>/dev/null || open coverage.html 2>/dev/null || echo "Please open coverage.html in your browser."
 
 # Run the linter using your existing .golangci.yml configuration.
-.PHONY: lint
 lint:
 	@echo "Running linter..."
 	$(LINTER) run -v
 
+# Generate UML diagrams from PlantUML source files.
+# It will download the PlantUML jar if it doesn't exist.
+diagrams: $(PLANTUML_JAR)
+	@echo "Generating UML diagrams from $(UML_DIR)/*.puml..."
+	@if ! command -v java >/dev/null 2>&1; then \
+		echo "Error: 'java' command not found. Please install Java to run PlantUML."; \
+		exit 1; \
+	fi
+	java -jar $(PLANTUML_JAR) -tpng $(UML_DIR)/
+	@echo "Diagrams generated in $(UML_DIR)/ directory."
+
+# Rule to download plantuml.jar if it's missing
+$(PLANTUML_JAR):
+	@echo "Downloading PlantUML v$(PLANTUML_VERSION)..."
+	@if ! command -v wget >/dev/null 2>&1; then \
+		echo "Error: 'wget' command not found. Please install wget to download PlantUML."; \
+		exit 1; \
+	fi
+	wget -q --show-progress -O $(PLANTUML_JAR) $(PLANTUML_URL)
+
 # Clean up build artifacts and coverage reports.
-.PHONY: clean
 clean:
 	@echo "Cleaning up..."
 	rm -f $(BINARY_NAME)
 	rm -f coverage.out coverage.html
+	rm -f $(PLANTUML_JAR)
+	rm -f $(UML_DIR)/*.png
+	rm -f build.log
 
 # Display help message with available commands.
-.PHONY: help
 help:
 	@echo "Available commands:"
 	@echo "  all      - Run tests, lint, and build the application"
@@ -66,5 +86,6 @@ help:
 	@echo "  test     - Run tests and generate coverage.out and coverage.html reports"
 	@echo "  coverage - Generate and open the HTML coverage report"
 	@echo "  lint     - Run the golangci-lint linter"
-	@echo "  clean    - Remove build artifacts"
+	@echo "  diagrams - Generate UML diagrams from .puml files in the UML/ directory."
+	@echo "  clean    - Remove build artifacts, diagrams, and downloaded files"
 	@echo "  help     - Display this help message"
