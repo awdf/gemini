@@ -3,6 +3,7 @@ gemini
 *.com
 *.log
 *.txt
+*.out
 .vscode
 _**
 cache/*
