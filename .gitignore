@@ -4,6 +4,7 @@ gemini
 *.log
 *.txt
 *.out
+*.html
 .vscode
 _**
 cache/*
