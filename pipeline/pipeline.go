@@ -134,10 +134,6 @@ func (p *VadPipeline) mainLoop() {
 	})
 }
 
-func (p *VadPipeline) SendEvent(event *gst.Event) {
-	p.pipeline.SendEvent(event)
-}
-
 // setPipelineStateAndWait schedules a state change on the main GLib context
 // and blocks until it is complete. This is for making state changes from
 // goroutines other than the main GStreamer/GLib thread.
@@ -184,12 +180,14 @@ func (p *VadPipeline) Loop() {
 
 func (p *VadPipeline) Abort(reason string) {
 	log.Println(reason)
-	// 1. Signal to end pipeline work
-	p.SendEvent(gst.NewEOSEvent())
-	// 2. Schedule MainLoop.Quit() to be called from the main GStreamer thread.
-	// This is the safest way to interact with the pipeline from a different
-	// thread. This will cause mainLoop.Run() to return, allowing a clean shutdown.
-	p.Quit()
+	// Schedule both sending the EOS event and quitting the main loop to be
+	// called from the main GStreamer thread. This is the safest way to interact
+	// with the pipeline from a different thread and prevents deadlocks.
+	helpers.Check(glib.IdleAdd(func() bool {
+		p.pipeline.SendEvent(gst.NewEOSEvent())
+		p.loop.Quit()
+		return false // Do not call again
+	}))
 }
 
 func (p *VadPipeline) Quit() {
