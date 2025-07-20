@@ -135,19 +135,23 @@ func (a *AI) Run() {
 			}
 			log.Printf("Chat: Processing %s", file)
 			a.withPipelinePausedIfVoice(a.pipeline, func() {
-				action := func() error {
-					if config.C.AI.Transcript {
-						return a.VoiceQuestionWithTranscript(file, config.C.AI.VoicePrompt)
+				a.withScreenshotIfImageMode(func(buffer *images.ScreenshotBuffer) {
+					// The buffer will be non-nil only in ImageMode, otherwise it's nil.
+					// This simplifies the logic by removing the need for an inner switch.
+					action := func() error {
+						if config.C.AI.Transcript {
+							return a.VoiceQuestionWithTranscript(file, buffer, config.C.AI.VoicePrompt)
+						}
+						return a.VoiceQuestion(file, buffer, config.C.AI.VoicePrompt)
 					}
-					return a.VoiceQuestion(file, config.C.AI.VoicePrompt)
-				}
-				err := a.retryWithBackoff(action)
-				if err != nil {
-					log.Printf("ERROR: AI processing failed for %s after all retries, leaving file for manual processing: %v", file, err)
-				} else {
-					log.Printf("Chat: Successfully processed %s. Removing file.", file)
-					os.Remove(file)
-				}
+					err := a.retryWithBackoff(action)
+					if err != nil {
+						log.Printf("ERROR: AI processing failed for %s after all retries, leaving file for manual processing: %v", file, err)
+					} else {
+						log.Printf("Chat: Successfully processed %s. Removing file.", file)
+						os.Remove(file)
+					}
+				})
 			})
 		case cmd, ok := <-a.textCmdChan:
 			if !ok {
@@ -155,31 +159,17 @@ func (a *AI) Run() {
 				continue
 			}
 			log.Printf("Chat: Processing text prompt in %s mode...\n", a.mode)
-			var action func() error
 			a.withPipelinePausedIfVoice(a.pipeline, func() {
-				switch a.mode {
-				case inout.ImageMode:
-					// Take screenshot on Wayland is 500ms or more
-					buffer, err := images.TakeScreenshot()
+				a.withScreenshotIfImageMode(func(buffer *images.ScreenshotBuffer) {
+					action := func() error {
+						return a.TextQuestion(cmd, buffer)
+					}
+
+					err := a.retryWithBackoff(action)
 					if err != nil {
-						log.Printf("ERROR: AI processing failed for screenshot capture: %v", err)
-						return
+						log.Printf("ERROR: AI processing failed for text command after all retries: %v", err)
 					}
-					defer buffer.Release()
-
-					action = func() error {
-						return a.ImageQuestion(cmd, buffer)
-					}
-				default:
-					action = func() error {
-						return a.TextQuestion(cmd)
-					}
-				}
-
-				err := a.retryWithBackoff(action)
-				if err != nil {
-					log.Printf("ERROR: AI processing failed for text command after all retries: %v", err)
-				}
+				})
 			})
 		}
 	}
@@ -318,13 +308,17 @@ func (a *AI) retryWithBackoff(action func() error) error {
 	return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
 }
 
-func (a *AI) TextQuestion(prompt string) error {
+func (a *AI) TextQuestion(prompt string, imageBuffer *images.ScreenshotBuffer) error {
 	// Check prompt on any type of URLs it can consist.
 	// The Gemini API treats special URLs as direct content, not as pages to browse.
 	parts, urlContextDisabled, err := a.parsePromptForMultimedia(prompt)
 	if err != nil {
 		log.Printf("ERROR: could not parse prompt for multimedia: %v", err)
 		return err // Stop processing if we can't even parse the prompt.
+	}
+
+	if imageBuffer != nil {
+		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
 	}
 
 	// Text models are able to use the URLContext tool to parse and understend web content.
@@ -337,19 +331,11 @@ func (a *AI) TextQuestion(prompt string) error {
 	return nil
 }
 
-func (a *AI) ImageQuestion(prompt string, imageBuffer *images.ScreenshotBuffer) error {
-	parts := []*genai.Part{
-		genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"),
-		genai.NewPartFromText(prompt),
-	}
-
-	return a.generateAndProcessContent(parts, fURLContextDisabled, fNoVoicePrompt)
-}
-
 // It's call of voice chat with tools enabled according to config
 // Will make one call for transcript and chat
 func (a *AI) VoiceQuestion(
 	wavPath string,
+	imageBuffer *images.ScreenshotBuffer,
 	prompt string,
 ) error {
 	uploadedFile, err := a.client.Files.UploadFromPath(
@@ -365,6 +351,10 @@ func (a *AI) VoiceQuestion(
 		genai.NewPartFromURI(uploadedFile.URI, uploadedFile.MIMEType),
 		genai.NewPartFromText(prompt),
 	}
+
+	if imageBuffer != nil { // Fix: Use append correctly to modify the slice
+		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
+	}
 	return a.generateAndProcessContent(parts, fURLContextDisabled, fVoicePrompt)
 }
 
@@ -372,6 +362,7 @@ func (a *AI) VoiceQuestion(
 // Will make 2 requests: one for transcript and second for text chat with transcript
 func (a *AI) VoiceQuestionWithTranscript(
 	wavPath string,
+	imageBuffer *images.ScreenshotBuffer,
 	prompt string,
 ) error {
 	save := config.C.AI.EnableTools
@@ -405,7 +396,9 @@ func (a *AI) VoiceQuestionWithTranscript(
 	parts := []*genai.Part{
 		genai.NewPartFromText(fullPrompt),
 	}
-
+	if imageBuffer != nil { // Fix: Use append correctly to modify the slice
+		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
+	}
 	// The second step is a pure text-based query, so we can reuse the history logic.
 	return a.generateAndProcessContent(parts, fURLContextEnabled, fNoVoicePrompt)
 }
@@ -565,6 +558,24 @@ func (a *AI) withPipelinePausedIfVoice(p *pipeline.VadPipeline, action func()) {
 	}()
 
 	action()
+}
+
+func (a *AI) withScreenshotIfImageMode(action func(imageBuffer *images.ScreenshotBuffer)) {
+	if a.mode != inout.ImageMode {
+		action(nil)
+		return
+	}
+
+	log.Println("Taking screenshot for AI response...")
+	// Take screenshot on Wayland is 500ms or more
+	buffer, err := images.TakeScreenshot()
+	if err != nil {
+		log.Printf("ERROR: AI processing failed for screenshot capture: %v", err)
+		return
+	}
+	defer buffer.Release()
+
+	action(buffer)
 }
 
 // generateAndProcessContent is a universal method to generate content from a set of parts,
