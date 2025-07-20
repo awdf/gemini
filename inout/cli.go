@@ -16,6 +16,20 @@ import (
 	"gemini/helpers"
 )
 
+const (
+	MixMode   = "mix"
+	TextMode  = "text"
+	VoiceMode = "voice"
+	ImageMode = "image"
+)
+
+var modes = map[string]string{
+	MixMode:   MixMode,
+	TextMode:  TextMode,
+	VoiceMode: VoiceMode,
+	ImageMode: ImageMode,
+}
+
 // CLI handles reading user input from the command line.
 type CLI struct {
 	wg         *sync.WaitGroup
@@ -24,22 +38,31 @@ type CLI struct {
 	muted      bool
 	aiEnabled  bool
 	warmUpDone bool
+	mode       string
 }
 
 const (
 	// IMPORTANT: On such terminals like KDE Konsole move down is not works without reserved next line.
 	// Sequence: reserve next line for soundbar, move up, print, clear line
-	promptPatern = "\n\033[A>\033[K"
+	promptPatern = "\n\033[A%s>\033[K"
 	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
 	soundbarPatern = "\0337\r\033[B\033[K[%s%s]\0338"
 )
 
+const (
+	dynamic = "dynamic"
+	none    = "none"
+	low     = "low"
+	medium  = "medium"
+	high    = "high"
+)
+
 var thinkingLevels = map[string]int32{
-	"dynamic": -1,
-	"none":    0,
-	"low":     512,
-	"medium":  8192,
-	"high":    24576,
+	dynamic: -1,
+	none:    0,
+	low:     512,
+	medium:  8192,
+	high:    24576,
 }
 
 // NewCLI creates a new CLI instance.
@@ -55,6 +78,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		muted:      true,
 		aiEnabled:  aiEnabled,
 		warmUpDone: false,
+		mode:       MixMode,
 	}
 }
 
@@ -159,7 +183,7 @@ func (c *CLI) draw() {
 	if c.muted || !c.warmUpDone {
 		return
 	}
-	fmt.Print(promptPatern) // Initial prompt
+	fmt.Printf(promptPatern, c.mode) // Initial prompt
 	// Publish a separate event for the sound bar AFTER the CLI prompt is printed.
 	// This creates a specific drawing order and prevents a race condition
 	// where the sound bar could be drawn before or over the prompt.
@@ -167,7 +191,7 @@ func (c *CLI) draw() {
 }
 
 func (c *CLI) command(cmd string) {
-	log.Println("Received command:", cmd)
+	log.Println("CLI command received:", cmd)
 	parts := strings.Fields(cmd)
 	commandName := parts[0]
 
@@ -199,23 +223,46 @@ func (c *CLI) command(cmd string) {
 		config.C.AI.Thoughts = !config.C.AI.Thoughts
 		log.Printf("AI thoughts set to: %t", config.C.AI.Thoughts)
 	case "thinking":
+		hint := func() {
+			fmt.Printf("Available levels: %s, %s, %s, %s, %s\n", dynamic, none, low, medium, high)
+		}
 		if len(parts) != 2 {
 			fmt.Println("Usage: /thinking <level>")
-			fmt.Println("Available levels: dynamic, none, low, medium, high")
+			hint()
 		} else {
 			level := strings.ToLower(parts[1])
 			value, ok := thinkingLevels[level]
 			if !ok {
 				fmt.Printf("Unknown thinking level: %s\n", level)
-				fmt.Println("Available levels: dynamic, none, low, medium, high")
+				hint()
 			} else {
 				config.C.AI.Thinking = value
 				log.Printf("AI thinking budget set to: %s (%d)", level, value)
 			}
 		}
+	case "mode":
+		hint := func() {
+			fmt.Printf("Available AI modes: %s, %s, %s, %s\n", MixMode, TextMode, VoiceMode, ImageMode)
+		}
+		if len(parts) != 2 {
+			fmt.Println("Usage: /mode <name>")
+			hint()
+		} else {
+			mode := strings.ToLower(parts[1])
+			value, ok := modes[mode]
+			if !ok {
+				fmt.Printf("Unknown AI mode: %s\n", mode)
+				hint()
+			} else {
+				c.mode = value
+				log.Printf("AI mode set to: %s", value)
+				(*c.bus).Publish("ai:topic", fmt.Sprintf("mode:%s", value))
+			}
+		}
 	case "help":
 		fmt.Println("Available commands:")
 		fmt.Println("/exit       		- Exit the application")
+		fmt.Printf("/mode <name>		- Set AI mode (%s, %s, %s, %s)\n", MixMode, TextMode, VoiceMode, ImageMode)
 		fmt.Println("/save       		- Save conversation history to history.txt")
 		fmt.Println("/debug      		- Toggle debug mode")
 		fmt.Println("/voice      		- Toggle voice responses")
@@ -224,7 +271,7 @@ func (c *CLI) command(cmd string) {
 		fmt.Println("/history    		- Toggle including voice prompts in conversation history")
 		fmt.Println("/cache      		- Toggle AI caching")
 		fmt.Println("/thoughts   		- Toggle AI thoughts visibility")
-		fmt.Println("/thinking <level> 	- Set AI thinking budget (dynamic, none, low, medium, high)")
+		fmt.Printf("/thinking <level> 	- Set AI thinking budget (%s, %s, %s, %s, %s)\n", dynamic, none, low, medium, high)
 		fmt.Println("/help       		- Display this help message")
 	default:
 		fmt.Printf("Unknown command: %s\n", commandName)

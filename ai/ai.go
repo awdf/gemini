@@ -25,6 +25,7 @@ import (
 	"gemini/audio"
 	"gemini/config"
 	"gemini/helpers"
+	"gemini/images"
 	"gemini/inout"
 	"gemini/pipeline"
 )
@@ -49,6 +50,7 @@ type AI struct {
 	formatter           *inout.Formatter
 	bus                 *EventBus.Bus
 	initialContextAdded bool
+	mode                string
 }
 
 const (
@@ -60,6 +62,8 @@ const (
 const (
 	fURLContextDisabled = true
 	fURLContextEnabled  = false
+	fNoVoicePrompt      = false
+	fVoicePrompt        = true
 )
 
 func init() {
@@ -96,6 +100,7 @@ func NewAI(
 		formatter:           inout.NewFormatter(),
 		bus:                 bus,
 		initialContextAdded: false,
+		mode:                inout.MixMode,
 	}
 
 	if config.C.AI.EnableCache {
@@ -114,28 +119,8 @@ func (a *AI) Run() {
 	defer a.wg.Done()
 
 	if !a.flags.Enabled {
-		log.Println("AI Chat processor is disabled. Draining channels to prevent blocking.")
-		// We must still consume from the channels to prevent other goroutines from blocking.
-		for a.fileChan != nil || a.textCmdChan != nil {
-			select {
-			case file, ok := <-a.fileChan:
-				if !ok {
-					a.fileChan = nil
-					continue
-				}
-				config.DebugPrintf("AI disabled, discarding file: %s", file)
-			case cmd, ok := <-a.textCmdChan:
-				if !ok {
-					a.textCmdChan = nil
-					continue
-				}
-
-				config.DebugPrintf("AI disabled, discarding command: %s", cmd)
-				// In case of AI disabled we support CLI and draw it
-				(*a.bus).Publish("main:topic", "draw:ai.run")
-			}
-		}
-		log.Println("AI Chat work finished (disabled).")
+		// Blocking call
+		a.passiveRun()
 		return
 	}
 
@@ -169,11 +154,28 @@ func (a *AI) Run() {
 				a.textCmdChan = nil // Mark as closed
 				continue
 			}
-			log.Println("Chat: Processing text prompt...")
+			log.Printf("Chat: Processing text prompt in %s mode...\n", a.mode)
+			var action func() error
 			a.withPipelinePausedIfVoice(a.pipeline, func() {
-				action := func() error {
-					return a.TextQuestion(cmd)
+				switch a.mode {
+				case inout.ImageMode:
+					// Take screenshot on Wayland is 500ms or more
+					buffer, err := images.TakeScreenshot()
+					if err != nil {
+						log.Printf("ERROR: AI processing failed for screenshot capture: %v", err)
+						return
+					}
+					defer buffer.Release()
+
+					action = func() error {
+						return a.ImageQuestion(cmd, buffer)
+					}
+				default:
+					action = func() error {
+						return a.TextQuestion(cmd)
+					}
 				}
+
 				err := a.retryWithBackoff(action)
 				if err != nil {
 					log.Printf("ERROR: AI processing failed for text command after all retries: %v", err)
@@ -183,6 +185,29 @@ func (a *AI) Run() {
 	}
 
 	log.Println("AI Chat work finished")
+}
+
+func (a *AI) passiveRun() {
+	log.Println("AI Chat processor is disabled. Draining channels to prevent blocking.")
+	// We must still consume from the channels to prevent other goroutines from blocking.
+	for a.fileChan != nil || a.textCmdChan != nil {
+		select {
+		case file, ok := <-a.fileChan:
+			if !ok {
+				a.fileChan = nil
+				continue
+			}
+			config.DebugPrintf("AI disabled, discarding file: %s", file)
+		case cmd, ok := <-a.textCmdChan:
+			if !ok {
+				a.textCmdChan = nil
+				continue
+			}
+
+			config.DebugPrintf("AI disabled, discarding command: %s", cmd)
+		}
+	}
+	log.Println("AI Chat work finished (disabled).")
 }
 
 // handleEvents processes commands sent to the AI component via the event bus.
@@ -200,6 +225,10 @@ func (a *AI) handleEvents(event string) {
 		if err := a.saveConversationHistory(payload); err != nil {
 			log.Printf("ERROR: failed to save conversation history to %s: %v", payload, err)
 		}
+	case "mode":
+		a.mode = payload
+	default:
+		log.Printf("WARNING: received unknown AI event: %s", event)
 	}
 }
 
@@ -301,11 +330,20 @@ func (a *AI) TextQuestion(prompt string) error {
 	// Text models are able to use the URLContext tool to parse and understend web content.
 	// In case of exception urlContextDisabled is true, means a special URL was found.
 	// special URL: file, YouTube
-	if err := a.generateAndProcessContent(parts, urlContextDisabled, false); err != nil {
+	if err := a.generateAndProcessContent(parts, urlContextDisabled, fNoVoicePrompt); err != nil {
 		log.Printf("ERROR: processing text question: %v", err)
 		return err
 	}
 	return nil
+}
+
+func (a *AI) ImageQuestion(prompt string, imageBuffer *images.ScreenshotBuffer) error {
+	parts := []*genai.Part{
+		genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"),
+		genai.NewPartFromText(prompt),
+	}
+
+	return a.generateAndProcessContent(parts, fURLContextDisabled, fNoVoicePrompt)
 }
 
 // It's call of voice chat with tools enabled according to config
@@ -327,7 +365,7 @@ func (a *AI) VoiceQuestion(
 		genai.NewPartFromURI(uploadedFile.URI, uploadedFile.MIMEType),
 		genai.NewPartFromText(prompt),
 	}
-	return a.generateAndProcessContent(parts, fURLContextDisabled, true)
+	return a.generateAndProcessContent(parts, fURLContextDisabled, fVoicePrompt)
 }
 
 // It's forced call of Voice chat with tool enabled ignoring config.
@@ -369,7 +407,7 @@ func (a *AI) VoiceQuestionWithTranscript(
 	}
 
 	// The second step is a pure text-based query, so we can reuse the history logic.
-	return a.generateAndProcessContent(parts, fURLContextEnabled, false)
+	return a.generateAndProcessContent(parts, fURLContextEnabled, fNoVoicePrompt)
 }
 
 // generateTranscript performs a dedicated API call to get a transcript from an audio file.
