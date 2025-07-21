@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"gemini/audio"
 	"gemini/config"
 	"gemini/helpers"
+	"gemini/images"
 	"gemini/inout"
 	"gemini/vad"
 )
@@ -33,6 +35,7 @@ type LiveAI struct {
 	session     *genai.Session
 	isStreaming bool
 	mode        string
+	mu          sync.Mutex
 }
 
 func NewLiveSink(
@@ -154,12 +157,14 @@ func (l *LiveAI) Run() {
 				// Signal end of turn and process response in a separate goroutine
 				// to avoid blocking the main Run loop.
 				go func() {
-					// comp := true
-					// content := genai.LiveClientContentInput{TurnComplete: &comp}
-					// if err := l.session.SendClientContent(content); err != nil {
-					// 	log.Printf("ERROR: failed to send turn complete: %v", err)
-					// 	return
-					// }
+					l.mu.Lock()
+					defer l.mu.Unlock()
+					comp := true
+					content := genai.LiveClientContentInput{TurnComplete: &comp}
+					if err := l.session.SendClientContent(content); err != nil {
+						log.Printf("ERROR: failed to send turn complete: %v", err)
+						return
+					}
 					if err := l.processLiveStream(); err != nil {
 						log.Printf("ERROR: processing live stream: %v", err)
 					}
@@ -167,6 +172,21 @@ func (l *LiveAI) Run() {
 			default:
 				log.Printf("WARNING: received unknown control command: %s", cmd)
 			}
+
+		case textCmd, ok := <-l.textCmdChan:
+			if !ok {
+				l.textCmdChan = nil // Mark as closed
+				continue
+			}
+			log.Printf("Live AI: Processing text prompt in %s mode...\n", l.mode)
+			// Process in a separate goroutine to avoid blocking the main Run loop.
+			go func(prompt string) {
+				if err := l.sendTextPrompt(prompt); err != nil {
+					// The error is already logged inside sendTextPrompt,
+					// but we can log it again here for more context.
+					log.Printf("ERROR: failed to process text prompt: %v", err)
+				}
+			}(textCmd)
 
 		case <-ticker.C:
 			l.pullAndSendSamples()
@@ -259,6 +279,47 @@ func (l *LiveAI) handleEvents(event string) {
 		// The "save" event is not handled here as LiveAI does not maintain history.
 		config.DebugPrintf("LiveAI component ignoring event: %s", event)
 	}
+}
+
+// sendTextPrompt sends a text prompt (and potentially a screenshot) to the live session.
+// It acquires a lock to ensure only one turn is processed at a time.
+func (l *LiveAI) sendTextPrompt(prompt string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var imageBuffer *images.ScreenshotBuffer
+	var err error
+
+	if l.mode == inout.ImageMode {
+		log.Println("Taking screenshot for AI response...")
+		imageBuffer, err = images.TakeScreenshot()
+		if err != nil {
+			return fmt.Errorf("failed to take screenshot: %w", err)
+		}
+		defer imageBuffer.Release()
+	}
+
+	parts := []*genai.Part{genai.NewPartFromText(prompt)}
+	if imageBuffer != nil {
+		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
+	}
+
+	// A turn is represented by a Content object. The role for client-sent
+	// content is 'user'.
+	turn := genai.NewContentFromParts(parts, genai.RoleUser)
+
+	// The input to SendClientContent is a struct that contains the turns.
+	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+	if err := l.session.SendClientContent(content); err != nil {
+		return fmt.Errorf("failed to send client content: %w", err)
+	}
+
+	// After sending, we need to process the response.
+	if err := l.processLiveStream(); err != nil {
+		return fmt.Errorf("processing live stream after text prompt: %w", err)
+	}
+
+	return nil
 }
 
 // pullAndSendSamples pulls all available samples from the sink and sends them to the Live API.

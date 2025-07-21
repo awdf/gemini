@@ -85,9 +85,6 @@ func NewApp(flags *CliFlags) *App {
 		Enabled: flags.AIEnabled,
 	}
 
-	// Initial message to AI. Build start context.
-	app.textCommandChan <- "Ready?"
-
 	// Create the main components with Dependency Injection.
 	// 2 modes: PostAI and LiveAI
 	if flags.Live { // LiveAI init
@@ -95,6 +92,8 @@ func NewApp(flags *CliFlags) *App {
 		// The Live API requires 16kHz mono audio.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, 1, 16000)
 	} else { // PostAI init
+		// Initial message to AI. Build start context.
+		app.textCommandChan <- "Ready?"
 		app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
 		// For recording, we use the higher quality settings defined in the audio package.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.WavChannels, audio.WavSampleRate)
