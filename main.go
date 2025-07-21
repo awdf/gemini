@@ -17,6 +17,7 @@ import (
 	"github.com/go-gst/go-gst/gst"
 
 	"gemini/ai"
+	"gemini/audio"
 	"gemini/config"
 	"gemini/flow"
 	"gemini/inout"
@@ -90,11 +91,13 @@ func NewApp(flags *CliFlags) *App {
 	// Create the main components with Dependency Injection.
 	// 2 modes: PostAI and LiveAI
 	if flags.Live { // LiveAI init
-		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.bus)
-		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus)
+		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus)
+		// The Live API requires 16kHz mono audio.
+		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, 1, 16000)
 	} else { // PostAI init
 		app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
-		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus)
+		// For recording, we use the higher quality settings defined in the audio package.
+		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.WavChannels, audio.WavSampleRate)
 		app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus)
 	}
 	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan, app.bus)

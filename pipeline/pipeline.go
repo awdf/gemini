@@ -12,7 +12,6 @@ import (
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
 
-	"gemini/audio" // Import the audio package for WAV constants
 	"gemini/config"
 	"gemini/flow"
 	"gemini/helpers"
@@ -40,6 +39,8 @@ func NewVADPipeline(
 	rmsDisplayChan chan<- float64,
 	vadControlChan chan<- float64,
 	bus *EventBus.Bus,
+	channels int,
+	rate int,
 ) *VadPipeline {
 	// Check CLI: gst-launch-1.0 pulsesrc ! audioconvert ! audioresample !  autoaudiosink
 	// Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
@@ -76,7 +77,7 @@ func NewVADPipeline(
 	capsfilter := helpers.Check(gst.NewElement("capsfilter"))
 	helpers.Verify(capsfilter.SetProperty("caps", gst.NewCapsFromString(
 		fmt.Sprintf("audio/x-raw, format=S16LE, layout=interleaved, channels=%d, rate=%d",
-			audio.WavChannels, audio.WavSampleRate),
+			channels, rate),
 	)))
 
 	tee := helpers.Check(gst.NewElement("tee"))

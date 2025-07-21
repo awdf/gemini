@@ -28,13 +28,19 @@ type LiveAI struct {
 	Element     *gst.Element
 	wg          *sync.WaitGroup
 	controlChan <-chan string
+	textCmdChan <-chan string
 	bus         *EventBus.Bus
 	session     *genai.Session
 	isStreaming bool
 	mode        string
 }
 
-func NewLiveSink(wg *sync.WaitGroup, controlChan <-chan string, bus *EventBus.Bus) *LiveAI {
+func NewLiveSink(
+	wg *sync.WaitGroup,
+	controlChan <-chan string,
+	textCmdChan <-chan string,
+	bus *EventBus.Bus,
+) *LiveAI {
 	ctx := context.Background()
 	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
@@ -52,6 +58,7 @@ func NewLiveSink(wg *sync.WaitGroup, controlChan <-chan string, bus *EventBus.Bu
 		formatter:   inout.NewFormatter(),
 		bus:         bus,
 		controlChan: controlChan,
+		textCmdChan: textCmdChan,
 		liveSink:    sink,
 		Element:     sink.Element,
 		isStreaming: false,
@@ -147,12 +154,12 @@ func (l *LiveAI) Run() {
 				// Signal end of turn and process response in a separate goroutine
 				// to avoid blocking the main Run loop.
 				go func() {
-					comp := true
-					content := genai.LiveClientContentInput{TurnComplete: &comp}
-					if err := l.session.SendClientContent(content); err != nil {
-						log.Printf("ERROR: failed to send turn complete: %v", err)
-						return
-					}
+					// comp := true
+					// content := genai.LiveClientContentInput{TurnComplete: &comp}
+					// if err := l.session.SendClientContent(content); err != nil {
+					// 	log.Printf("ERROR: failed to send turn complete: %v", err)
+					// 	return
+					// }
 					if err := l.processLiveStream(); err != nil {
 						log.Printf("ERROR: processing live stream: %v", err)
 					}
