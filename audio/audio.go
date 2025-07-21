@@ -25,6 +25,13 @@ const (
 	WavBlockAlign    = WavChannels * (WavBitsPerSample / 8)                 // 4 bytes per sample frame
 )
 
+// Constants for Gemini Live API audio input format:
+// 16000 Hz, 1 channel (mono), 16-bit signed little-endian.
+const (
+	LiveChannels   = 1
+	LiveSampleRate = 16000
+)
+
 // Constants for Gemini TTS audio format:
 // 24000 Hz, 1 channel (mono), 16-bit signed little-endian.
 const (

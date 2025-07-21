@@ -90,7 +90,7 @@ func NewApp(flags *CliFlags) *App {
 	if flags.Live { // LiveAI init
 		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus)
 		// The Live API requires 16kHz mono audio.
-		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, 1, 16000)
+		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.LiveChannels, audio.LiveSampleRate)
 	} else { // PostAI init
 		// Initial message to AI. Build start context.
 		app.textCommandChan <- "Ready?"
