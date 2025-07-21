@@ -3,8 +3,11 @@ package audio
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"os"
+	"sync"
 
+	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
 	"github.com/go-gst/go-gst/gst/app"
 
@@ -138,6 +141,86 @@ func (w *WavFile) Filename() string {
 // Size returns the number of audio data bytes written to the file.
 func (w *WavFile) Size() int64 {
 	return w.bytesWritten
+}
+
+// PCMStreamPlayer manages a GStreamer pipeline for playing raw PCM audio streams.
+type PCMStreamPlayer struct {
+	pipeline *gst.Pipeline
+	appsrc   *app.Source
+	loop     *glib.MainLoop
+	wg       sync.WaitGroup
+}
+
+// NewPCMStreamPlayer creates and starts a new GStreamer pipeline for playing PCM audio.
+func NewPCMStreamPlayer(rate, channels int) (*PCMStreamPlayer, error) {
+	pipeline := helpers.Check(gst.NewPipeline("audio-stream-player"))
+	appsrc := helpers.Check(app.NewAppSrc())
+
+	capsfilter := helpers.Check(gst.NewElement("capsfilter"))
+	helpers.Verify(capsfilter.SetProperty("caps", gst.NewCapsFromString(
+		fmt.Sprintf("audio/x-raw, format=S16LE, layout=interleaved, channels=%d, rate=%d", channels, rate),
+	)))
+
+	audioconvert := helpers.Check(gst.NewElement("audioconvert"))
+	audioresample := helpers.Check(gst.NewElement("audioresample"))
+	audiosink := helpers.Check(gst.NewElement("autoaudiosink"))
+
+	helpers.Verify(pipeline.AddMany(appsrc.Element, capsfilter, audioconvert, audioresample, audiosink))
+	helpers.Verify(gst.ElementLinkMany(appsrc.Element, capsfilter, audioconvert, audioresample, audiosink))
+
+	player := &PCMStreamPlayer{
+		pipeline: pipeline,
+		appsrc:   appsrc,
+		loop:     glib.NewMainLoop(glib.MainContextDefault(), false),
+	}
+
+	bus := pipeline.GetBus()
+	bus.AddWatch(func(msg *gst.Message) bool {
+		switch msg.Type() {
+		case gst.MessageEOS:
+			log.Println("Audio stream playback finished (EOS).")
+			player.loop.Quit()
+			return false
+		case gst.MessageError:
+			err := msg.ParseError()
+			log.Printf("ERROR: from audio player element %s: %s", msg.Source(), err.Error())
+			player.loop.Quit()
+			return false
+		}
+		return true
+	})
+
+	player.wg.Add(1)
+	go func() {
+		defer player.wg.Done()
+		player.loop.Run()
+	}()
+
+	helpers.Verify(pipeline.SetState(gst.StatePlaying))
+
+	return player, nil
+}
+
+// Write pushes an audio chunk into the playback pipeline.
+func (p *PCMStreamPlayer) Write(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	buffer := gst.NewBufferFromBytes(data)
+	if ret := p.appsrc.PushBuffer(buffer); ret != gst.FlowOK {
+		return fmt.Errorf("failed to push buffer to appsrc: %v", ret)
+	}
+	return nil
+}
+
+// Close signals the end of the stream and waits for playback to complete.
+func (p *PCMStreamPlayer) Close() error {
+	if ret := p.appsrc.EndStream(); ret != gst.FlowOK {
+		return fmt.Errorf("failed to send EOS to appsrc: %v", ret)
+	}
+	p.wg.Wait() // Wait for the main loop to exit.
+	helpers.Verify(p.pipeline.SetState(gst.StateNull))
+	return nil
 }
 
 // PlayRawPCM plays a raw PCM audio blob using GStreamer.

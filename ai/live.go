@@ -100,6 +100,16 @@ func (l *LiveAI) OpenSession() {
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityText}
 	}
 
+	// Add system prompt if configured.
+	systemPrompt := config.C.AI.SystemPrompt
+	if systemPrompt != "" {
+		currentTime := time.Now().Format(time.RFC1123)
+		systemPrompt = fmt.Sprintf("Current date and time is %s. %s", currentTime, systemPrompt)
+		// The role for a system instruction is empty.
+		liveConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(systemPrompt)}, "")
+		log.Println("Using system prompt for live session.")
+	}
+
 	// 2. Connect to the live session.
 	// Use the model specified in the config, which is suitable for streaming.
 	log.Println("Connecting to live session with model:", modelName)
@@ -159,12 +169,7 @@ func (l *LiveAI) Run() {
 				go func() {
 					l.mu.Lock()
 					defer l.mu.Unlock()
-					comp := true
-					content := genai.LiveClientContentInput{TurnComplete: &comp}
-					if err := l.session.SendClientContent(content); err != nil {
-						log.Printf("ERROR: failed to send turn complete: %v", err)
-						return
-					}
+					// IMPORTANT: For live stream don't need send turn complete. Or it will brake session.
 					if err := l.processLiveStream(); err != nil {
 						log.Printf("ERROR: processing live stream: %v", err)
 					}
@@ -197,11 +202,31 @@ func (l *LiveAI) Run() {
 // processLiveStream handles the incoming messages from an active LiveSession.
 func (l *LiveAI) processLiveStream() error {
 	// Stop other output
-	(*l.bus).Publish("main:topic", "mute:ai.livestream")
-	defer (*l.bus).Publish("main:topic", "draw:ai.livestream")
+	(*l.bus).Publish("main:topic", "mute:ai.processLiveStream")
+	defer (*l.bus).Publish("main:topic", "draw:ai.processLiveStream")
 
-	var fullResponseText string
-	var audioData []byte
+	var (
+		fullResponseText string
+		streamPlayer     *audio.PCMStreamPlayer
+		playerErr        error
+	)
+
+	if config.C.AI.VoiceEnabled {
+		streamPlayer, playerErr = audio.NewPCMStreamPlayer(audio.TTSSampleRate, audio.TTSChannels)
+		if playerErr != nil {
+			log.Printf("ERROR: could not create audio stream player: %v", playerErr)
+			// Don't return, we can still process text.
+		}
+		if streamPlayer != nil {
+			defer func() {
+				if err := streamPlayer.Close(); err != nil {
+					log.Printf("ERROR: closing audio stream player: %v", err)
+				}
+			}()
+		}
+	}
+
+	l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
 
 	for {
 		msg, err := l.session.Receive()
@@ -220,9 +245,15 @@ func (l *LiveAI) processLiveStream() error {
 					fullResponseText += part.Text
 				}
 				if part.InlineData != nil && len(part.InlineData.Data) > 0 {
-					audioData = append(audioData, part.InlineData.Data...)
+					if streamPlayer != nil {
+						if err := streamPlayer.Write(part.InlineData.Data); err != nil {
+							log.Printf("ERROR: writing to audio stream: %v", err)
+						}
+					}
 				}
 			}
+		} else {
+			log.Printf("No response from Live AI Model: %+v", msg)
 		}
 
 		if msg.ToolCall != nil {
@@ -242,21 +273,7 @@ func (l *LiveAI) processLiveStream() error {
 		}
 	}
 
-	if config.C.AI.VoiceEnabled && len(audioData) > 0 {
-		log.Println("Playing live audio response...")
-		if err := audio.PlayRawPCM(audioData, audio.TTSSampleRate, audio.TTSChannels); err != nil {
-			log.Printf("ERROR: Failed to play live audio: %v", err)
-		}
-	}
-
-	// TODO: The LiveAI component does not currently maintain a conversation history
-	// like the standard AI component. To add this, a history slice would need to be
-	// added to the LiveAI struct and updated here.
-	// modelResponseContent := genai.NewContentFromParts(
-	// 	[]*genai.Part{genai.NewPartFromText(fullResponseText)},
-	// 	genai.RoleModel,
-	// )
-	// l.conversationHistory = append(l.conversationHistory, modelResponseContent)
+	l.formatter.Reset()
 
 	return nil
 }

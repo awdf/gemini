@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-gst/go-gst/gst"
 	"github.com/stretchr/testify/assert"
@@ -97,4 +98,33 @@ func TestPlayRawPCM(t *testing.T) {
 
 	err = PlayRawPCM(data, TTSSampleRate, TTSChannels)
 	assert.NoError(t, err, "PlayRawPCM should execute without pipeline errors on a configured system")
+}
+
+// TestPCMStreamPlayer_Lifecycle tests the creation, writing, and closing of a PCMStreamPlayer.
+func TestPCMStreamPlayer_Lifecycle(t *testing.T) {
+	// In a CI environment without a running audio server, creating an 'autoaudiosink'
+	// will fail. We skip this test if we can't create the sink element.
+	_, err := gst.NewElement("autoaudiosink")
+	if err != nil {
+		t.Skipf("Skipping test: could not create autoaudiosink element, likely no audio server. Error: %v", err)
+	}
+
+	// 1. Create a new player
+	player, err := NewPCMStreamPlayer(TTSSampleRate, TTSChannels)
+	require.NoError(t, err, "NewPCMStreamPlayer should not return an error")
+	require.NotNil(t, player, "NewPCMStreamPlayer should return a valid player")
+
+	// 2. Write some data in chunks
+	chunk1 := make([]byte, 1024)
+	chunk2 := make([]byte, 1024)
+	err = player.Write(chunk1)
+	require.NoError(t, err, "Write should not return an error for chunk 1")
+	time.Sleep(20 * time.Millisecond) // Give pipeline time to process
+	err = player.Write(chunk2)
+	require.NoError(t, err, "Write should not return an error for chunk 2")
+
+	// 3. Close the player
+	// This will block until the pipeline finishes playing the data.
+	err = player.Close()
+	require.NoError(t, err, "Close should not return an error")
 }
