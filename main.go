@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"sync"
 
 	"github.com/asaskevich/EventBus"
@@ -100,15 +101,16 @@ func NewApp(flags *CliFlags) *App {
 	app.display = inout.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
 	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus, flags.AIEnabled)
 
-	// Collect all Runnable for future processing
+	// Collect all runnable components. Some will be nil depending on the mode
+	// (e.g., app.live or app.recorder). The join() method safely handles nils.
 	app.runnables = []Runnable{
 		app.pipeline,
 		app.display,
 		app.vadEngine,
-		app.recorder,
-		app.ai,
+		app.recorder, // May be nil
+		app.ai,       // May be nil
 		app.cli,
-		app.live,
+		app.live, // May be nil
 	}
 
 	return app
@@ -160,8 +162,11 @@ func (app *App) run() {
 	}
 
 	// Process existing files and get the last file index to avoid overwrites.
-	lastFileIndex := app.recorder.ProcessExistingRecordings()
-	app.vadEngine.SetFileCounter(lastFileIndex)
+	// This must be guarded as app.recorder is nil in live mode.
+	if app.recorder != nil {
+		lastFileIndex := app.recorder.ProcessExistingRecordings()
+		app.vadEngine.SetFileCounter(lastFileIndex)
+	}
 
 	// Start the pipeline
 	app.pipeline.Play()
@@ -172,7 +177,11 @@ func (app *App) run() {
 }
 
 func (app *App) join(r Runnable) {
-	if r == nil {
+	// An interface is only nil if both its type and value are nil.
+	// A nil pointer of a concrete type (e.g., (*AI)(nil)) assigned to an
+	// interface results in a non-nil interface. We must use reflection
+	// to check if the underlying value of the interface is nil.
+	if r == nil || reflect.ValueOf(r).IsNil() {
 		return
 	}
 	app.wg.Add(1)

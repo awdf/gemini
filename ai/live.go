@@ -2,10 +2,11 @@ package ai
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/asaskevich/EventBus"
 	"github.com/go-gst/go-gst/gst"
@@ -16,6 +17,7 @@ import (
 	"gemini/config"
 	"gemini/helpers"
 	"gemini/inout"
+	"gemini/vad"
 )
 
 type LiveAI struct {
@@ -27,33 +29,50 @@ type LiveAI struct {
 	wg          *sync.WaitGroup
 	controlChan <-chan string
 	bus         *EventBus.Bus
+	session     *genai.Session
+	isStreaming bool
+	mode        string
 }
 
 func NewLiveSink(wg *sync.WaitGroup, controlChan <-chan string, bus *EventBus.Bus) *LiveAI {
-	var l LiveAI
-	l.liveSink = helpers.Check(app.NewAppSink())
-	helpers.Verify(l.liveSink.SetProperty("sync", false))
-	l.liveSink.SetDrop(false) // Do not drop data; ensure all samples are received for recording.
-	// Set a max buffer to prevent runaway memory usage and add stability.
-	l.liveSink.SetMaxBuffers(10)
-	l.Element = l.liveSink.Element
-	l.wg = wg
-	l.controlChan = controlChan
-	l.bus = bus
-	return &l
+	ctx := context.Background()
+	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  config.C.AI.APIKey,
+		Backend: genai.BackendGeminiAPI,
+	}))
+	sink := helpers.Check(app.NewAppSink())
+	helpers.Verify(sink.SetProperty("sync", false))
+	sink.SetDrop(false)    // Do not drop data; ensure all samples are received for recording.
+	sink.SetMaxBuffers(10) // Set a max buffer to prevent runaway memory usage and add stability.
+
+	return &LiveAI{
+		wg:          wg,
+		ctx:         ctx,
+		client:      client,
+		formatter:   inout.NewFormatter(),
+		bus:         bus,
+		controlChan: controlChan,
+		liveSink:    sink,
+		Element:     sink.Element,
+		isStreaming: false,
+		mode:        inout.MixMode,
+	}
 }
 
-func (l *LiveAI) Run() {
-	defer l.wg.Done()
-}
+func (l *LiveAI) OpenSession() {
+	if l.session != nil {
+		return
+	}
 
-// Livestream establishes a bidirectional connection to the Gemini API for real-time interaction.
-// It sends an initial prompt and then processes the stream of responses from the model.
-// This function is designed for a single prompt-response cycle.
-func (l *LiveAI) Livestream(prompt string) error {
 	// 1. Configure the session based on global settings.
+	var modelName string
 	liveConfig := &genai.LiveConnectConfig{}
 	if config.C.AI.VoiceEnabled {
+		// Model: gemini-2.5-flash-preview-native-audio-dialog, gemini-2.5-flash-exp-native-audio-thinking-dialog
+		// Model inputs: Audio, videos, and text
+		// Model outputs: Text and audio, interleaved
+		// For responses with voice. RPD 5 per model
+		modelName = "gemini-2.5-flash-preview-native-audio-dialog"
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityAudio}
 		liveConfig.SpeechConfig = &genai.SpeechConfig{
 			VoiceConfig: &genai.VoiceConfig{
@@ -63,58 +82,93 @@ func (l *LiveAI) Livestream(prompt string) error {
 			},
 		}
 	} else {
+		// Model: gemini-live-2.5-flash-preview
+		// Model inputs: Audio, images, videos, and text
+		// Model outputs: Text
+		// For responses with text. RPD 250
+		modelName = config.C.AI.ModelLive
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityText}
 	}
 
 	// 2. Connect to the live session.
 	// Use the model specified in the config, which is suitable for streaming.
-	modelName := config.C.AI.ModelLive
 	log.Println("Connecting to live session with model:", modelName)
-	session, err := l.client.Live.Connect(l.ctx, modelName, liveConfig)
-	if err != nil {
-		return fmt.Errorf("failed to connect to live session: %w", err)
-	}
-	defer session.Close()
+	l.session = helpers.Check(l.client.Live.Connect(l.ctx, modelName, liveConfig))
 
-	// 3. Wait for the initial "setup complete" message from the server.
-	msg, err := session.Receive()
-	if err != nil {
-		return fmt.Errorf("error receiving setup message: %w", err)
-	}
+	// After opening, we must wait for the server's initial setup message.
+	msg := helpers.Check(l.session.Receive())
 	if msg.SetupComplete == nil {
-		return fmt.Errorf("expected setup complete message, got: %+v", msg)
+		// This is a protocol violation from the server, which is a fatal error.
+		log.Fatalf("ERROR: expected setup complete message, got: %+v", msg)
 	}
 	log.Printf("Live session connected. %v", msg)
+}
 
-	// 4. Send the initial prompt to the model.
-	comp := true
-	log.Println("Sending prompt:", prompt)
-	content := genai.LiveClientContentInput{
-		Turns: []*genai.Content{
-			genai.NewContentFromParts(
-				[]*genai.Part{
-					genai.NewPartFromText(prompt),
-				},
-				genai.RoleUser,
-			),
-		},
-		TurnComplete: &comp,
+func (l *LiveAI) CloseSession() {
+	if l.session == nil {
+		return
 	}
+	l.session.Close()
+	l.session = nil
+}
 
-	if err := session.SendClientContent(content); err != nil {
-		return fmt.Errorf("failed to send prompt: %w", err)
+// Run is a dedicated goroutine for writing encoded audio data to files.
+// It listens for control messages to start new files and finalize (and potentially delete) old ones.
+func (l *LiveAI) Run() {
+	defer l.wg.Done()
+	defer l.CloseSession()
+
+	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
+
+	l.OpenSession()
+
+	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if config.C.Trace {
+			log.Println("Live AI accepting PCM data")
+		}
+
+		select {
+		case cmd, ok := <-l.controlChan:
+			if !ok {
+				log.Println("Live AI streaming is finished")
+				return
+			}
+			switch {
+			case strings.HasPrefix(cmd, vad.MarkerStart):
+				log.Println("VAD Start: beginning to stream audio to Live API.")
+				l.isStreaming = true
+			case strings.HasPrefix(cmd, vad.MarkerStop):
+				log.Println("VAD Stop: finishing turn.")
+				l.isStreaming = false
+				// Signal end of turn and process response in a separate goroutine
+				// to avoid blocking the main Run loop.
+				go func() {
+					comp := true
+					content := genai.LiveClientContentInput{TurnComplete: &comp}
+					if err := l.session.SendClientContent(content); err != nil {
+						log.Printf("ERROR: failed to send turn complete: %v", err)
+						return
+					}
+					if err := l.processLiveStream(); err != nil {
+						log.Printf("ERROR: processing live stream: %v", err)
+					}
+				}()
+			default:
+				log.Printf("WARNING: received unknown control command: %s", cmd)
+			}
+
+		case <-ticker.C:
+			l.pullAndSendSamples()
+		}
 	}
-
-	// helpers.Verify(session.SendRealtimeInput(genai.LiveRealtimeInput{
-	// 	Text: prompt,
-	// }))
-
-	// 5. Process the stream of responses.
-	return l.processLiveStream(session)
 }
 
 // processLiveStream handles the incoming messages from an active LiveSession.
-func (l *LiveAI) processLiveStream(session *genai.Session) error {
+func (l *LiveAI) processLiveStream() error {
 	// Stop other output
 	(*l.bus).Publish("main:topic", "mute:ai.livestream")
 	defer (*l.bus).Publish("main:topic", "draw:ai.livestream")
@@ -123,13 +177,13 @@ func (l *LiveAI) processLiveStream(session *genai.Session) error {
 	var audioData []byte
 
 	for {
-		msg, err := session.Receive()
+		msg, err := l.session.Receive()
 		if err != nil {
 			if err == io.EOF {
 				log.Println("Live stream ended (EOF).")
 				break
 			}
-			return fmt.Errorf("error receiving from live stream: %w", err)
+			return err
 		}
 
 		if msg.ServerContent != nil && msg.ServerContent.ModelTurn != nil {
@@ -168,12 +222,70 @@ func (l *LiveAI) processLiveStream(session *genai.Session) error {
 		}
 	}
 
-	// TODO: Add response to conversation history if needed.
+	// TODO: The LiveAI component does not currently maintain a conversation history
+	// like the standard AI component. To add this, a history slice would need to be
+	// added to the LiveAI struct and updated here.
 	// modelResponseContent := genai.NewContentFromParts(
 	// 	[]*genai.Part{genai.NewPartFromText(fullResponseText)},
 	// 	genai.RoleModel,
 	// )
-	// a.conversationHistory = append(a.conversationHistory, modelResponseContent)
+	// l.conversationHistory = append(l.conversationHistory, modelResponseContent)
 
 	return nil
+}
+
+// handleEvents processes commands sent to the AI component via the event bus.
+func (l *LiveAI) handleEvents(event string) {
+	config.DebugPrintf("LiveAI component received event: %s\n", event)
+	parts := strings.SplitN(event, ":", 2)
+	if len(parts) < 2 {
+		log.Printf("WARNING: received malformed LiveAI event: %s", event)
+		return
+	}
+	command, payload := parts[0], parts[1]
+
+	switch command {
+	case "mode":
+		l.mode = payload
+		log.Printf("LiveAI mode set to: %s", payload)
+	default:
+		// The "save" event is not handled here as LiveAI does not maintain history.
+		config.DebugPrintf("LiveAI component ignoring event: %s", event)
+	}
+}
+
+// pullAndSendSamples pulls all available samples from the sink and sends them to the Live API.
+// It MUST be called continuously to drain the sink, even when not actively streaming to the API.
+func (l *LiveAI) pullAndSendSamples() {
+	// Pull all available samples from the sink in a loop.
+	for {
+		sample := l.liveSink.TryPullSample(0)
+		if sample == nil {
+			break // No more samples in queue.
+		}
+
+		// Only send audio to the API if we are in a streaming state (between VAD start/stop).
+		if !l.isStreaming {
+			continue // Discard the sample.
+		}
+
+		buffer := sample.GetBuffer()
+		if buffer != nil {
+			// The pipeline is configured for 16-bit, 16kHz mono PCM audio.
+			// The correct MIME type for this is audio/l16;rate=16000.
+			err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
+				Audio: &genai.Blob{
+					MIMEType: "audio/pcm;rate=16000",
+					Data:     buffer.Bytes(),
+				},
+			})
+			if err != nil {
+				log.Printf("ERROR: failed to send realtime audio input: %v", err)
+				// Stop streaming on error to prevent flooding with more errors.
+				l.isStreaming = false
+			}
+			buffer.Unmap()
+		}
+		// IMPORTANT: Go GStreamer unrefs the sample automatically.
+	}
 }
