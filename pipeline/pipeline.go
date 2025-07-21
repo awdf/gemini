@@ -16,13 +16,12 @@ import (
 	"gemini/config"
 	"gemini/flow"
 	"gemini/helpers"
-	"gemini/recorder"
 )
 
 type VadPipeline struct {
 	pipeline       *gst.Pipeline
 	vadSink        *app.Sink
-	recorder       *recorder.Recorder
+	emitter        *gst.Element
 	loop           *glib.MainLoop
 	wg             *sync.WaitGroup
 	rmsDisplayChan chan<- float64
@@ -37,7 +36,7 @@ type VadPipeline struct {
 // 2. Recording Branch: -> queue -> valve -> appsink (for writing to a file in Go)
 func NewVADPipeline(
 	wg *sync.WaitGroup,
-	recorder *recorder.Recorder,
+	emitter *gst.Element,
 	rmsDisplayChan chan<- float64,
 	vadControlChan chan<- float64,
 	bus *EventBus.Bus,
@@ -46,7 +45,7 @@ func NewVADPipeline(
 	// Devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 
 	var p VadPipeline
-	p.recorder = recorder
+	p.emitter = emitter
 	p.wg = wg
 
 	p.rmsDisplayChan = rmsDisplayChan
@@ -92,10 +91,10 @@ func NewVADPipeline(
 	p.vadSink.SetMaxBuffers(10)
 
 	// --- Recording Branch Elements ---
-	recordingQueue := helpers.Check(gst.NewElement("queue"))
+	emitterQueue := helpers.Check(gst.NewElement("queue"))
 
 	// Add all elements to the pipeline
-	helpers.Verify(p.pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, p.vadSink.Element, recordingQueue, recorder.Element))
+	helpers.Verify(p.pipeline.AddMany(source, audioconvert, audioresample, capsfilter, tee, analysisQueue, p.vadSink.Element, emitterQueue, emitter))
 
 	// Link the common path
 	helpers.Verify(gst.ElementLinkMany(source, audioconvert, audioresample, capsfilter, tee))
@@ -104,7 +103,7 @@ func NewVADPipeline(
 	helpers.Verify(gst.ElementLinkMany(tee, analysisQueue, p.vadSink.Element))
 
 	// Link the recording branch
-	helpers.Verify(gst.ElementLinkMany(tee, recordingQueue, recorder.Element))
+	helpers.Verify(gst.ElementLinkMany(tee, emitterQueue, emitter))
 
 	p.mainLoop()
 	return &p

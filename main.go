@@ -27,6 +27,7 @@ import (
 // CliFlags holds the parsed command-line flags for the application.
 type CliFlags struct {
 	Voice      bool
+	Live       bool
 	Transcript bool
 	AIEnabled  bool
 	ConfigPath string
@@ -54,6 +55,7 @@ type App struct {
 	flags           *CliFlags
 	runnables       []Runnable
 	bus             *EventBus.Bus
+	live            *ai.LiveAI
 }
 
 // NewApp creates and initializes a new application instance.
@@ -85,10 +87,16 @@ func NewApp(flags *CliFlags) *App {
 	app.textCommandChan <- "Ready?"
 
 	// Create the main components with Dependency Injection.
-	app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
-	app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder, app.rmsDisplayChan, app.vadControlChan, app.bus)
+	// 2 modes: PostAI and LiveAI
+	if flags.Live { // LiveAI init
+		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.bus)
+		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus)
+	} else { // PostAI init
+		app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
+		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus)
+		app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus)
+	}
 	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan, app.bus)
-	app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus)
 	app.display = inout.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
 	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus, flags.AIEnabled)
 
@@ -100,6 +108,7 @@ func NewApp(flags *CliFlags) *App {
 		app.recorder,
 		app.ai,
 		app.cli,
+		app.live,
 	}
 
 	return app
@@ -111,6 +120,7 @@ func parseFlags() *CliFlags {
 	// Use a local variable for the negated flag.
 	aiOff := flag.Bool("no-ai", false, "Disable AI processing, only record audio")
 
+	flag.BoolVar(&flags.Live, "live", false, "Enable live responses from the AI")
 	flag.BoolVar(&flags.Voice, "voice", false, "Enable voice responses from the AI")
 	flag.BoolVar(&flags.Transcript, "ts", false, "Enable separate transcription step for voice chat")
 	flag.StringVar(&flags.ConfigPath, "config", "config.toml", "Path to the configuration file")
@@ -162,6 +172,9 @@ func (app *App) run() {
 }
 
 func (app *App) join(r Runnable) {
+	if r == nil {
+		return
+	}
 	app.wg.Add(1)
 	go r.Run()
 }

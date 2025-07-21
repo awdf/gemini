@@ -118,6 +118,8 @@ func NewAI(
 func (a *AI) Run() {
 	defer a.wg.Done()
 
+	// helpers.Verify(a.Livestream("Hi! It's my first message"))
+
 	if !a.flags.Enabled {
 		// Blocking call
 		a.passiveRun()

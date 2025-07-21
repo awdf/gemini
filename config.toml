@@ -10,6 +10,7 @@ Trace = false
 # Example: APIKey = "${GOOGLE_API_KEY}"
 APIKey = "${GOOGLE_API_KEY}"
 Model = "gemini-2.5-flash"
+ModelLive = "gemini-live-2.5-flash-preview"
 ModelTTS = "gemini-2.5-flash-preview-tts"
 Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
 VoiceHistory = false # Turn off(false) voice history for best model latency

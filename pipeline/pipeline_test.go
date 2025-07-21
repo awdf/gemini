@@ -57,7 +57,7 @@ func TestNewVADPipeline(t *testing.T) {
 	aiChan := make(chan string, 1)
 	rec := recorder.NewRecorderSink(wg, fileChan, aiChan, &bus)
 
-	p := NewVADPipeline(wg, rec, rmsChan, vadChan, &bus)
+	p := NewVADPipeline(wg, rec.Element, rmsChan, vadChan, &bus)
 	require.NotNil(t, p)
 	require.NotNil(t, p.pipeline)
 	assert.Equal(t, "vad-recording-pipeline", p.pipeline.GetName())
