@@ -90,7 +90,7 @@ func NewApp(flags *CliFlags) *App {
 	// 2 modes: PostAI and LiveAI
 	if flags.Live { // LiveAI init
 		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.bus)
-		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus)
+		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus)
 	} else { // PostAI init
 		app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus)
