@@ -130,7 +130,8 @@ func (l *LiveAI) OpenSession() {
 	}
 
 	voicePrompt := config.C.AI.VoicePrompt
-	if voicePrompt != "" {
+	textResponse := !config.C.AI.VoiceEnabled
+	if textResponse && voicePrompt != "" {
 		systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(voicePrompt))
 		log.Println("Using voice prompt for live session.")
 	}
