@@ -163,17 +163,28 @@ func NewPCMStreamPlayer(rate, channels int) (*PCMStreamPlayer, error) {
 	pipeline := helpers.Check(gst.NewPipeline("audio-stream-player"))
 	appsrc := helpers.Check(app.NewAppSrc())
 
-	capsfilter := helpers.Check(gst.NewElement("capsfilter"))
-	helpers.Verify(capsfilter.SetProperty("caps", gst.NewCapsFromString(
+	// Set the capabilities (audio format) directly on the appsrc element.
+	// This is more efficient than using a separate capsfilter element.
+	caps := gst.NewCapsFromString(
 		fmt.Sprintf("audio/x-raw, format=S16LE, layout=interleaved, channels=%d, rate=%d", channels, rate),
-	)))
+	)
+	appsrc.SetCaps(caps)
 
+	// Configure appsrc for live streaming to reduce latency and ensure smooth playback.
+	// is-live=true: Notifies downstream elements that this is a live source.
+	// stream-type=stream: Indicates a continuous, non-seekable stream.
+	// format=time: Instructs appsrc to generate timestamps for buffers, crucial for synchronization.
+	helpers.Verify(appsrc.SetProperty("is-live", true))
+	helpers.Verify(appsrc.SetProperty("stream-type", app.AppStreamTypeStream))
+	helpers.Verify(appsrc.SetProperty("format", gst.FormatTime))
+
+	queue := helpers.Check(gst.NewElement("queue"))
 	audioconvert := helpers.Check(gst.NewElement("audioconvert"))
 	audioresample := helpers.Check(gst.NewElement("audioresample"))
 	audiosink := helpers.Check(gst.NewElement("autoaudiosink"))
 
-	helpers.Verify(pipeline.AddMany(appsrc.Element, capsfilter, audioconvert, audioresample, audiosink))
-	helpers.Verify(gst.ElementLinkMany(appsrc.Element, capsfilter, audioconvert, audioresample, audiosink))
+	helpers.Verify(pipeline.AddMany(appsrc.Element, queue, audioconvert, audioresample, audiosink))
+	helpers.Verify(gst.ElementLinkMany(appsrc.Element, queue, audioconvert, audioresample, audiosink))
 
 	player := &PCMStreamPlayer{
 		pipeline: pipeline,

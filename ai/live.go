@@ -36,7 +36,7 @@ type LiveAI struct {
 	isStreaming   bool
 	mode          string
 	sessionClosed chan struct{}
-	mu            sync.Mutex
+	mu            sync.RWMutex
 }
 
 func NewLiveSink(
@@ -72,19 +72,28 @@ func NewLiveSink(
 }
 
 func (l *LiveAI) OpenSession() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.session != nil {
 		return
 	}
 
+	var urlContextDisabled bool
+
 	// 1. Configure the session based on global settings.
 	var modelName string
 	liveConfig := &genai.LiveConnectConfig{}
+	// Models documentation https://ai.google.dev/gemini-api/docs/live
 	if config.C.AI.VoiceEnabled {
+		// Native audio models
 		// Model: gemini-2.5-flash-preview-native-audio-dialog, gemini-2.5-flash-exp-native-audio-thinking-dialog
 		// Model inputs: Audio, videos, and text
 		// Model outputs: Text and audio, interleaved
 		// For responses with voice. RPD 5 per model
-		modelName = "gemini-2.5-flash-preview-native-audio-dialog"
+		// gemini-2.5-flash-preview-native-audio-dialog tools: Search, Function calling
+		// gemini-2.5-flash-exp-native-audio-thinking-dialog tools: Search
+		modelName = config.C.AI.ModelLiveTTS
+		urlContextDisabled = false
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityAudio}
 		liveConfig.SpeechConfig = &genai.SpeechConfig{
 			VoiceConfig: &genai.VoiceConfig{
@@ -94,10 +103,13 @@ func (l *LiveAI) OpenSession() {
 			},
 		}
 	} else {
-		// Model: gemini-live-2.5-flash-preview
+		// Half-cascade audio models
+		// Model: gemini-live-2.5-flash-preview, gemini-2.0-flash-live-001
 		// Model inputs: Audio, images, videos, and text
 		// Model outputs: Text
-		// For responses with text. RPD 250
+		// For responses with text. RPD 250 per model
+		// Tools: Search, Function calling, Code execution, Url context
+		urlContextDisabled = true
 		modelName = config.C.AI.ModelLive
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityText}
 	}
@@ -110,6 +122,24 @@ func (l *LiveAI) OpenSession() {
 		// The role for a system instruction is empty.
 		liveConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(systemPrompt)}, "")
 		log.Println("Using system prompt for live session.")
+	}
+
+	// Conditionally enable tools based on the configuration.
+	// This is only done for the main response generation, not transcription.
+	if config.C.AI.EnableTools {
+		log.Println("Tool use is enabled for this request.")
+		// Search tool available for all models
+		log.Println("Google search tool in use")
+		liveConfig.Tools = []*genai.Tool{{
+			GoogleSearch: &genai.GoogleSearch{},
+		}}
+		// URLContext tool available
+		if !urlContextDisabled {
+			log.Println("URLContext and Google search tools in use")
+			liveConfig.Tools = append(liveConfig.Tools, &genai.Tool{
+				URLContext: &genai.URLContext{},
+			})
+		}
 	}
 
 	// 2. Connect to the live session.
@@ -127,6 +157,8 @@ func (l *LiveAI) OpenSession() {
 }
 
 func (l *LiveAI) CloseSession() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.session == nil {
 		return
 	}
@@ -209,9 +241,22 @@ func (l *LiveAI) handleResponses() {
 	var streamPlayer *audio.PCMStreamPlayer
 	var playerErr error
 	var inModelTurn bool // State to track if we are in the middle of a model's turn.
+	var turnGroundingChunks []*genai.GroundingChunk
 
 	for {
-		msg, err := l.session.Receive()
+		// Lock the session for reading. This is a read-lock, so multiple goroutines
+		// can read the session pointer concurrently, but it prevents the main Run()
+		// loop from closing and replacing the session while we are using it.
+		l.mu.RLock()
+		session := l.session
+		l.mu.RUnlock()
+
+		if session == nil {
+			// The session has been closed by another goroutine. This handler's job is done.
+			// The main Run() loop will start a new handler for the new session.
+			return
+		}
+		msg, err := session.Receive()
 		if err != nil {
 			if err == io.EOF {
 				log.Println("Live stream ended (EOF).")
@@ -242,33 +287,42 @@ func (l *LiveAI) handleResponses() {
 		}
 
 		// Process the content of the message.
-		if msg.ServerContent != nil && msg.ServerContent.ModelTurn != nil {
-			// If this is the first chunk of a new model turn, print the header.
-			if !inModelTurn {
-				inModelTurn = true
-				(*l.bus).Publish("main:topic", "mute:ai.handleResponses")
-				l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
+		if msg.ServerContent != nil {
+			if msg.ServerContent.ModelTurn != nil {
+				// If this is the first chunk of a new model turn, print the header.
+				if !inModelTurn {
+					inModelTurn = true
+					// Reset the accumulator for the new turn.
+					turnGroundingChunks = nil
+					(*l.bus).Publish("main:topic", "mute:ai.handleResponses")
+					l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
+				}
+
+				for _, part := range msg.ServerContent.ModelTurn.Parts {
+					if part.Text != "" {
+						l.formatter.Print(part.Text)
+					}
+					if part.InlineData != nil && len(part.InlineData.Data) > 0 {
+						// Create the player on the first audio chunk received.
+						if streamPlayer == nil && config.C.AI.VoiceEnabled {
+							streamPlayer, playerErr = audio.NewPCMStreamPlayer(audio.TTSSampleRate, audio.TTSChannels)
+							if playerErr != nil {
+								log.Printf("ERROR: could not create audio stream player: %v", playerErr)
+								streamPlayer = nil // Ensure it's nil on error
+							}
+						}
+						if streamPlayer != nil {
+							if err := streamPlayer.Write(part.InlineData.Data); err != nil {
+								log.Printf("ERROR: writing to audio stream: %v", err)
+							}
+						}
+					}
+				}
 			}
 
-			for _, part := range msg.ServerContent.ModelTurn.Parts {
-				if part.Text != "" {
-					l.formatter.Print(part.Text)
-				}
-				if part.InlineData != nil && len(part.InlineData.Data) > 0 {
-					// Create the player on the first audio chunk received.
-					if streamPlayer == nil && config.C.AI.VoiceEnabled {
-						streamPlayer, playerErr = audio.NewPCMStreamPlayer(audio.TTSSampleRate, audio.TTSChannels)
-						if playerErr != nil {
-							log.Printf("ERROR: could not create audio stream player: %v", playerErr)
-							streamPlayer = nil // Ensure it's nil on error
-						}
-					}
-					if streamPlayer != nil {
-						if err := streamPlayer.Write(part.InlineData.Data); err != nil {
-							log.Printf("ERROR: writing to audio stream: %v", err)
-						}
-					}
-				}
+			// Accumulate any grounding chunks received in this message.
+			if msg.ServerContent.GroundingMetadata != nil {
+				turnGroundingChunks = append(turnGroundingChunks, msg.ServerContent.GroundingMetadata.GroundingChunks...)
 			}
 		} else if msg.ToolCall != nil {
 			log.Printf("Live stream received tool call: %+v", msg.ToolCall)
@@ -283,6 +337,29 @@ func (l *LiveAI) handleResponses() {
 		// UsageMetadata often signals the end of the model's response for the current turn.
 		if msg.UsageMetadata != nil {
 			log.Printf("Live stream usage metadata received, ending turn: %+v", msg.UsageMetadata)
+
+			// If any sources were accumulated during the turn, print them now.
+			// The API guarantees that the chunks are ordered to correspond to the [1], [2]...
+			// markers in the response text.
+			if len(turnGroundingChunks) > 0 {
+				l.formatter.Println("Sources:", inout.ColorDarkYellow)
+				for i, chunk := range turnGroundingChunks {
+					// Perform nil checks for safety
+					if chunk == nil || chunk.Web == nil {
+						continue
+					}
+					uri, title := chunk.Web.URI, chunk.Web.Title
+					// Prepend the citation number, e.g., "[1] Title"
+					sourcePrefix := fmt.Sprintf("[%d]", i+1)
+					if title != "" {
+						l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, title), inout.ColorDarkCyan)
+						l.formatter.Println(uri, inout.ColorDarkBlue)
+					} else {
+						l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, uri), inout.ColorDarkBlue)
+					}
+				}
+			}
+
 			inModelTurn = false // The turn is over, reset the state.
 			// The turn is over. Close the player and reset for the next turn.
 			if streamPlayer != nil {
@@ -320,8 +397,8 @@ func (l *LiveAI) handleEvents(event string) {
 // sendTextPrompt sends a text prompt (and potentially a screenshot) to the live session.
 // The response is handled by the separate handleResponses goroutine.
 func (l *LiveAI) sendTextPrompt(prompt string) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 
 	var imageBuffer *images.ScreenshotBuffer
 	var err error
@@ -379,9 +456,9 @@ func (l *LiveAI) pullAndSendSamples() {
 		if buffer != nil {
 			// The session might be nil if it has just been closed and is waiting to be
 			// reopened by the main Run loop. We need to lock to safely access it.
-			l.mu.Lock()
+			l.mu.RLock()
 			session := l.session
-			l.mu.Unlock()
+			l.mu.RUnlock()
 
 			if session == nil {
 				log.Printf("WARNING: live session is unavailable, dropping audio sample.")

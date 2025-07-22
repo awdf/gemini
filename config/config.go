@@ -27,6 +27,7 @@ type Config struct {
 type AIConfig struct {
 	Model               string
 	ModelLive           string
+	ModelLiveTTS        string
 	TranscriptionPrompt string
 	ModelTTS            string
 	Voice               string
@@ -109,8 +110,9 @@ func createDefaultConfig(path string) {
 	defaultConfig.Trace = false
 	defaultConfig.LogFile = "app.log"
 	defaultConfig.AI.Model = "gemini-2.5-flash"
-	defaultConfig.AI.ModelLive = "gemini-live-2.5-flash-preview"
 	defaultConfig.AI.ModelTTS = "gemini-2.5-flash-preview-tts"
+	defaultConfig.AI.ModelLive = "gemini-live-2.5-flash-preview"
+	defaultConfig.AI.ModelLiveTTS = "gemini-2.5-flash-preview-native-audio-dialog"
 	defaultConfig.AI.Voice = "Kore"
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}" // You can set this directly or use an environment variable.
