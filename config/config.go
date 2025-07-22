@@ -129,14 +129,14 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.ModelLiveTTS = "gemini-2.5-flash-preview-native-audio-dialog"
 	defaultConfig.AI.Voice = "Kore"
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
-	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}" // You can set this directly or use an environment variable.
+	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}"
 	defaultConfig.AI.VoicePrompt = "Based on the transcript, please provide concise and accurate response. Respond in the same language as the transcript."
-	defaultConfig.AI.SystemPrompt = "You are a helpful voice assistant."
+	defaultConfig.AI.SystemPrompt = "You are a helpful assistant. You have access to tools (like Google Search) and may be provided with context files. Your instructions are: 1. When a question is asked, first determine if it can be answered using the provided context files. 2. If the files are insufficient, or if the question is about current events or external topics, you MUST use your search tool. 3. Synthesize a comprehensive answer from all available information."
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
 	defaultConfig.AI.EnableTools = true
 	defaultConfig.AI.CacheDir = "cache"
-	defaultConfig.AI.CacheSystemPrompt = "The following files are provided as context for our conversation."
+	defaultConfig.AI.CacheSystemPrompt = "The following files are provided as context:"
 	defaultConfig.AI.EnableCache = false
 	defaultConfig.AI.VoiceHistory = true
 	defaultConfig.AI.VoiceEnabled = false

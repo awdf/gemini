@@ -129,31 +129,10 @@ func (l *LiveAI) OpenSession() {
 		log.Println("Using system prompt for live session.")
 	}
 
-	// Add cache directory files to the system instructions.
-	cacheDir := config.C.AI.CacheDir
-	filesToInclude, err := findCacheableFiles(cacheDir)
-	if err != nil {
-		log.Printf("ERROR: could not scan for initial files: %v", err)
-	}
-
-	if len(filesToInclude) > 0 {
-		log.Printf("Found %d files to include as initial context for live session.", len(filesToInclude))
-		if config.C.AI.CacheSystemPrompt != "" {
-			systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
-		}
-
-		for _, file := range filesToInclude {
-			localPath := filepath.Join(cacheDir, file.Name())
-			// For system instructions in live sessions, all files must be read as raw text. The `createPartFromFile`
-			// function handles this logic for text files, but we must read all files as text here to avoid panics.
-			data, err := os.ReadFile(localPath)
-			if err != nil {
-				log.Printf("ERROR: could not read file %s for live session context: %v", localPath, err)
-				continue
-			}
-			systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(string(data)))
-			log.Printf("Cache file uploaded %s", localPath)
-		}
+	voicePrompt := config.C.AI.VoicePrompt
+	if voicePrompt != "" {
+		systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(voicePrompt))
+		log.Println("Using voice prompt for live session.")
 	}
 
 	// The role for a system instruction is empty.
@@ -165,11 +144,11 @@ func (l *LiveAI) OpenSession() {
 	// This is only done for the main response generation, not transcription.
 	if config.C.AI.EnableTools {
 		tool := &genai.Tool{GoogleSearch: &genai.GoogleSearch{}}
-		if !urlContextDisabled {
+		if urlContextDisabled {
+			log.Println("Tools enabled for live session: GoogleSearch")
+		} else {
 			log.Println("Tools enabled for live session: GoogleSearch, URLContext")
 			tool.URLContext = &genai.URLContext{}
-		} else {
-			log.Println("Tools enabled for live session: GoogleSearch")
 		}
 		liveConfig.Tools = []*genai.Tool{tool}
 	}
@@ -225,6 +204,7 @@ func (l *LiveAI) Run() {
 	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
 
 	l.OpenSession()
+	l.sendInitialFiles()
 	// Start a dedicated goroutine to handle all incoming server messages.
 	go l.handleResponses()
 	defer l.CloseSession()
@@ -243,8 +223,9 @@ func (l *LiveAI) Run() {
 			// The response handler goroutine has exited, meaning the session is dead.
 			// We need to re-establish it.
 			log.Println("Live session connection lost. Re-opening...")
-			l.CloseSession()       // Clean up the old session object.
-			l.OpenSession()        // Create a new session.
+			l.CloseSession() // Clean up the old session object.
+			l.OpenSession()  // Create a new session.
+			l.sendInitialFiles()
 			go l.handleResponses() // Start a new response handler for the new session.
 			log.Println("Live session re-established.")
 
@@ -453,6 +434,63 @@ func (l *LiveAI) handleEvents(event string) {
 	default:
 		// The "save" event is not handled here as LiveAI does not maintain history.
 		config.DebugPrintf("LiveAI component ignoring event: %s", event)
+	}
+}
+
+// sendInitialFiles reads files from the cache directory and sends them as the first
+// user turn in the live session.
+func (l *LiveAI) sendInitialFiles() {
+	cacheDir := config.C.AI.CacheDir
+	filesToInclude, err := findCacheableFiles(cacheDir)
+	if err != nil {
+		log.Printf("ERROR: could not scan for initial files: %v", err)
+		return
+	}
+	if len(filesToInclude) == 0 {
+		return // Nothing to send
+	}
+
+	log.Printf("Found %d files to send as initial context for live session.", len(filesToInclude))
+	var parts []*genai.Part
+	if config.C.AI.CacheSystemPrompt != "" {
+		parts = append(parts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
+	}
+
+	for _, file := range filesToInclude {
+		localPath := filepath.Join(cacheDir, file.Name())
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			log.Printf("ERROR: could not read file %s for live session context: %v", localPath, err)
+			continue
+		}
+		// Add a header to each file part to give the model more structure.
+		fileContentWithHeader := fmt.Sprintf("\n\n--- Start of file: %s ---\n\n%s\n\n--- End of file: %s ---", file.Name(), string(data), file.Name())
+		parts = append(parts, genai.NewPartFromText(fileContentWithHeader))
+		log.Printf("Cache file prepared %s", localPath)
+	}
+
+	if len(parts) == 0 {
+		log.Println("No files were successfully prepared to be sent.")
+		return
+	}
+
+	turn := genai.NewContentFromParts(parts, genai.RoleUser)
+	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+
+	// Lock the mutex only for the duration of accessing the shared session object.
+	l.mu.RLock()
+	session := l.session
+	l.mu.RUnlock()
+
+	if session == nil {
+		log.Println("ERROR: cannot send initial files, session is nil.")
+		return
+	}
+
+	if err := session.SendClientContent(content); err != nil {
+		log.Printf("ERROR: failed to send initial files as client content: %v", err)
+	} else {
+		log.Println("Successfully sent initial files as the first user turn.")
 	}
 }
 
