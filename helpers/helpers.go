@@ -39,3 +39,8 @@ func Verify(err error) {
 		log.Panicf("unrecoverable error: %v", err)
 	}
 }
+
+// Ptr returns a pointer to the given value.
+func Ptr[T any](v T) *T {
+	return &v
+}

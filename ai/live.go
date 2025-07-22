@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,20 +26,21 @@ import (
 )
 
 type LiveAI struct {
-	ctx           context.Context
-	client        *genai.Client
-	formatter     *inout.Formatter
-	liveSink      *app.Sink
-	Element       *gst.Element
-	wg            *sync.WaitGroup
-	controlChan   <-chan string
-	textCmdChan   <-chan string
-	bus           *EventBus.Bus
-	session       *genai.Session
-	isStreaming   bool
-	mode          string
-	sessionClosed chan struct{}
-	mu            sync.RWMutex
+	ctx              context.Context
+	client           *genai.Client
+	formatter        *inout.Formatter
+	liveSink         *app.Sink
+	Element          *gst.Element
+	wg               *sync.WaitGroup
+	controlChan      <-chan string
+	textCmdChan      <-chan string
+	bus              *EventBus.Bus
+	session          *genai.Session
+	isStreaming      bool
+	mode             string
+	sessionClosed    chan struct{}
+	resumptionHandle string
+	mu               sync.RWMutex
 }
 
 func NewLiveSink(
@@ -58,18 +60,19 @@ func NewLiveSink(
 	sink.SetMaxBuffers(10) // Set a max buffer to prevent runaway memory usage and add stability.
 
 	return &LiveAI{
-		wg:            wg,
-		ctx:           ctx,
-		client:        client,
-		formatter:     inout.NewFormatter(),
-		bus:           bus,
-		controlChan:   controlChan,
-		textCmdChan:   textCmdChan,
-		liveSink:      sink,
-		Element:       sink.Element,
-		isStreaming:   false,
-		mode:          inout.MixMode,
-		sessionClosed: make(chan struct{}, 1), // Buffered channel to prevent blocking
+		wg:               wg,
+		ctx:              ctx,
+		client:           client,
+		formatter:        inout.NewFormatter(),
+		bus:              bus,
+		controlChan:      controlChan,
+		textCmdChan:      textCmdChan,
+		liveSink:         sink,
+		Element:          sink.Element,
+		isStreaming:      false,
+		mode:             inout.MixMode,
+		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
+		resumptionHandle: "",
 	}
 }
 
@@ -94,8 +97,8 @@ func (l *LiveAI) OpenSession() {
 		// For responses with voice. RPD 5 per model
 		// gemini-2.5-flash-preview-native-audio-dialog tools: Search, Function calling
 		// gemini-2.5-flash-exp-native-audio-thinking-dialog tools: Search
-		modelName = config.C.AI.ModelLiveTTS
-		urlContextDisabled = false
+		modelName = config.C.AI.ModelLiveTTS // This model does not support URLContext.
+		urlContextDisabled = true
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityAudio}
 		liveConfig.SpeechConfig = &genai.SpeechConfig{
 			VoiceConfig: &genai.VoiceConfig{
@@ -111,7 +114,7 @@ func (l *LiveAI) OpenSession() {
 		// Model outputs: Text
 		// For responses with text. RPD 250 per model
 		// Tools: Search, Function calling, Code execution, Url context
-		urlContextDisabled = true
+		urlContextDisabled = false // This model supports URLContext.
 		modelName = config.C.AI.ModelLive
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityText}
 	}
@@ -141,7 +144,8 @@ func (l *LiveAI) OpenSession() {
 
 		for _, file := range filesToInclude {
 			localPath := filepath.Join(cacheDir, file.Name())
-			// For system instructions in live sessions, all files must be read as raw text.
+			// For system instructions in live sessions, all files must be read as raw text. The `createPartFromFile`
+			// function handles this logic for text files, but we must read all files as text here to avoid panics.
 			data, err := os.ReadFile(localPath)
 			if err != nil {
 				log.Printf("ERROR: could not read file %s for live session context: %v", localPath, err)
@@ -160,13 +164,33 @@ func (l *LiveAI) OpenSession() {
 	// Conditionally enable tools based on the configuration.
 	// This is only done for the main response generation, not transcription.
 	if config.C.AI.EnableTools {
-		log.Println("Tool use is enabled for this live session.")
 		tool := &genai.Tool{GoogleSearch: &genai.GoogleSearch{}}
 		if !urlContextDisabled {
-			log.Println("URLContext tool also enabled.")
+			log.Println("Tools enabled for live session: GoogleSearch, URLContext")
 			tool.URLContext = &genai.URLContext{}
+		} else {
+			log.Println("Tools enabled for live session: GoogleSearch")
 		}
 		liveConfig.Tools = []*genai.Tool{tool}
+	}
+
+	// Add context window compression if enabled.
+	if config.C.AI.ContextWindowCompression.Enabled {
+		log.Println("Context window compression is enabled for this live session.")
+		liveConfig.ContextWindowCompression = &genai.ContextWindowCompressionConfig{
+			TriggerTokens: Ptr(config.C.AI.ContextWindowCompression.TriggerTokens),
+			SlidingWindow: &genai.SlidingWindow{
+				TargetTokens: Ptr(config.C.AI.ContextWindowCompression.TargetTokens),
+			},
+		}
+	}
+
+	// Add session resumption if enabled.
+	if config.C.AI.SessionResumption.Enabled {
+		log.Println("Session resumption is enabled for this live session.")
+		liveConfig.SessionResumption = &genai.SessionResumptionConfig{
+			Handle: l.resumptionHandle, // Use the stored handle
+		}
 	}
 
 	// 2. Connect to the live session.
@@ -322,6 +346,7 @@ func (l *LiveAI) handleResponses() {
 					// Reset the accumulator for the new turn.
 					turnGroundingChunks = nil
 					(*l.bus).Publish("main:topic", "mute:ai.handleResponses")
+					l.formatter.Clear()
 					l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
 				}
 
@@ -351,52 +376,62 @@ func (l *LiveAI) handleResponses() {
 			if msg.ServerContent.GroundingMetadata != nil {
 				turnGroundingChunks = append(turnGroundingChunks, msg.ServerContent.GroundingMetadata.GroundingChunks...)
 			}
+
+			// When generation is complete, it signals the end of the model's turn.
+			if msg.ServerContent.GenerationComplete {
+				log.Println("Live stream generation complete, ending turn.")
+
+				// If any sources were accumulated during the turn, print them now.
+				// The API guarantees that the chunks are ordered to correspond to the [1], [2]...
+				// markers in the response text.
+				if len(turnGroundingChunks) > 0 {
+					l.formatter.Println("\nSources:", inout.ColorDarkYellow)
+					for i, chunk := range turnGroundingChunks {
+						// Perform nil checks for safety
+						if chunk == nil || chunk.Web == nil {
+							continue
+						}
+						uri, title := chunk.Web.URI, chunk.Web.Title
+						// Prepend the citation number, e.g., "[1] Title"
+						sourcePrefix := fmt.Sprintf("[%d]", i+1)
+						if title != "" {
+							l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, title), inout.ColorDarkCyan)
+							l.formatter.Println(uri, inout.ColorDarkBlue)
+						} else {
+							l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, uri), inout.ColorDarkBlue)
+						}
+					}
+				}
+
+				inModelTurn = false // The turn is over, reset the state.
+				// The turn is over. Close the player and reset for the next turn.
+				if streamPlayer != nil {
+					if err := streamPlayer.Close(); err != nil {
+						log.Printf("ERROR: closing audio stream player: %v", err)
+					}
+					streamPlayer = nil
+				}
+				l.formatter.Reset()
+				(*l.bus).Publish("main:topic", "draw:ai.handleResponses")
+			}
 		} else if msg.ToolCall != nil {
 			log.Printf("Live stream received tool call: %+v", msg.ToolCall)
 			// TODO: Implement tool call handling
 		} else if msg.GoAway != nil {
-			log.Printf("Live stream session closing by server: %+v", msg.GoAway)
+			log.Printf("Live stream session closing by server: %+v", msg.GoAway.TimeLeft)
 			// The loop will terminate in the next iteration due to the connection closing.
+		} else if msg.SessionResumptionUpdate != nil {
+			log.Printf("Live session resumption handle updated. Resumable: %t", msg.SessionResumptionUpdate.Resumable)
+			if msg.SessionResumptionUpdate.Resumable {
+				l.resumptionHandle = msg.SessionResumptionUpdate.NewHandle
+			}
 		} else {
 			config.DebugPrintf("Live AI received unhandled message: %+v", msg)
 		}
 
 		// UsageMetadata often signals the end of the model's response for the current turn.
 		if msg.UsageMetadata != nil {
-			log.Printf("Live stream usage metadata received, ending turn: %+v", msg.UsageMetadata)
-
-			// If any sources were accumulated during the turn, print them now.
-			// The API guarantees that the chunks are ordered to correspond to the [1], [2]...
-			// markers in the response text.
-			if len(turnGroundingChunks) > 0 {
-				l.formatter.Println("\nSources:", inout.ColorDarkYellow)
-				for i, chunk := range turnGroundingChunks {
-					// Perform nil checks for safety
-					if chunk == nil || chunk.Web == nil {
-						continue
-					}
-					uri, title := chunk.Web.URI, chunk.Web.Title
-					// Prepend the citation number, e.g., "[1] Title"
-					sourcePrefix := fmt.Sprintf("[%d]", i+1)
-					if title != "" {
-						l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, title), inout.ColorDarkCyan)
-						l.formatter.Println(uri, inout.ColorDarkBlue)
-					} else {
-						l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, uri), inout.ColorDarkBlue)
-					}
-				}
-			}
-
-			inModelTurn = false // The turn is over, reset the state.
-			// The turn is over. Close the player and reset for the next turn.
-			if streamPlayer != nil {
-				if err := streamPlayer.Close(); err != nil {
-					log.Printf("ERROR: closing audio stream player: %v", err)
-				}
-				streamPlayer = nil
-			}
-			l.formatter.Reset()
-			(*l.bus).Publish("main:topic", "draw:ai.handleResponses")
+			log.Printf("Live stream usage metadata received: %+v", msg.UsageMetadata)
 		}
 	}
 }
@@ -424,12 +459,8 @@ func (l *LiveAI) handleEvents(event string) {
 // sendTextPrompt sends a text prompt (and potentially a screenshot) to the live session.
 // The response is handled by the separate handleResponses goroutine.
 func (l *LiveAI) sendTextPrompt(prompt string) error {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-
 	var imageBuffer *images.ScreenshotBuffer
 	var err error
-
 	if l.mode == inout.ImageMode {
 		log.Println("Taking screenshot for AI response...")
 		imageBuffer, err = images.TakeScreenshot()
@@ -439,28 +470,34 @@ func (l *LiveAI) sendTextPrompt(prompt string) error {
 		defer imageBuffer.Release()
 	}
 
-	parts := []*genai.Part{genai.NewPartFromText(prompt)}
+	parts, _, err := l.parsePromptForMultimedia(prompt)
+	if err != nil {
+		return fmt.Errorf("failed to parse prompt for multimedia: %w", err)
+	}
+
 	if imageBuffer != nil {
 		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
 	}
 
-	// A turn is represented by a Content object. The role for client-sent
-	// content is 'user'.
 	turn := genai.NewContentFromParts(parts, genai.RoleUser)
+	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+
+	// Lock the mutex only for the duration of accessing the shared session object.
+	// This prevents holding the lock during long-running network calls.
+	l.mu.RLock()
+	session := l.session
+	l.mu.RUnlock()
 
 	// The session might be nil if it has just been closed and is waiting to be
 	// reopened by the main Run loop.
-	if l.session == nil {
+	if session == nil {
 		return fmt.Errorf("session is temporarily unavailable, please try again")
 	}
 
-	// The input to SendClientContent is a struct that contains the turns.
-	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
-	if err := l.session.SendClientContent(content); err != nil {
+	if err := session.SendClientContent(content); err != nil {
 		return fmt.Errorf("failed to send client content: %w", err)
 	}
 
-	// The response will be handled by the handleResponses goroutine.
 	return nil
 }
 
@@ -510,4 +547,59 @@ func (l *LiveAI) pullAndSendSamples() {
 		}
 		// IMPORTANT: Go GStreamer unrefs the sample automatically.
 	}
+}
+
+// Ptr returns a pointer to the given value.
+func Ptr[T any](v T) *T {
+	return &v
+}
+
+// parsePromptForMultimedia splits a prompt into text and YouTube URL parts.
+// This is a simplified version for the Live API to ensure YouTube videos are
+// handled correctly as video parts, which is different from how the URLContext
+// tool handles general web pages.
+func (l *LiveAI) parsePromptForMultimedia(prompt string) ([]*genai.Part, bool, error) {
+	var parts []*genai.Part
+	var textBuilder strings.Builder
+	multimediaFound := false
+
+	wordAppend := func(word *string) {
+		if textBuilder.Len() > 0 {
+			textBuilder.WriteString(" ")
+		}
+		textBuilder.WriteString(*word)
+	}
+
+	// Split prompt into words to find URLs.
+	for _, word := range strings.Fields(prompt) {
+		// Trim trailing punctuation that might be attached to a URL
+		trimmedWord := strings.TrimRight(word, ".,;:!?")
+		u, err := url.Parse(trimmedWord)
+		// We need a scheme to identify it as a URL we can handle.
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			wordAppend(&word)
+			continue
+		}
+
+		// Specifically check for YouTube URLs to create a video part.
+		if strings.Contains(u.Host, youtubeURL1) || strings.Contains(u.Host, youtubeURL2) {
+			log.Printf("Detected YouTube URL in prompt: %s", u.String())
+			parts = append(parts, genai.NewPartFromURI(u.String(), "video/*"))
+			multimediaFound = true
+		} else {
+			// For all other URLs, keep them as text in the prompt so the URLContext tool can see them.
+			wordAppend(&word)
+		}
+	}
+
+	// Prepend the collected text as the first part, if any.
+	if textBuilder.Len() > 0 {
+		// Prepend to keep text before media, which is a common pattern.
+		parts = append([]*genai.Part{genai.NewPartFromText(textBuilder.String())}, parts...)
+	} else if len(parts) == 0 {
+		// If there's no text and no multimedia parts, it was an empty or non-URL prompt.
+		parts = append(parts, genai.NewPartFromText(prompt))
+	}
+
+	return parts, multimediaFound, nil
 }

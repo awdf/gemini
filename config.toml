@@ -39,6 +39,16 @@ EnableCache = false # Set to true to enable caching. Note: Not all models or API
 CacheDir = "cache" #All files from this path will be added to cache
 CacheSystemPrompt = "The following files are provided as context for our conversation."
 
+[ai.context_window_compression]
+# Configuration for live session context window compression.
+Enabled = true
+TriggerTokens = 12000 # The number of tokens that triggers context window compression.
+TargetTokens = 8000  # The number of tokens to keep in the context window after compression.
+
+[ai.session_resumption]
+# To prevent session termination when the server periodically resets the WebSocket connection
+Enabled = true
+
 [ai.retry]
 # Configuration for retrying failed API calls.
 MaxRetries = 3 # Number of times to retry a failed request after the first attempt.
@@ -71,6 +81,6 @@ BufferTimeUs = 500000# Physical sound device for input (Default system device by
 
 # List devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 #
-# Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 # Device = "alsa_output.usb-JBL_Quantum_400_0079CM-0265355EM-00.analog-stereo.monitor"
-Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"
+# Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"

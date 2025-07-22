@@ -25,25 +25,27 @@ type Config struct {
 
 // AIConfig holds settings related to the AI model.
 type AIConfig struct {
-	Model               string
-	ModelLive           string
-	ModelLiveTTS        string
-	TranscriptionPrompt string
-	ModelTTS            string
-	Voice               string
-	APIKey              string
-	VoicePrompt         string
-	SystemPrompt        string
-	Thinking            int32
-	Thoughts            bool
-	EnableTools         bool
-	CacheDir            string
-	CacheSystemPrompt   string
-	EnableCache         bool
-	VoiceHistory        bool
-	VoiceEnabled        bool
-	Transcript          bool
-	Retry               RetryConfig
+	Model                    string
+	ModelLive                string
+	ModelLiveTTS             string
+	TranscriptionPrompt      string
+	ModelTTS                 string
+	Voice                    string
+	APIKey                   string
+	VoicePrompt              string
+	SystemPrompt             string
+	Thinking                 int32
+	Thoughts                 bool
+	EnableTools              bool
+	CacheDir                 string
+	CacheSystemPrompt        string
+	EnableCache              bool
+	VoiceHistory             bool
+	VoiceEnabled             bool
+	Transcript               bool
+	Retry                    RetryConfig
+	ContextWindowCompression ContextWindowCompressionConfig
+	SessionResumption        SessionResumptionConfig
 }
 
 // VADConfig holds settings for the Voice Activity Detector.
@@ -75,6 +77,18 @@ type RetryConfig struct {
 	MaxRetries     int
 	InitialDelayMs int
 	MaxDelayMs     int
+}
+
+// ContextWindowCompressionConfig holds settings for live session context window compression.
+type ContextWindowCompressionConfig struct {
+	Enabled       bool
+	TriggerTokens int64
+	TargetTokens  int64
+}
+
+// SessionResumptionConfig holds settings for live session resumption.
+type SessionResumptionConfig struct {
+	Enabled bool
 }
 
 // Load reads the configuration from the specified file path.
@@ -127,6 +141,10 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.VoiceHistory = true
 	defaultConfig.AI.VoiceEnabled = false
 	defaultConfig.AI.Transcript = false
+	defaultConfig.AI.ContextWindowCompression.Enabled = true
+	defaultConfig.AI.ContextWindowCompression.TriggerTokens = 12000
+	defaultConfig.AI.ContextWindowCompression.TargetTokens = 8000
+	defaultConfig.AI.SessionResumption.Enabled = true
 	defaultConfig.AI.Retry.MaxRetries = 3
 	defaultConfig.AI.Retry.InitialDelayMs = 1000
 	defaultConfig.AI.Retry.MaxDelayMs = 10000
