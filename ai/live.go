@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -116,30 +118,55 @@ func (l *LiveAI) OpenSession() {
 
 	// Add system prompt if configured.
 	systemPrompt := config.C.AI.SystemPrompt
+	var systemInstructionParts []*genai.Part
 	if systemPrompt != "" {
 		currentTime := time.Now().Format(time.RFC1123)
 		systemPrompt = fmt.Sprintf("Current date and time is %s. %s", currentTime, systemPrompt)
-		// The role for a system instruction is empty.
-		liveConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(systemPrompt)}, "")
+		systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(systemPrompt))
 		log.Println("Using system prompt for live session.")
+	}
+
+	// Add cache directory files to the system instructions.
+	cacheDir := config.C.AI.CacheDir
+	filesToInclude, err := findCacheableFiles(cacheDir)
+	if err != nil {
+		log.Printf("ERROR: could not scan for initial files: %v", err)
+	}
+
+	if len(filesToInclude) > 0 {
+		log.Printf("Found %d files to include as initial context for live session.", len(filesToInclude))
+		if config.C.AI.CacheSystemPrompt != "" {
+			systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
+		}
+
+		for _, file := range filesToInclude {
+			localPath := filepath.Join(cacheDir, file.Name())
+			// For system instructions in live sessions, all files must be read as raw text.
+			data, err := os.ReadFile(localPath)
+			if err != nil {
+				log.Printf("ERROR: could not read file %s for live session context: %v", localPath, err)
+				continue
+			}
+			systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(string(data)))
+			log.Printf("Cache file uploaded %s", localPath)
+		}
+	}
+
+	// The role for a system instruction is empty.
+	if len(systemInstructionParts) > 0 {
+		liveConfig.SystemInstruction = genai.NewContentFromParts(systemInstructionParts, "")
 	}
 
 	// Conditionally enable tools based on the configuration.
 	// This is only done for the main response generation, not transcription.
 	if config.C.AI.EnableTools {
-		log.Println("Tool use is enabled for this request.")
-		// Search tool available for all models
-		log.Println("Google search tool in use")
-		liveConfig.Tools = []*genai.Tool{{
-			GoogleSearch: &genai.GoogleSearch{},
-		}}
-		// URLContext tool available
+		log.Println("Tool use is enabled for this live session.")
+		tool := &genai.Tool{GoogleSearch: &genai.GoogleSearch{}}
 		if !urlContextDisabled {
-			log.Println("URLContext and Google search tools in use")
-			liveConfig.Tools = append(liveConfig.Tools, &genai.Tool{
-				URLContext: &genai.URLContext{},
-			})
+			log.Println("URLContext tool also enabled.")
+			tool.URLContext = &genai.URLContext{}
 		}
+		liveConfig.Tools = []*genai.Tool{tool}
 	}
 
 	// 2. Connect to the live session.
@@ -342,7 +369,7 @@ func (l *LiveAI) handleResponses() {
 			// The API guarantees that the chunks are ordered to correspond to the [1], [2]...
 			// markers in the response text.
 			if len(turnGroundingChunks) > 0 {
-				l.formatter.Println("Sources:", inout.ColorDarkYellow)
+				l.formatter.Println("\nSources:", inout.ColorDarkYellow)
 				for i, chunk := range turnGroundingChunks {
 					// Perform nil checks for safety
 					if chunk == nil || chunk.Web == nil {
