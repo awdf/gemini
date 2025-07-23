@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -130,12 +129,12 @@ func (l *LiveAI) OpenSession() {
 		log.Println("Using system prompt for live session.")
 	}
 
-	voicePrompt := config.C.AI.VoicePrompt
-	textResponse := !config.C.AI.VoiceEnabled
-	if textResponse && voicePrompt != "" {
-		systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(voicePrompt))
-		log.Println("Using voice prompt for live session.")
-	}
+	// voicePrompt := config.C.AI.VoicePrompt
+	// textResponse := !config.C.AI.VoiceEnabled
+	// if textResponse && voicePrompt != "" {
+	// 	systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(voicePrompt))
+	// 	log.Println("Using voice prompt for live session.")
+	// }
 
 	// The role for a system instruction is empty.
 	if len(systemInstructionParts) > 0 {
@@ -206,15 +205,19 @@ func (l *LiveAI) CloseSession() {
 // It listens for control messages to start new files and finalize (and potentially delete) old ones.
 func (l *LiveAI) Run() {
 	defer l.wg.Done()
+	defer l.CloseSession()
 
 	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
 
-	l.OpenSession()
-	l.sendInitialFiles()
-	// Start a dedicated goroutine to handle all incoming server messages.
-	go l.handleResponses()
-	defer l.CloseSession()
+	// DRY
+	initNewSession := func() {
+		l.OpenSession()
+		l.sendInitialFiles()
+		// Start a dedicated goroutine to handle all incoming server messages.
+		go l.handleResponses()
+	}
 
+	initNewSession()
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
@@ -230,11 +233,8 @@ func (l *LiveAI) Run() {
 			// We need to re-establish it.
 			log.Println("Live session connection lost. Re-opening...")
 			l.CloseSession() // Clean up the old session object.
-			l.OpenSession()  // Create a new session.
-			l.sendInitialFiles()
-			go l.handleResponses() // Start a new response handler for the new session.
+			initNewSession()
 			log.Println("Live session re-established.")
-
 		case cmd, ok := <-l.controlChan:
 			if !ok {
 				log.Println("Live AI streaming is finished")
@@ -499,6 +499,8 @@ func (l *LiveAI) sendInitialFiles() {
 		return
 	}
 
+	parts = append(parts, genai.NewPartFromText(CheckQuestion))
+
 	turn := genai.NewContentFromParts(parts, genai.RoleUser)
 	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
 
@@ -533,10 +535,7 @@ func (l *LiveAI) sendTextPrompt(prompt string) error {
 		defer imageBuffer.Release()
 	}
 
-	parts, _, err := l.parsePromptForMultimedia(prompt)
-	if err != nil {
-		return fmt.Errorf("failed to parse prompt for multimedia: %w", err)
-	}
+	parts := []*genai.Part{genai.NewPartFromText(prompt)}
 
 	if imageBuffer != nil {
 		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
@@ -615,56 +614,6 @@ func (l *LiveAI) pullAndSendSamples() {
 // Ptr returns a pointer to the given value.
 func Ptr[T any](v T) *T {
 	return &v
-}
-
-// parsePromptForMultimedia splits a prompt into text and YouTube URL parts.
-// This is a simplified version for the Live API to ensure YouTube videos are
-// handled correctly as video parts, which is different from how the URLContext
-// tool handles general web pages.
-func (l *LiveAI) parsePromptForMultimedia(prompt string) ([]*genai.Part, bool, error) {
-	var parts []*genai.Part
-	var textBuilder strings.Builder
-	multimediaFound := false
-
-	wordAppend := func(word *string) {
-		if textBuilder.Len() > 0 {
-			textBuilder.WriteString(" ")
-		}
-		textBuilder.WriteString(*word)
-	}
-
-	// Split prompt into words to find URLs.
-	for _, word := range strings.Fields(prompt) {
-		// Trim trailing punctuation that might be attached to a URL
-		trimmedWord := strings.TrimRight(word, ".,;:!?")
-		u, err := url.Parse(trimmedWord)
-		// We need a scheme to identify it as a URL we can handle.
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			wordAppend(&word)
-			continue
-		}
-
-		// Specifically check for YouTube URLs to create a video part.
-		if strings.Contains(u.Host, youtubeURL1) || strings.Contains(u.Host, youtubeURL2) {
-			log.Printf("Detected YouTube URL in prompt: %s", u.String())
-			parts = append(parts, genai.NewPartFromURI(u.String(), "video/*"))
-			multimediaFound = true
-		} else {
-			// For all other URLs, keep them as text in the prompt so the URLContext tool can see them.
-			wordAppend(&word)
-		}
-	}
-
-	// Prepend the collected text as the first part, if any.
-	if textBuilder.Len() > 0 {
-		// Prepend to keep text before media, which is a common pattern.
-		parts = append([]*genai.Part{genai.NewPartFromText(textBuilder.String())}, parts...)
-	} else if len(parts) == 0 {
-		// If there's no text and no multimedia parts, it was an empty or non-URL prompt.
-		parts = append(parts, genai.NewPartFromText(prompt))
-	}
-
-	return parts, multimediaFound, nil
 }
 
 // executeToolCalls handles a request from the model to execute one or more tool calls.
@@ -782,8 +731,7 @@ func getSafePath(userPath string) (string, error) {
 	// For security, all file operations are restricted to the configured workspace directory.
 	baseDir := config.C.AI.WorkspaceDir
 	if baseDir == "" {
-		// If not configured, default to a local "workspace" directory for safety.
-		baseDir = "workspace"
+		return "", fmt.Errorf("workspace directory is not configured")
 	}
 
 	expandedBaseDir, err := expandPath(baseDir)
@@ -804,10 +752,16 @@ func getSafePath(userPath string) (string, error) {
 	// Join the base directory with the user-provided path.
 	// If userPath is absolute, Join returns userPath.
 	// If userPath is relative, it's joined with absBase.
-	joinedPath := filepath.Join(absBase, userPath)
-
-	// Clean the path to resolve any ".." or "." components.
-	finalPath := filepath.Clean(joinedPath)
+	finalPath := ""
+	if strings.HasPrefix(userPath, absBase) {
+		// Clean the path to resolve any ".." or "." components.
+		finalPath = filepath.Clean(userPath)
+	} else {
+		// Join joins any number of path elements into a single path, separating them with an OS specific [Separator].
+		// Empty elements are ignored. The result is Cleaned. However, if the argument list is empty or all its elements are empty,
+		// Join returns an empty string. On Windows, the result will only be a UNC path if the first non-empty element is a UNC path.
+		finalPath = filepath.Join(absBase, userPath)
+	}
 
 	// Security check: ensure the final, absolute path is still within the workspace.
 	// This prevents path traversal attacks (e.g., path: "../../../etc/passwd").

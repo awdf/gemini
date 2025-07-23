@@ -66,6 +66,8 @@ const (
 	fVoicePrompt        = true
 )
 
+const CheckQuestion = "What is time and date now?"
+
 func init() {
 	// Register custom MIME types to ensure correct handling by the AI.
 	// This is the ideal place for package-specific, one-time initializations.
