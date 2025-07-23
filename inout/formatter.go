@@ -1,113 +1,136 @@
 package inout
 
-import "fmt"
-
-// ANSI color codes for terminal output.
-// https://github.com/ChrisMaunder/How-to-Change-Text-Color-in-a-Linux-Terminal
-const (
-	ColorReset       = "\033[0m"
-	ColorBlack       = "\033[30m" // Reserved
-	ColorDarkRed     = "\033[31m" // For errors or warnings
-	ColorDarkGreen   = "\033[32m" // For ```code``` blocks
-	ColorDarkYellow  = "\033[33m" // For "Thought:" prefix
-	ColorDarkBlue    = "\033[34m" // For links highlighting
-	ColorDarkMagenta = "\033[35m" // For **bold** text
-	ColorDarkCyan    = "\033[36m" // For "Answer:" prefix
-	ColorDarkGray    = "\033[90m" // For subtle text like sources
-	ColorRed         = "\033[91m" // Reserved
-	ColorGreen       = "\033[92m" // Reserved
-	ColorYellow      = "\033[93m" // Reserved
-	ColorBlue        = "\033[94m" // Reserved
-	ColorMagenta     = "\033[95m" // Reserved
-	ColorCyan        = "\033[96m" // For `inline code` blocks
-	ColorWhite       = "\033[97m" // For *italic* text
+import (
+	"fmt"
+	"log"
+	"strings"
 )
 
-// Formatter handles stateful, formatted printing to the terminal,
-// including markdown-like syntax and ANSI colors.
+// ANSI color codes for terminal output.
+const (
+	ColorReset       = "\033[0m"
+	ColorDarkCyan    = "\033[36m"
+	ColorWhite       = "\033[97m"
+	ColorCyan        = "\033[96m"
+	ColorDarkGreen   = "\033[32m"
+	ColorDarkMagenta = "\033[35m"
+	ColorDarkYellow  = "\033[33m"
+	ColorDarkBlue    = "\033[34m"
+	ColorDarkGray    = "\033[90m"
+)
+
+// Formatter handles stateful, formatted printing to the console.
 type Formatter struct {
 	inBold       bool
+	inItalic     bool
 	inCodeBlock  bool
 	inInlineCode bool
-	inItalic     bool
 }
 
-// NewFormatter creates a new terminal text formatter.
+// NewFormatter creates a new Formatter instance.
 func NewFormatter() *Formatter {
 	return &Formatter{}
 }
 
-// Print processes and prints text, interpreting formatting markers.
-func (f *Formatter) Print(text string) {
-	runes := []rune(text)
-	for i := 0; i < len(runes); i++ {
-		// Check for code block marker first, as it takes precedence.
-		if i+2 < len(runes) && runes[i] == '`' && runes[i+1] == '`' && runes[i+2] == '`' {
-			f.inCodeBlock = !f.inCodeBlock
-			if f.inCodeBlock {
-				fmt.Print(ColorDarkGreen)
-			} else {
-				fmt.Print(ColorReset)
-			}
-			i += 2 // Advance past the marker.
-			continue
-		}
+// Print processes and prints text with simple markdown-like formatting.
+func (f *Formatter) Print(text string, color ...string) {
+	if len(color) > 0 {
+		fmt.Print(color[0])
+	}
 
-		// If we are in a code block, just print the character.
+	var output strings.Builder
+	i := 0
+	for i < len(text) {
 		if f.inCodeBlock {
-			fmt.Print(string(runes[i]))
+			if strings.HasPrefix(text[i:], "```") {
+				f.inCodeBlock = false
+				output.WriteString(ColorReset)
+				i += 3
+			} else {
+				output.WriteByte(text[i])
+				i++
+			}
 			continue
 		}
 
-		// Check for bold marker.
-		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
+		if strings.HasPrefix(text[i:], "```") {
+			f.inCodeBlock = true
+			output.WriteString(ColorDarkGreen)
+			i += 3
+		} else if strings.HasPrefix(text[i:], "**") {
 			f.inBold = !f.inBold
 			if f.inBold {
-				fmt.Print(ColorDarkMagenta)
+				output.WriteString(ColorDarkMagenta)
 			} else {
-				fmt.Print(ColorReset)
+				output.WriteString(ColorReset)
 			}
-			i++ // Advance past the marker.
-			continue
-		}
-
-		// Check for italic marker.
-		if runes[i] == '*' {
+			i += 2
+		} else if strings.HasPrefix(text[i:], "*") {
 			f.inItalic = !f.inItalic
 			if f.inItalic {
-				fmt.Print(ColorWhite)
+				output.WriteString(ColorWhite)
 			} else {
-				fmt.Print(ColorReset)
+				output.WriteString(ColorReset)
 			}
-			continue
-		}
-
-		// Check for inline code marker.
-		if runes[i] == '`' {
+			i++
+		} else if strings.HasPrefix(text[i:], "`") {
 			f.inInlineCode = !f.inInlineCode
 			if f.inInlineCode {
-				fmt.Print(ColorCyan)
+				output.WriteString(ColorCyan)
 			} else {
-				fmt.Print(ColorReset)
+				output.WriteString(ColorReset)
 			}
-			continue
+			i++
+		} else {
+			output.WriteByte(text[i])
+			i++
 		}
+	}
+	fmt.Print(output.String())
+}
 
-		// Print the character.
-		fmt.Print(string(runes[i]))
+// Println prints a line with an optional prefix color.
+func (f *Formatter) Println(text string, color ...string) {
+	if len(color) > 0 {
+		fmt.Printf("%s%s%s\033[K\n", color[0], text, ColorReset)
+	} else {
+		fmt.Printf("%s\033[K\n", text)
 	}
 }
 
-// Println prints a formatted line with a specific color prefix.
-func (f *Formatter) Println(prefix, color string) {
-	fmt.Printf("%s%s %s\033[K\n", color, prefix, ColorReset)
-}
-
-// Reset prints a final newline and resets the terminal color.
+// Reset prints the ANSI reset code and a newline.
 func (f *Formatter) Reset() {
-	fmt.Println(ColorReset)
+	fmt.Print(ColorReset + "\n")
 }
 
+// Clear clears the terminal screen.
 func (f *Formatter) Clear() {
 	fmt.Print("\033[2J\033[0;0H")
+}
+
+// LogToolResult formats and logs the result of a tool call to the standard logger.
+func LogToolResult(callName string, result any) {
+	log.Printf("Tool call '%s' result:", callName)
+	if resultMap, ok := result.(map[string]any); ok {
+		for key, value := range resultMap {
+			// Special handling for file list to make it more readable
+			if key == "files" {
+				if fileList, ok := value.([]map[string]any); ok {
+					log.Printf("  %s: [%d files]", key, len(fileList))
+					for _, fileInfo := range fileList {
+						log.Printf("    - %v", fileInfo)
+					}
+					continue // Skip the generic print below
+				}
+			}
+			// Generic print for other keys, with truncation for long values
+			valueStr := fmt.Sprintf("%v", value)
+			if len(valueStr) > 512 {
+				valueStr = fmt.Sprintf("%.512s...", valueStr)
+			}
+			log.Printf("  %s: %s", key, valueStr)
+		}
+	} else {
+		log.Printf("  Result (not a map): %v", result)
+	}
 }

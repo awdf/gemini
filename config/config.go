@@ -42,6 +42,7 @@ type AIConfig struct {
 	EnableCache              bool
 	VoiceHistory             bool
 	VoiceEnabled             bool
+	WorkspaceDir             string
 	Transcript               bool
 	Retry                    RetryConfig
 	ContextWindowCompression ContextWindowCompressionConfig
@@ -140,6 +141,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.EnableCache = false
 	defaultConfig.AI.VoiceHistory = true
 	defaultConfig.AI.VoiceEnabled = false
+	defaultConfig.AI.WorkspaceDir = "~/gemini_workspace" // The directory for file system tools in live mode. Supports tilde expansion.
 	defaultConfig.AI.Transcript = false
 	defaultConfig.AI.ContextWindowCompression.Enabled = true
 	defaultConfig.AI.ContextWindowCompression.TriggerTokens = 12000
