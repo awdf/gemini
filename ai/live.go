@@ -227,15 +227,11 @@ func (l *LiveAI) Run() {
 
 	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
 
-	// DRY
-	initNewSession := func() {
-		l.OpenSession()
-		l.sendInitialFiles()
-		// Start a dedicated goroutine to handle all incoming server messages.
-		go l.handleResponses()
-	}
+	l.OpenSession()
+	l.sendInitialFiles()
+	// Start a dedicated goroutine to handle all incoming server messages.
+	go l.handleResponses()
 
-	initNewSession()
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
@@ -251,7 +247,7 @@ func (l *LiveAI) Run() {
 			// We need to re-establish it.
 			log.Println("Live session connection lost. Re-opening...")
 			l.CloseSession() // Clean up the old session object.
-			initNewSession()
+			l.OpenSession()  // Re-establish the session.
 			log.Println("Live session re-established.")
 		case cmd, ok := <-l.controlChan:
 			if !ok {
@@ -448,10 +444,16 @@ func (l *LiveAI) handleResponses() {
 			// The loop will terminate in the next iteration due to the connection closing.
 			log.Printf("Live stream session closing by server: %+v", msg.GoAway.TimeLeft)
 		case msg.SessionResumptionUpdate != nil:
-			log.Printf("Live session resumption handle updated. Resumable: %t", msg.SessionResumptionUpdate.Resumable)
+			// Lock the mutex to safely update the shared handle.
+			l.mu.Lock()
 			if msg.SessionResumptionUpdate.Resumable {
+				log.Printf("Live session resumption handle updated. New handle received.")
 				l.resumptionHandle = msg.SessionResumptionUpdate.NewHandle
+			} else {
+				log.Printf("Live session is no longer resumable. Clearing handle.")
+				l.resumptionHandle = "" // Clear the handle when the session is not resumable.
 			}
+			l.mu.Unlock()
 		default:
 			config.DebugPrintf("Live AI received unhandled message: %+v", msg)
 		}
