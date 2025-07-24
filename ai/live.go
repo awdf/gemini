@@ -248,7 +248,6 @@ func (l *LiveAI) Run() {
 	// Send initial files only once at the beginning of the session.
 	// This must be done after the response handler is running to catch the server's acknowledgment.
 	l.sendInitialFiles()
-
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
@@ -537,11 +536,16 @@ func (l *LiveAI) sendInitialFiles() {
 	}
 
 	log.Printf("Found %d files to send as initial context for live session.", len(filesToInclude))
-	var parts []*genai.Part
+
+	// Send the introductory prompt first.
 	if config.C.AI.CacheSystemPrompt != "" {
-		parts = append(parts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
+		if err := l.sendTextPrompt(config.C.AI.CacheSystemPrompt); err != nil {
+			log.Printf("ERROR: failed to send initial context prompt: %v", err)
+			return // If this fails, don't proceed.
+		}
 	}
 
+	// Send each file as a separate message.
 	for _, file := range filesToInclude {
 		localPath := filepath.Join(cacheDir, file.Name())
 		data, err := os.ReadFile(localPath)
@@ -551,34 +555,21 @@ func (l *LiveAI) sendInitialFiles() {
 		}
 		// Add a header to each file part to give the model more structure.
 		fileContentWithHeader := fmt.Sprintf("\n\n--- Start of file: %s ---\n\n%s\n\n--- End of file: %s ---", file.Name(), string(data), file.Name())
-		parts = append(parts, genai.NewPartFromText(fileContentWithHeader))
-		log.Printf("Cache file prepared %s", localPath)
+
+		// Re-using sendTextPrompt to send the file content.
+		if err := l.sendTextPrompt(fileContentWithHeader); err != nil {
+			log.Printf("ERROR: failed to send initial file %s: %v", file.Name(), err)
+			// If one file fails, we should probably stop to avoid confusing the model with partial context.
+			return
+		}
+		log.Printf("Cache file sent %s", localPath)
 	}
 
-	if len(parts) == 0 {
-		log.Println("No files were successfully prepared to be sent.")
-		return
-	}
-
-	parts = append(parts, genai.NewPartFromText(CheckQuestion))
-
-	turn := genai.NewContentFromParts(parts, genai.RoleUser)
-	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
-
-	// Lock the mutex only for the duration of accessing the shared session object.
-	l.mu.RLock()
-	session := l.session
-	l.mu.RUnlock()
-
-	if session == nil {
-		log.Println("ERROR: cannot send initial files, session is nil.")
-		return
-	}
-
-	if err := session.SendClientContent(content); err != nil {
-		log.Printf("ERROR: failed to send initial files as client content: %v", err)
+	// Finally, send the check question to prompt the model to acknowledge the files.
+	if err := l.sendTextPrompt(CheckQuestion); err != nil {
+		log.Printf("ERROR: failed to send final check question: %v", err)
 	} else {
-		log.Println("Successfully sent initial files as the first user turn.")
+		log.Println("Successfully sent all initial files and final prompt.")
 	}
 }
 
