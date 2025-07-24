@@ -174,9 +174,9 @@ func NewPCMStreamPlayer(rate, channels int) (*PCMStreamPlayer, error) {
 	// is-live=true: Notifies downstream elements that this is a live source.
 	// stream-type=stream: Indicates a continuous, non-seekable stream.
 	// format=time: Instructs appsrc to generate timestamps for buffers, crucial for synchronization.
-	helpers.Verify(appsrc.SetProperty("is-live", true))
-	helpers.Verify(appsrc.SetProperty("stream-type", app.AppStreamTypeStream))
-	helpers.Verify(appsrc.SetProperty("format", gst.FormatTime))
+	appsrc.SetLive(true)
+	appsrc.SetStreamType(app.AppStreamTypeStream)
+	appsrc.SetFormat(gst.FormatTime)
 
 	queue := helpers.Check(gst.NewElement("queue"))
 	audioconvert := helpers.Check(gst.NewElement("audioconvert"))

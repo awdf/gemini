@@ -120,7 +120,7 @@ func (l *LiveAI) OpenSession() {
 	}
 
 	// Add system prompt if configured.
-	systemPrompt := config.C.AI.SystemPrompt
+	systemPrompt := config.C.AI.GetSystemInstruction()
 	var systemInstructionParts []*genai.Part
 	if systemPrompt != "" {
 		currentTime := time.Now().Format(time.RFC1123)
@@ -161,12 +161,22 @@ func (l *LiveAI) OpenSession() {
 	// Add context window compression if enabled.
 	if config.C.AI.ContextWindowCompression.Enabled {
 		log.Println("Context window compression is enabled for this live session.")
-		liveConfig.ContextWindowCompression = &genai.ContextWindowCompressionConfig{
-			TriggerTokens: Ptr(config.C.AI.ContextWindowCompression.TriggerTokens),
-			SlidingWindow: &genai.SlidingWindow{
-				TargetTokens: Ptr(config.C.AI.ContextWindowCompression.TargetTokens),
-			},
+		compressionConfig := &genai.ContextWindowCompressionConfig{
+			SlidingWindow: &genai.SlidingWindow{},
 		}
+		if config.C.AI.ContextWindowCompression.TriggerTokens > 0 {
+			log.Printf("Using custom TriggerTokens: %d", config.C.AI.ContextWindowCompression.TriggerTokens)
+			compressionConfig.TriggerTokens = helpers.Ptr(config.C.AI.ContextWindowCompression.TriggerTokens)
+		} else {
+			log.Println("Using default TriggerTokens.")
+		}
+		if config.C.AI.ContextWindowCompression.TargetTokens > 0 {
+			log.Printf("Using custom TargetTokens: %d", config.C.AI.ContextWindowCompression.TargetTokens)
+			compressionConfig.SlidingWindow.TargetTokens = helpers.Ptr(config.C.AI.ContextWindowCompression.TargetTokens)
+		} else {
+			log.Println("Using default TargetTokens.")
+		}
+		liveConfig.ContextWindowCompression = compressionConfig
 	}
 
 	// Add session resumption if enabled.
@@ -174,6 +184,14 @@ func (l *LiveAI) OpenSession() {
 		log.Println("Session resumption is enabled for this live session.")
 		liveConfig.SessionResumption = &genai.SessionResumptionConfig{
 			Handle: l.resumptionHandle, // Use the stored handle
+		}
+	}
+
+	// Add proactivity config if enabled.
+	if config.C.AI.Proactivity.Enabled {
+		log.Println("Proactivity is enabled for this live session.")
+		liveConfig.Proactivity = &genai.ProactivityConfig{
+			ProactiveAudio: helpers.Ptr(config.C.AI.Proactivity.ProactiveAudio),
 		}
 	}
 
@@ -299,16 +317,19 @@ func (l *LiveAI) handleResponses() {
 			if err == io.EOF {
 				log.Println("Live stream ended (EOF).")
 			} else {
-				// This error often happens when the connection is closed, which is expected on shutdown.
-				config.DebugPrintf("Live session receive error: %v", err)
+				// This error often happens when the connection is closed, which is expected on fail.
+				log.Printf("Live session receive error: %v", err)
 			}
 
-			// Signal the main Run loop that the session is dead and needs to be reopened.
-			// Use a non-blocking send because the channel is buffered and we only need
-			// to signal once. If a signal is already pending, we don't need to send another.
-			select {
-			case l.sessionClosed <- struct{}{}:
-			default:
+			// TODO: Remove check when fully pass live testing. Voice session limit 5 per day.
+			if !config.C.AI.VoiceEnabled {
+				// Signal the main Run loop that the session is dead and needs to be reopened.
+				// Use a non-blocking send because the channel is buffered and we only need
+				// to signal once. If a signal is already pending, we don't need to send another.
+				select {
+				case l.sessionClosed <- struct{}{}:
+				default:
+				}
 			}
 
 			// Clean up the player if it exists.
@@ -437,7 +458,10 @@ func (l *LiveAI) handleResponses() {
 
 		// UsageMetadata often signals the end of the model's response for the current turn.
 		if msg.UsageMetadata != nil {
-			log.Printf("Live stream usage metadata received: %+v", msg.UsageMetadata)
+			log.Printf("Live stream usage metadata received: InT:%d, OutT:%d, Tot:%d",
+				msg.UsageMetadata.PromptTokenCount,
+				msg.UsageMetadata.ResponseTokenCount,
+				msg.UsageMetadata.TotalTokenCount)
 		}
 	}
 }
@@ -609,11 +633,6 @@ func (l *LiveAI) pullAndSendSamples() {
 		}
 		// IMPORTANT: Go GStreamer unrefs the sample automatically.
 	}
-}
-
-// Ptr returns a pointer to the given value.
-func Ptr[T any](v T) *T {
-	return &v
 }
 
 // executeToolCalls handles a request from the model to execute one or more tool calls.

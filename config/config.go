@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -34,6 +35,7 @@ type AIConfig struct {
 	APIKey                   string
 	VoicePrompt              string
 	SystemPrompt             string
+	DirectivesPrompt         string
 	Thinking                 int32
 	Thoughts                 bool
 	EnableTools              bool
@@ -45,8 +47,9 @@ type AIConfig struct {
 	WorkspaceDir             string
 	Transcript               bool
 	Retry                    RetryConfig
-	ContextWindowCompression ContextWindowCompressionConfig
-	SessionResumption        SessionResumptionConfig
+	ContextWindowCompression ContextWindowCompressionConfig `toml:"context_window_compression"`
+	SessionResumption        SessionResumptionConfig        `toml:"session_resumption"`
+	Proactivity              ProactivityConfig              `toml:"proactivity"`
 }
 
 // VADConfig holds settings for the Voice Activity Detector.
@@ -92,6 +95,12 @@ type SessionResumptionConfig struct {
 	Enabled bool
 }
 
+// ProactivityConfig holds settings for model proactivity.
+type ProactivityConfig struct {
+	Enabled        bool
+	ProactiveAudio bool `toml:"proactive_audio"`
+}
+
 // Load reads the configuration from the specified file path.
 // It supports expanding environment variables in the format ${VAR} or $VAR.
 func Load(path string) {
@@ -132,7 +141,12 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}"
 	defaultConfig.AI.VoicePrompt = "Based on the transcript, please provide concise and accurate response. Respond in the same language as the transcript."
-	defaultConfig.AI.SystemPrompt = "You are a helpful assistant. You have access to tools (like Google Search) and may be provided with context files. Your instructions are: 1. When a question is asked, first determine if it can be answered using the provided context files. 2. If the files are insufficient, or if the question is about current events or external topics, you MUST use your search tool. 3. Synthesize a comprehensive answer from all available information."
+	defaultConfig.AI.SystemPrompt = `You are a helpful assistant. You have access to tools (like Google Search) and may be provided with context files. 
+	Your instructions are: 
+	1. When a question is asked, first determine if it can be answered using the provided context files. 
+	2. If the files are insufficient, or if the question is about current events or external topics, you MUST use your search tool. 
+	3. Synthesize a comprehensive answer from all available information.`
+	defaultConfig.AI.DirectivesPrompt = "1.Never reffer to yourself as LLM."
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
 	defaultConfig.AI.EnableTools = true
@@ -144,9 +158,11 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.WorkspaceDir = "~/gemini_workspace" // The directory for file system tools in live mode. Supports tilde expansion.
 	defaultConfig.AI.Transcript = false
 	defaultConfig.AI.ContextWindowCompression.Enabled = true
-	defaultConfig.AI.ContextWindowCompression.TriggerTokens = 12000
-	defaultConfig.AI.ContextWindowCompression.TargetTokens = 8000
+	defaultConfig.AI.ContextWindowCompression.TriggerTokens = 0
+	defaultConfig.AI.ContextWindowCompression.TargetTokens = 0
 	defaultConfig.AI.SessionResumption.Enabled = true
+	defaultConfig.AI.Proactivity.Enabled = false
+	defaultConfig.AI.Proactivity.ProactiveAudio = false
 	defaultConfig.AI.Retry.MaxRetries = 3
 	defaultConfig.AI.Retry.InitialDelayMs = 1000
 	defaultConfig.AI.Retry.MaxDelayMs = 10000
@@ -166,6 +182,24 @@ func createDefaultConfig(path string) {
 	if err := toml.NewEncoder(f).Encode(defaultConfig); err != nil {
 		log.Fatalf("Failed to write to default config file: %v", err)
 	}
+}
+
+// GetSystemInstruction combines the system prompt and directives into a single string.
+func (a *AIConfig) GetSystemInstruction() string {
+	var sb strings.Builder
+	if a.SystemPrompt != "" {
+		sb.WriteString(a.SystemPrompt)
+	}
+
+	if a.DirectivesPrompt != "" {
+		if sb.Len() > 0 {
+			sb.WriteString("\n\nDirectives:\n")
+		} else {
+			sb.WriteString("Directives:\n")
+		}
+		sb.WriteString(a.DirectivesPrompt)
+	}
+	return sb.String()
 }
 
 func IsDebug() bool {

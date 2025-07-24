@@ -608,7 +608,7 @@ func (a *AI) generateAndProcessContent(
 	}
 
 	// Construct the system prompt with the current date and time.
-	systemPrompt := config.C.AI.SystemPrompt
+	systemPrompt := config.C.AI.GetSystemInstruction()
 	if systemPrompt != "" {
 		currentTime := time.Now().Format(time.RFC1123)
 		systemPrompt = fmt.Sprintf("Current date and time is %s. %s", currentTime, systemPrompt)
