@@ -136,6 +136,13 @@ func (c *CLI) Run() {
 				return
 			}
 
+			// Do not process any input until the VAD has signaled it's ready.
+			// This prevents sending commands before the AI/LiveAI components are ready.
+			if !c.warmUpDone {
+				log.Println("CLI dropping input received during warm-up.")
+				continue
+			}
+
 			// If the first line looks like a command, process it immediately
 			// and don't wait for more lines. This preserves the existing behavior
 			// for single-line commands and prevents multi-line pastes from being

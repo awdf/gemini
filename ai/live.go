@@ -19,6 +19,7 @@ import (
 
 	"gemini/audio"
 	"gemini/config"
+	"gemini/flow"
 	"gemini/helpers"
 	"gemini/images"
 	"gemini/inout"
@@ -40,6 +41,7 @@ type LiveAI struct {
 	mode             string
 	sessionClosed    chan struct{}
 	resumptionHandle string
+	warmUpDone       bool
 	mu               sync.RWMutex
 }
 
@@ -73,6 +75,7 @@ func NewLiveSink(
 		mode:             inout.MixMode,
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
 		resumptionHandle: "",
+		warmUpDone:       false,
 	}
 }
 
@@ -181,9 +184,18 @@ func (l *LiveAI) OpenSession() {
 
 	// Add session resumption if enabled.
 	if config.C.AI.SessionResumption.Enabled {
-		log.Println("Session resumption is enabled for this live session.")
+		if l.resumptionHandle != "" {
+			// Log only the first few characters of the handle to avoid leaking sensitive info.
+			handleForLog := l.resumptionHandle
+			if len(handleForLog) > 10 {
+				handleForLog = handleForLog[:10]
+			}
+			log.Printf("Attempting to resume session with handle: %s...", handleForLog)
+		} else {
+			log.Println("No resumption handle found, starting a new session.")
+		}
 		liveConfig.SessionResumption = &genai.SessionResumptionConfig{
-			Handle: l.resumptionHandle, // Use the stored handle
+			Handle: l.resumptionHandle,
 		}
 	}
 
@@ -199,14 +211,6 @@ func (l *LiveAI) OpenSession() {
 	// Use the model specified in the config, which is suitable for streaming.
 	log.Println("Connecting to live session with model:", modelName)
 	l.session = helpers.Check(l.client.Live.Connect(l.ctx, modelName, liveConfig))
-
-	// After opening, we must wait for the server's initial setup message.
-	msg := helpers.Check(l.session.Receive())
-	if msg.SetupComplete == nil {
-		// This is a protocol violation from the server, which is a fatal error.
-		log.Fatalf("ERROR: expected setup complete message, got: %+v", msg)
-	}
-	log.Printf("Live session connected. %v", msg)
 }
 
 func (l *LiveAI) CloseSession() {
@@ -225,16 +229,30 @@ func (l *LiveAI) Run() {
 	defer l.wg.Done()
 	defer l.CloseSession()
 
+	// Subscribe to the main event topic to listen for the warm-up completion signal from VAD.
+	helpers.Verify((*l.bus).SubscribeAsync("main:topic", func(event string) {
+		if strings.HasPrefix(event, "ready:") {
+			l.mu.Lock()
+			if !l.warmUpDone {
+				log.Println("Live AI warm-up complete. Now actively listening for events.")
+				l.warmUpDone = true
+			}
+			l.mu.Unlock()
+		}
+	}, false))
 	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
 
 	l.OpenSession()
-	l.sendInitialFiles()
 	// Start a dedicated goroutine to handle all incoming server messages.
 	go l.handleResponses()
+	// Send initial files only once at the beginning of the session.
+	// This must be done after the response handler is running to catch the server's acknowledgment.
+	l.sendInitialFiles()
 
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
+	shutdownChan := flow.GetListener()
 
 	for {
 		if config.C.Trace {
@@ -242,12 +260,32 @@ func (l *LiveAI) Run() {
 		}
 
 		select {
+		case <-*shutdownChan:
+			log.Println("Live AI shutting down.")
+			// The return will trigger the deferred CloseSession() and wg.Done().
+			// CloseSession() will unblock the handleResponses goroutine.
+			return
 		case <-l.sessionClosed:
+			// Drain any other pending signals from the channel. This is crucial to
+			// prevent a race condition where a signal from a previously failed
+			// session handler causes us to immediately kill a brand new session.
+			for len(l.sessionClosed) > 0 {
+				<-l.sessionClosed
+			}
+
+			if !config.C.AI.SessionResumption.Enabled {
+				log.Println("Session resumption is disabled. Shutting down on connection loss.")
+				flow.Quit()
+				return // Exit the Run loop to allow graceful shutdown.
+			}
+
 			// The response handler goroutine has exited, meaning the session is dead.
-			// We need to re-establish it.
+			// We need to re-establish it because resumption is enabled.
 			log.Println("Live session connection lost. Re-opening...")
 			l.CloseSession() // Clean up the old session object.
 			l.OpenSession()  // Re-establish the session.
+			// We must start a new response handler for the new session.
+			go l.handleResponses()
 			log.Println("Live session re-established.")
 		case cmd, ok := <-l.controlChan:
 			if !ok {
@@ -291,10 +329,11 @@ func (l *LiveAI) Run() {
 // handleResponses runs in a dedicated goroutine, processing all messages from the server.
 func (l *LiveAI) handleResponses() {
 	var streamPlayer *audio.PCMStreamPlayer
-	var playerErr error
 	var inModelTurn bool // State to track if we are in the middle of a model's turn.
 	var turnGroundingChunks []*genai.GroundingChunk
 
+	// This loop will run for the lifetime of a single session connection.
+	// If it exits, the main Run loop will restart it for a new session.
 	for {
 		// Lock the session for reading. This is a read-lock, so multiple goroutines
 		// can read the session pointer concurrently, but it prevents the main Run()
@@ -308,24 +347,23 @@ func (l *LiveAI) handleResponses() {
 			// The main Run() loop will start a new handler for the new session.
 			return
 		}
+
 		msg, err := session.Receive()
 		if err != nil {
 			if err == io.EOF {
 				log.Println("Live stream ended (EOF).")
-			} else {
+			} else if !strings.Contains(err.Error(), "use of closed network connection") {
 				// This error often happens when the connection is closed, which is expected on fail.
+				// We don't want to spam the log with it during normal shutdown or reconnection.
 				log.Printf("Live session receive error: %v", err)
 			}
 
-			// TODO: Remove check when fully pass live testing. Voice session limit 5 per day.
-			if !config.C.AI.VoiceEnabled {
-				// Signal the main Run loop that the session is dead and needs to be reopened.
-				// Use a non-blocking send because the channel is buffered and we only need
-				// to signal once. If a signal is already pending, we don't need to send another.
-				select {
-				case l.sessionClosed <- struct{}{}:
-				default:
-				}
+			// Signal the main Run loop that the session is dead and needs to be reopened.
+			// Use a non-blocking send because the channel is buffered and we only need
+			// to signal once. If a signal is already pending, we don't need to send another.
+			select {
+			case l.sessionClosed <- struct{}{}:
+			default:
 			}
 
 			// Clean up the player if it exists.
@@ -343,73 +381,29 @@ func (l *LiveAI) handleResponses() {
 
 		// Process the content of the message using a switch for clarity.
 		switch {
+		case msg.SetupComplete != nil:
+			log.Println("Live session setup complete.")
 		case msg.ServerContent != nil:
 			if msg.ServerContent.ModelTurn != nil {
-				// If this is the first chunk of a new model turn, print the header.
 				if !inModelTurn {
 					inModelTurn = true
-					// Reset the accumulator for the new turn.
 					turnGroundingChunks = nil
 					(*l.bus).Publish("main:topic", "mute:ai.handleResponses")
 					l.formatter.Clear()
 					l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
 				}
 
-				for _, part := range msg.ServerContent.ModelTurn.Parts {
-					if part.Text != "" {
-						l.formatter.Print(part.Text)
-					}
-					if part.InlineData != nil && len(part.InlineData.Data) > 0 {
-						// Create the player on the first audio chunk received.
-						if streamPlayer == nil && config.C.AI.VoiceEnabled {
-							streamPlayer, playerErr = audio.NewPCMStreamPlayer(audio.TTSSampleRate, audio.TTSChannels)
-							if playerErr != nil {
-								log.Printf("ERROR: could not create audio stream player: %v", playerErr)
-								streamPlayer = nil // Ensure it's nil on error
-							}
-						}
-						if streamPlayer != nil {
-							if err := streamPlayer.Write(part.InlineData.Data); err != nil {
-								log.Printf("ERROR: writing to audio stream: %v", err)
-							}
-						}
-					}
-				}
+				streamPlayer = l.processModelTurnParts(msg.ServerContent.ModelTurn.Parts, streamPlayer)
 			}
 
-			// Accumulate any grounding chunks received in this message.
 			if msg.ServerContent.GroundingMetadata != nil {
 				turnGroundingChunks = append(turnGroundingChunks, msg.ServerContent.GroundingMetadata.GroundingChunks...)
 			}
 
-			// When generation is complete, it signals the end of the model's turn.
 			if msg.ServerContent.GenerationComplete {
 				log.Println("Live stream generation complete, ending turn.")
-
-				// If any sources were accumulated during the turn, print them now.
-				// The API guarantees that the chunks are ordered to correspond to the [1], [2]...
-				// markers in the response text.
-				if len(turnGroundingChunks) > 0 {
-					l.formatter.Println("\nSources:", inout.ColorDarkYellow)
-					for i, chunk := range turnGroundingChunks {
-						// Perform nil checks for safety
-						if chunk == nil || chunk.Web == nil {
-							continue
-						}
-						uri, title := chunk.Web.URI, chunk.Web.Title
-						// Prepend the citation number, e.g., "[1] Title"
-						sourcePrefix := fmt.Sprintf("[%d]", i+1)
-						if title != "" {
-							l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, title), inout.ColorDarkCyan)
-							l.formatter.Println(uri, inout.ColorDarkBlue)
-						} else {
-							l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, uri), inout.ColorDarkBlue)
-						}
-					}
-				}
-
-				inModelTurn = false // The turn is over, reset the state.
-				// The turn is over. Close the player and reset for the next turn.
+				l.printGroundingChunks(turnGroundingChunks)
+				inModelTurn = false
 				if streamPlayer != nil {
 					if err := streamPlayer.Close(); err != nil {
 						log.Printf("ERROR: closing audio stream player: %v", err)
@@ -420,10 +414,6 @@ func (l *LiveAI) handleResponses() {
 				(*l.bus).Publish("main:topic", "draw:ai.handleResponses")
 			}
 		case msg.ToolCall != nil:
-			// It's crucial to handle tool calls in a separate goroutine to avoid
-			// blocking the message receiving loop. This allows the app to remain
-			// responsive and continue processing other messages (like audio)
-			// while a tool is executing.
 			go func(request *genai.LiveServerToolCall) {
 				responses := l.executeToolCalls(request)
 
@@ -433,8 +423,6 @@ func (l *LiveAI) handleResponses() {
 				l.mu.RLock()
 				defer l.mu.RUnlock()
 				if l.session != nil {
-					// Use SendToolResponse, which is the correct method for sending back
-					// the results of function calls in a live session.
 					if err := l.session.SendToolResponse(toolInput); err != nil {
 						log.Printf("ERROR: failed to send tool response: %v", err)
 					}
@@ -444,7 +432,6 @@ func (l *LiveAI) handleResponses() {
 			// The loop will terminate in the next iteration due to the connection closing.
 			log.Printf("Live stream session closing by server: %+v", msg.GoAway.TimeLeft)
 		case msg.SessionResumptionUpdate != nil:
-			// Lock the mutex to safely update the shared handle.
 			l.mu.Lock()
 			if msg.SessionResumptionUpdate.Resumable {
 				log.Printf("Live session resumption handle updated. New handle received.")
@@ -458,12 +445,60 @@ func (l *LiveAI) handleResponses() {
 			config.DebugPrintf("Live AI received unhandled message: %+v", msg)
 		}
 
-		// UsageMetadata often signals the end of the model's response for the current turn.
 		if msg.UsageMetadata != nil {
 			log.Printf("Live stream usage metadata received: InT:%d, OutT:%d, Tot:%d",
 				msg.UsageMetadata.PromptTokenCount,
 				msg.UsageMetadata.ResponseTokenCount,
 				msg.UsageMetadata.TotalTokenCount)
+		}
+	}
+}
+
+// processModelTurnParts handles the processing of text and audio parts from a model's turn.
+func (l *LiveAI) processModelTurnParts(parts []*genai.Part, player *audio.PCMStreamPlayer) *audio.PCMStreamPlayer {
+	for _, part := range parts {
+		if part.Text != "" {
+			l.formatter.Print(part.Text)
+		}
+		if part.InlineData != nil && len(part.InlineData.Data) > 0 {
+			var err error
+			// Create the player on the first audio chunk received.
+			if player == nil && config.C.AI.VoiceEnabled {
+				player, err = audio.NewPCMStreamPlayer(audio.TTSSampleRate, audio.TTSChannels)
+				if err != nil {
+					log.Printf("ERROR: could not create audio stream player: %v", err)
+					player = nil // Ensure it's nil on error
+				}
+			}
+			if player != nil {
+				if err := player.Write(part.InlineData.Data); err != nil {
+					log.Printf("ERROR: writing to audio stream: %v", err)
+				}
+			}
+		}
+	}
+	return player
+}
+
+// printGroundingChunks formats and prints the source attribution information.
+func (l *LiveAI) printGroundingChunks(chunks []*genai.GroundingChunk) {
+	if len(chunks) == 0 {
+		return
+	}
+	l.formatter.Println("\nSources:", inout.ColorDarkYellow)
+	for i, chunk := range chunks {
+		// Perform nil checks for safety
+		if chunk == nil || chunk.Web == nil {
+			continue
+		}
+		uri, title := chunk.Web.URI, chunk.Web.Title
+		// Prepend the citation number, e.g., "[1] Title"
+		sourcePrefix := fmt.Sprintf("[%d]", i+1)
+		if title != "" {
+			l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, title), inout.ColorDarkCyan)
+			l.formatter.Println(uri, inout.ColorDarkBlue)
+		} else {
+			l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, uri), inout.ColorDarkBlue)
 		}
 	}
 }
