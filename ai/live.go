@@ -150,12 +150,12 @@ func (l *LiveAI) OpenSession() {
 				log.Println("Tools enabled for live session: GoogleSearch, URLContext")
 				searchTool.URLContext = &genai.URLContext{}
 			}
-			tools = append(liveConfig.Tools, searchTool)
+			tools = append(tools, searchTool)
 		}
 
 		if config.C.AI.EnableFunctionCalling {
 			// Add file system tools
-			tools = append(liveConfig.Tools, getFileSystemTool())
+			tools = append(tools, getFileSystemTool())
 			log.Println("File system tools enabled for live session.")
 		}
 
@@ -576,7 +576,7 @@ func (l *LiveAI) sendInitialFiles() {
 			continue
 		}
 		// Add a header to each file part to give the model more structure.
-		fileContentWithHeader := fmt.Sprintf("\n\n--- Start of file: %s ---\n\n%s\n\n--- End of file: %s ---", file.Name(), string(data), file.Name())
+		fileContentWithHeader := fmt.Sprintf("\n\n--- Context part start ---\n\n%s\n\n--- End of context part ---", string(data))
 
 		// Re-using sendTextPrompt to send the file content.
 		if err := l.sendTextPrompt(fileContentWithHeader); err != nil {

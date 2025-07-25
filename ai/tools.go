@@ -404,21 +404,25 @@ func getFileSystemTool() *genai.Tool {
 						"path": {Type: genai.TypeString, Description: "The directory path to list. Defaults to the workspace root if empty."},
 					},
 				},
+				Behavior: genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "readFile",
 				Description: "Read the entire content of a file from the workspace.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to read."}}, Required: []string{"path"}},
+				Behavior:    genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "createFile",
 				Description: "Create or overwrite a file in the workspace with specified content.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to create."}, "content": {Type: genai.TypeString, Description: "The content to write to the file."}}, Required: []string{"path", "content"}},
+				Behavior:    genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "deleteFile",
 				Description: "Delete a file from the workspace.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to delete."}}, Required: []string{"path"}},
+				Behavior:    genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "makeDirectory",
@@ -428,6 +432,7 @@ func getFileSystemTool() *genai.Tool {
 					Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path for the new directory."}},
 					Required:   []string{"path"},
 				},
+				Behavior: genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "moveFile",
@@ -440,6 +445,7 @@ func getFileSystemTool() *genai.Tool {
 					},
 					Required: []string{"source_path", "destination_path"},
 				},
+				Behavior: genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "copyFile",
@@ -452,11 +458,13 @@ func getFileSystemTool() *genai.Tool {
 					},
 					Required: []string{"source_path", "destination_path"},
 				},
+				Behavior: genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "getFileInfo",
 				Description: "Get detailed information about a file or directory.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file or directory."}}, Required: []string{"path"}},
+				Behavior:    genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "searchFiles",
@@ -469,11 +477,13 @@ func getFileSystemTool() *genai.Tool {
 					},
 					Required: []string{"pattern"},
 				},
+				Behavior: genai.BehaviorNonBlocking,
 			},
 			{
 				Name:        "appendToFile",
 				Description: "Append content to the end of an existing file. If the file does not exist, it will be created.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to append to."}, "content": {Type: genai.TypeString, Description: "The content to append."}}, Required: []string{"path", "content"}},
+				Behavior:    genai.BehaviorNonBlocking,
 			},
 		},
 	}
