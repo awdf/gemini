@@ -33,6 +33,8 @@ Step 3 - Generate a concise and accurate response in the same language as the tr
 Thinking = -1 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
 Thoughts = false # Turn off(false)
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
+EnableStandardTools = true # Set to false to disable Google Search and URL Context tools.
+EnableFunctionCalling = true # Set to false to disable function tool calling.
 WorkspaceDir = "~/Workspace"
 
 #Enable it manualy in case of model support cache. Paid tier 1+.

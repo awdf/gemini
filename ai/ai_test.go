@@ -451,7 +451,7 @@ func TestOutput(t *testing.T) {
 		var fullText string
 		var err error
 		output := captureOutput(func() {
-			fullText, err = ai.Output(respIter, 123*time.Millisecond)
+			fullText, _, err = ai.Output(respIter, 123*time.Millisecond)
 		})
 
 		require.NoError(t, err)
@@ -484,7 +484,7 @@ func TestOutput(t *testing.T) {
 		var fullText string
 		var err error
 		output := captureOutput(func() {
-			fullText, err = ai.Output(respIter, 0)
+			fullText, _, err = ai.Output(respIter, 0)
 		})
 
 		require.NoError(t, err)
@@ -504,7 +504,7 @@ func TestOutput(t *testing.T) {
 
 		var err error
 		captureOutput(func() {
-			_, err = ai.Output(respIter, 0)
+			_, _, err = ai.Output(respIter, 0)
 		})
 
 		require.Error(t, err)

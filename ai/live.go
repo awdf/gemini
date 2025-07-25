@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -147,18 +146,27 @@ func (l *LiveAI) OpenSession() {
 	// Conditionally enable tools based on the configuration.
 	// This is only done for the main response generation, not transcription.
 	if config.C.AI.EnableTools {
-		liveConfig.Tools = []*genai.Tool{}
-		searchTool := &genai.Tool{GoogleSearch: &genai.GoogleSearch{}}
-		if urlContextDisabled {
-			log.Println("Tools enabled for live session: GoogleSearch")
-		} else {
-			log.Println("Tools enabled for live session: GoogleSearch, URLContext")
-			searchTool.URLContext = &genai.URLContext{}
+		var tools []*genai.Tool
+		if config.C.AI.EnableStandardTools {
+			searchTool := &genai.Tool{GoogleSearch: &genai.GoogleSearch{}}
+			if urlContextDisabled {
+				log.Println("Tools enabled for live session: GoogleSearch")
+			} else {
+				log.Println("Tools enabled for live session: GoogleSearch, URLContext")
+				searchTool.URLContext = &genai.URLContext{}
+			}
+			tools = append(liveConfig.Tools, searchTool)
 		}
-		liveConfig.Tools = append(liveConfig.Tools, searchTool)
-		// Add file system tools
-		liveConfig.Tools = append(liveConfig.Tools, getFileSystemTool())
-		log.Println("File system tools enabled for live session.")
+
+		if config.C.AI.EnableFunctionCalling {
+			// Add file system tools
+			tools = append(liveConfig.Tools, getFileSystemTool())
+			log.Println("File system tools enabled for live session.")
+		}
+
+		if len(tools) > 0 {
+			liveConfig.Tools = tools
+		}
 	}
 
 	// Add context window compression if enabled.
@@ -673,286 +681,8 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
-		response := l.executeSingleToolCall(call)
+		response := executeSingleToolCall(call)
 		responses = append(responses, response)
 	}
 	return responses
 }
-
-// executeSingleToolCall dispatches a single tool call to the appropriate Go function
-// and returns a structured FunctionResponse.
-func (l *LiveAI) executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
-	var result any
-	var err error
-
-	// For safety, we print the arguments. In a real application, you might want more structured logging.
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
-
-	switch call.Name {
-	case "listFiles":
-		// The model might not provide a path if it wants the root, so we default to ".".
-		path, _ := call.Args["path"].(string)
-		if path == "" {
-			path = "."
-		}
-		result, err = listFiles(path)
-	case "readFile":
-		path, ok := call.Args["path"].(string)
-		if !ok || path == "" {
-			err = fmt.Errorf("'path' argument is required and must be a non-empty string")
-		} else {
-			result, err = readFile(path)
-		}
-	case "createFile":
-		path, pathOK := call.Args["path"].(string)
-		content, contentOK := call.Args["content"].(string)
-		if !pathOK || path == "" || !contentOK {
-			// The model can sometimes forget to provide content.
-			err = fmt.Errorf("'path' (string) and 'content' (string) arguments are required")
-		} else {
-			result, err = createFile(path, content)
-		}
-	case "deleteFile":
-		path, ok := call.Args["path"].(string)
-		if !ok || path == "" {
-			err = fmt.Errorf("'path' argument is required and must be a non-empty string")
-		} else {
-			result, err = deleteFile(path)
-		}
-	default:
-		err = fmt.Errorf("unknown tool call: %s", call.Name)
-	}
-
-	// The model expects a JSON object as a response. If we have an error,
-	// we'll return it in a structured way.
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	// The response from a tool must be a map[string]any.
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		// This should not happen with the current tool implementations, but it's a good safeguard.
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:       call.ID,
-		Name:     call.Name,
-		Response: responseMap,
-	}
-}
-
-// --- File System Tool Implementations ---
-
-// expandPath handles tilde expansion for file paths (e.g., "~/Documents").
-func expandPath(path string) (string, error) {
-	if !strings.HasPrefix(path, "~") {
-		return path, nil
-	}
-
-	// Path is "~" or "~/..."
-	usr, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	homeDir := usr.HomeDir
-
-	if path == "~" {
-		return homeDir, nil
-	}
-	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(homeDir, path[2:]), nil
-	}
-
-	return path, fmt.Errorf("unsupported tilde expansion: only '~' and '~/' are supported")
-}
-
-// getSafePath joins the base directory with a user-provided path and ensures
-// it doesn't escape the base directory.
-func getSafePath(userPath string) (string, error) {
-	// For security, all file operations are restricted to the configured workspace directory.
-	baseDir := config.C.AI.WorkspaceDir
-	if baseDir == "" {
-		return "", fmt.Errorf("workspace directory is not configured")
-	}
-
-	expandedBaseDir, err := expandPath(baseDir)
-	if err != nil {
-		return "", fmt.Errorf("could not expand workspace directory path '%s': %w", baseDir, err)
-	}
-
-	// Create the directory if it doesn't exist.
-	if err := os.MkdirAll(expandedBaseDir, 0o755); err != nil {
-		return "", fmt.Errorf("could not create workspace directory: %w", err)
-	}
-
-	absBase, err := filepath.Abs(expandedBaseDir)
-	if err != nil {
-		return "", fmt.Errorf("could not get absolute path for workspace: %w", err)
-	}
-
-	// Join the base directory with the user-provided path.
-	// If userPath is absolute, Join returns userPath.
-	// If userPath is relative, it's joined with absBase.
-	finalPath := ""
-	if strings.HasPrefix(userPath, absBase) {
-		// Clean the path to resolve any ".." or "." components.
-		finalPath = filepath.Clean(userPath)
-	} else {
-		// Join joins any number of path elements into a single path, separating them with an OS specific [Separator].
-		// Empty elements are ignored. The result is Cleaned. However, if the argument list is empty or all its elements are empty,
-		// Join returns an empty string. On Windows, the result will only be a UNC path if the first non-empty element is a UNC path.
-		finalPath = filepath.Join(absBase, userPath)
-	}
-
-	// Security check: ensure the final, absolute path is still within the workspace.
-	// This prevents path traversal attacks (e.g., path: "../../../etc/passwd").
-	if !strings.HasPrefix(finalPath, absBase) {
-		return "", fmt.Errorf("path traversal detected: access to '%s' is not allowed as it is outside the workspace", userPath)
-	}
-
-	return finalPath, nil
-}
-
-func listFiles(path string) (any, error) {
-	safePath, err := getSafePath(path)
-	if err != nil {
-		return nil, err
-	}
-
-	entries, err := os.ReadDir(safePath)
-	if err != nil {
-		return nil, err
-	}
-
-	var files []map[string]any
-	for _, entry := range entries {
-		info, err := entry.Info()
-		fileInfo := map[string]any{
-			"name":  entry.Name(),
-			"isDir": entry.IsDir(),
-		}
-		if err == nil {
-			fileInfo["size"] = info.Size()
-			fileInfo["modTime"] = info.ModTime().Format(time.RFC3339)
-		}
-		files = append(files, fileInfo)
-	}
-	// Return as a map for consistency, making it clear to the model what it's receiving.
-	return map[string]any{"files": files}, nil
-}
-
-func readFile(path string) (any, error) {
-	safePath, err := getSafePath(path)
-	if err != nil {
-		return nil, err
-	}
-	content, err := os.ReadFile(safePath)
-	if err != nil {
-		return nil, err
-	}
-	// Return as a map for consistency, making it clear to the model what it's receiving.
-	return map[string]any{"content": string(content)}, nil
-}
-
-func createFile(path string, content string) (any, error) {
-	safePath, err := getSafePath(path)
-	if err != nil {
-		return nil, err
-	}
-	err = os.WriteFile(safePath, []byte(content), 0o644)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": fmt.Sprintf("file '%s' created successfully", path)}, nil
-}
-
-func deleteFile(path string) (any, error) {
-	safePath, err := getSafePath(path)
-	if err != nil {
-		return nil, err
-	}
-	err = os.Remove(safePath)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"status": fmt.Sprintf("file '%s' deleted successfully", path)}, nil
-}
-
-func getFileSystemTool() *genai.Tool {
-	return &genai.Tool{
-		FunctionDeclarations: []*genai.FunctionDeclaration{
-			{
-				Name:        "listFiles",
-				Description: "List files and directories in a given path relative to the workspace. Use '.' for the current directory.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"path": {Type: genai.TypeString, Description: "The directory path to list. Defaults to the workspace root if empty."},
-					},
-				},
-				Response: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"files": {
-							Type:        genai.TypeArray,
-							Description: "A list of files and directories.",
-							Items: &genai.Schema{
-								Type: genai.TypeObject,
-								Properties: map[string]*genai.Schema{
-									"name":    {Type: genai.TypeString, Description: "The name of the file or directory."},
-									"isDir":   {Type: genai.TypeBoolean, Description: "True if the entry is a directory."},
-									"size":    {Type: genai.TypeInteger, Description: "The size of the file in bytes."},
-									"modTime": {Type: genai.TypeString, Description: "The modification time in RFC3339 format."},
-								},
-							},
-						},
-					},
-				},
-			},
-			{
-				Name:        "readFile",
-				Description: "Read the entire content of a file from the workspace.",
-				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to read."}}, Required: []string{"path"}},
-				Response: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"content": {Type: genai.TypeString, Description: "The content of the file."},
-						"error":   {Type: genai.TypeString, Description: "An error message if the operation failed."},
-					},
-				},
-			},
-			{
-				Name:        "createFile",
-				Description: "Create or overwrite a file in the workspace with specified content.",
-				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to create."}, "content": {Type: genai.TypeString, Description: "The content to write to the file."}}, Required: []string{"path", "content"}},
-				Response: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"status": {Type: genai.TypeString, Description: "The result of the file creation operation."},
-						"error":  {Type: genai.TypeString, Description: "An error message if the operation failed."},
-					},
-				},
-			},
-			{
-				Name:        "deleteFile",
-				Description: "Delete a file from the workspace.",
-				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to delete."}}, Required: []string{"path"}},
-				Response: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"status": {Type: genai.TypeString, Description: "The result of the file deletion operation."},
-						"error":  {Type: genai.TypeString, Description: "An error message if the operation failed."},
-					},
-				},
-			},
-		},
-	}
-}
-
-// for test function call /home/awdf/Workspace/IT_Kombinat.txt

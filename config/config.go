@@ -39,6 +39,8 @@ type AIConfig struct {
 	Thinking                 int32
 	Thoughts                 bool
 	EnableTools              bool
+	EnableStandardTools      bool `toml:"enableStandardTools"`
+	EnableFunctionCalling    bool `toml:"enableFunctionCalling"`
 	CacheDir                 string
 	CacheSystemPrompt        string
 	EnableCache              bool
@@ -98,7 +100,7 @@ type SessionResumptionConfig struct {
 // ProactivityConfig holds settings for model proactivity.
 type ProactivityConfig struct {
 	Enabled        bool
-	ProactiveAudio bool `toml:"proactive_audio"`
+	ProactiveAudio bool `toml:"proactiveAudio"`
 }
 
 // Load reads the configuration from the specified file path.
@@ -150,12 +152,14 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
 	defaultConfig.AI.EnableTools = true
+	defaultConfig.AI.EnableStandardTools = true
+	defaultConfig.AI.EnableFunctionCalling = true
 	defaultConfig.AI.CacheDir = "cache"
 	defaultConfig.AI.CacheSystemPrompt = "The following files are provided as context:"
 	defaultConfig.AI.EnableCache = false
 	defaultConfig.AI.VoiceHistory = true
 	defaultConfig.AI.VoiceEnabled = false
-	defaultConfig.AI.WorkspaceDir = "~/gemini_workspace" // The directory for file system tools in live mode. Supports tilde expansion.
+	defaultConfig.AI.WorkspaceDir = "~/workspace" // The directory for file system tools in live mode. Supports tilde expansion.
 	defaultConfig.AI.Transcript = false
 	defaultConfig.AI.ContextWindowCompression.Enabled = true
 	defaultConfig.AI.ContextWindowCompression.TriggerTokens = 0

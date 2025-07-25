@@ -312,7 +312,8 @@ func (a *AI) retryWithBackoff(action func() error) error {
 	return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
 }
 
-func (a *AI) TextQuestion(prompt string, imageBuffer *images.ScreenshotBuffer) error {
+func (a *AI) TextQuestion(prompt string, imageBuffer *images.ScreenshotBuffer) error { // Check prompt on any type of URLs it can consist.
+	// The Gemini API treats special URLs as direct content, not as pages to browse.
 	// Check prompt on any type of URLs it can consist.
 	// The Gemini API treats special URLs as direct content, not as pages to browse.
 	parts, urlContextDisabled, err := a.parsePromptForMultimedia(prompt)
@@ -329,7 +330,7 @@ func (a *AI) TextQuestion(prompt string, imageBuffer *images.ScreenshotBuffer) e
 	// In case of exception urlContextDisabled is true, means a special URL was found.
 	// special URL: file, YouTube
 	if err := a.generateAndProcessContent(parts, urlContextDisabled, fNoVoicePrompt); err != nil {
-		log.Printf("ERROR: processing text question: %v", err)
+		log.Printf("ERROR: processing text question: %v", err) // The Gemini API treats special URLs as direct content, not as pages to browse.
 		return err
 	}
 	return nil
@@ -445,10 +446,11 @@ func (a *AI) generateTranscript(wavPath string) (string, error) {
 	return resp.Text(), nil
 }
 
-func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], duration time.Duration) (string, error) {
+func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], duration time.Duration) (string, []*genai.FunctionCall, error) {
 	// State flags to print prefixes only once per block and track formatting.
 	var thoughtStarted, answerStarted bool
 	var fullResponseText string // To accumulate the full text for history and a single TTS call
+	var functionCalls []*genai.FunctionCall
 
 	// Stop other output
 	(*a.bus).Publish("main:topic", "mute:ai.output")
@@ -459,8 +461,8 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 	for chunk, err := range resp {
 		if err != nil {
 			// On error, ensure we reset color and print a newline.
-			a.formatter.Reset()
-			return "", err
+			a.formatter.Reset() // On error, ensure we reset color and print a newline.
+			return "", nil, err
 		}
 		if chunk == nil || len(chunk.Candidates) == 0 {
 			continue
@@ -487,14 +489,15 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 
 			// A part represents a "thought" if it's a function call.
 			// This logic is based on older, struct-based genai.Part.
-			if part.FunctionCall != nil {
+			if fc := part.FunctionCall; fc != nil {
 				if !thoughtStarted {
 					a.formatter.Println("Thought:", inout.ColorDarkYellow)
 					thoughtStarted, answerStarted = true, false // Reset answer flag
 				}
 				// We can format the function call to be readable.
-				thoughtText := fmt.Sprintf("Tool Call: %s(%v)\n", part.FunctionCall.Name, part.FunctionCall.Args)
+				thoughtText := fmt.Sprintf("Tool Call: %s(%v)\n", fc.Name, fc.Args)
 				a.formatter.Print(thoughtText)
+				functionCalls = append(functionCalls, fc)
 			} else if part.Text != "" { // A part is part of the answer if it has text.
 				if !answerStarted {
 					a.formatter.Clear()
@@ -512,6 +515,14 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 	}
 	// After the stream is finished, reset the color and print a final newline.
 	a.formatter.Reset()
+
+	// If there are function calls, we are in an intermediate step.
+	// Don't print sources, execution time, or play audio yet.
+	// The final response will trigger that.
+	if len(functionCalls) > 0 {
+		return "", functionCalls, nil
+	}
+
 	// If any sources were found during the tool-use, print them.
 	if len(sources) > 0 {
 		a.formatter.Println("Sources:", inout.ColorDarkYellow)
@@ -541,7 +552,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 		}
 	}
 
-	return fullResponseText, nil
+	return fullResponseText, nil, nil
 }
 
 // withPipelinePausedIfVoice pauses and resumes the pipeline if voice is enabled,
@@ -591,86 +602,105 @@ func (a *AI) generateAndProcessContent(
 ) error {
 	startTime := time.Now()
 
-	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
-	// Create the content for this API call, including history.
-	contentsForAPI := append(a.conversationHistory, userContent)
-
-	genConfig := &genai.GenerateContentConfig{
-		ThinkingConfig: &genai.ThinkingConfig{
-			IncludeThoughts: config.C.AI.Thoughts,
-			ThinkingBudget:  &config.C.AI.Thinking,
-		},
-	}
-
-	if a.cache != nil {
-		genConfig.CachedContent = a.cache.Name
-		log.Println("Using cached content for this request.")
-	}
-
-	// Construct the system prompt with the current date and time.
-	systemPrompt := config.C.AI.GetSystemInstruction()
-	if systemPrompt != "" {
-		currentTime := time.Now().Format(time.RFC1123)
-		systemPrompt = fmt.Sprintf("Current date and time is %s. %s", currentTime, systemPrompt)
-		// The role for a system instruction is empty.
-		genConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(systemPrompt)}, "")
-	}
-
-	// Conditionally enable tools based on the configuration.
-	// This is only done for the main response generation, not transcription.
-	if config.C.AI.EnableTools {
-		log.Println("Tool use is enabled for this request.")
-		if urlContextDisabled {
-			log.Println("Google search tool in use")
-			genConfig.Tools = []*genai.Tool{{
-				GoogleSearch: &genai.GoogleSearch{},
-			}}
-		} else {
-			log.Println("URLContext and Google search tools in use")
-			genConfig.Tools = []*genai.Tool{{
-				GoogleSearch: &genai.GoogleSearch{},
-				URLContext:   &genai.URLContext{},
-			}}
-		}
-	}
+	userContent := genai.NewContentFromParts(parts, genai.RoleUser) // The conversation starts with the history plus the new user message.
+	conversation := append(a.conversationHistory, userContent)
 
 	// Start the waiting animation in a separate goroutine.
 	done := make(chan struct{})
 	go inout.DisplayWaiting("Thinking...", done)
 
-	// This call is blocking and can take a long time for complex prompts.
-	// It waits for the server to do pre-processing (like transcribing a video)
-	// before it returns the iterator.
-	resp := a.client.Models.GenerateContentStream(
-		a.ctx,
-		config.C.AI.Model,
-		contentsForAPI,
-		genConfig,
-	)
-	// Measures "Time To First Byte" (TTFB)
-	duration := time.Since(startTime)
-	close(done) // Signal the waiting display to stop.
+	defer close(done) // Signal the waiting display to stop.
 
-	fullResponse, err := a.Output(resp, duration)
-	if err != nil {
-		return err
+	for { // Loop for tool calling
+		genConfig := &genai.GenerateContentConfig{
+			ThinkingConfig: &genai.ThinkingConfig{
+				IncludeThoughts: config.C.AI.Thoughts,
+				ThinkingBudget:  &config.C.AI.Thinking,
+			},
+		}
+
+		if a.cache != nil {
+			genConfig.CachedContent = a.cache.Name
+			log.Println("Using cached content for this request.")
+		}
+
+		systemPrompt := config.C.AI.GetSystemInstruction()
+		if systemPrompt != "" {
+			currentTime := time.Now().Format(time.RFC1123)
+			systemPrompt = fmt.Sprintf("Current date and time is %s. %s", currentTime, systemPrompt)
+			genConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(systemPrompt)}, "")
+		}
+
+		if config.C.AI.EnableTools {
+			log.Println("Tool use is enabled for this request.")
+			var tools []*genai.Tool
+
+			// Standart tools for chat requests
+			if config.C.AI.EnableStandardTools {
+				searchTool := &genai.Tool{GoogleSearch: &genai.GoogleSearch{}}
+				if !urlContextDisabled {
+					log.Println("URLContext tool in use")
+					searchTool.URLContext = &genai.URLContext{}
+				}
+				tools = append(tools, searchTool)
+			}
+
+			// Function calling tools, don't works togather with sandart tools.
+			if config.C.AI.EnableFunctionCalling {
+				tools = append(tools, getFileSystemTool()) // Add file system tools
+			}
+			if len(tools) > 0 {
+				genConfig.Tools = tools
+			}
+		}
+
+		resp := a.client.Models.GenerateContentStream(
+			a.ctx,
+			config.C.AI.Model,
+			conversation,
+			genConfig,
+		)
+
+		// Output now returns function calls
+		fullResponse, functionCalls, err := a.Output(resp, time.Since(startTime))
+		if err != nil {
+			return err
+		}
+
+		// If there are no function calls, we have our final answer.
+		if len(functionCalls) == 0 {
+			// If successful, update history for the next turn.
+			modelResponseContent := genai.NewContentFromParts(
+				[]*genai.Part{genai.NewPartFromText(fullResponse)},
+				genai.RoleModel,
+			)
+
+			// Conditionally add user's prompt to history.
+			if !isVoicePrompt || config.C.AI.VoiceHistory {
+				a.conversationHistory = append(a.conversationHistory, userContent, modelResponseContent)
+			} else {
+				log.Println("Skipping voice prompt in conversation history as per configuration.")
+				a.conversationHistory = append(a.conversationHistory, modelResponseContent)
+			}
+			return nil // Exit the loop and the function
+		}
+
+		// We have tool calls to execute.
+		modelParts, toolResponseParts := a.executeToolCalls(functionCalls)
+		modelContentWithCalls := genai.NewContentFromParts(modelParts, genai.RoleModel)
+		toolContent := genai.NewContentFromParts(toolResponseParts, genai.RoleUser)
+		conversation = append(conversation, modelContentWithCalls, toolContent)
 	}
+}
 
-	// If successful, update history for the next turn.
-	modelResponseContent := genai.NewContentFromParts(
-		[]*genai.Part{genai.NewPartFromText(fullResponse)},
-		genai.RoleModel,
-	)
-
-	// Conditionally add user's prompt to history.
-	// Text prompts are always added. Voice prompts are added based on config.
-	if !isVoicePrompt || config.C.AI.VoiceHistory {
-		a.conversationHistory = append(a.conversationHistory, userContent, modelResponseContent)
-	} else {
-		log.Println("Skipping voice prompt in conversation history as per configuration.")
-		a.conversationHistory = append(a.conversationHistory, modelResponseContent)
+// executeToolCalls handles a request from the model to execute one or more tool calls.
+func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResponseParts []*genai.Part) {
+	for _, fc := range calls {
+		modelParts = append(modelParts, &genai.Part{FunctionCall: fc})
+		fr := executeSingleToolCall(fc)
+		toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(fr.Name, fr.Response))
 	}
-	return nil
+	return modelParts, toolResponseParts
 }
 
 // Model RPD 15
