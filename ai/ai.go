@@ -645,10 +645,17 @@ func (a *AI) generateAndProcessContent(
 				tools = append(tools, searchTool)
 			}
 
+			if config.C.AI.EnableCodeExecution {
+				codeExecutionTool := &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}}
+				tools = append(tools, codeExecutionTool)
+				log.Println("Code execution tool enabled for this request.")
+			}
+
 			// Function calling tools, don't works togather with sandart tools.
 			if config.C.AI.EnableFunctionCalling {
 				tools = append(tools, getFileSystemTool()) // Add file system tools
 			}
+
 			if len(tools) > 0 {
 				genConfig.Tools = tools
 			}

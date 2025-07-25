@@ -41,6 +41,7 @@ type AIConfig struct {
 	EnableTools              bool
 	EnableStandardTools      bool `toml:"enableStandardTools"`
 	EnableFunctionCalling    bool `toml:"enableFunctionCalling"`
+	EnableCodeExecution      bool `toml:"enableCodeExecution"`
 	CacheDir                 string
 	CacheSystemPrompt        string
 	EnableCache              bool
@@ -154,6 +155,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.EnableTools = true
 	defaultConfig.AI.EnableStandardTools = true
 	defaultConfig.AI.EnableFunctionCalling = true
+	defaultConfig.AI.EnableCodeExecution = true
 	defaultConfig.AI.CacheDir = "cache"
 	defaultConfig.AI.CacheSystemPrompt = "The following files are provided as context:"
 	defaultConfig.AI.EnableCache = false

@@ -153,6 +153,12 @@ func (l *LiveAI) OpenSession() {
 			tools = append(tools, searchTool)
 		}
 
+		if config.C.AI.EnableCodeExecution {
+			codeExecutionTool := &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}}
+			tools = append(tools, codeExecutionTool)
+			log.Println("Code execution tool enabled for live session.")
+		}
+
 		if config.C.AI.EnableFunctionCalling {
 			// Add file system tools
 			tools = append(tools, getFileSystemTool())

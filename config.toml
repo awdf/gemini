@@ -44,6 +44,7 @@ Thoughts = false # Turn off(false)
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
 EnableStandardTools = true # Set to false to disable Google Search and URL Context tools.
 EnableFunctionCalling = true # Set to false to disable function tool calling.
+EnableCodeExecution = true # Set to false to disable code execution tool.
 WorkspaceDir = "~/Workspace"
 
 #Enable it manualy in case of model support cache. Paid tier 1+.
