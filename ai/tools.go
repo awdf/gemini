@@ -2,6 +2,8 @@ package ai
 
 import (
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/user"
@@ -57,6 +59,52 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 		} else {
 			result, err = deleteFile(path)
 		}
+	case "makeDirectory":
+		path, ok := call.Args["path"].(string)
+		if !ok || path == "" {
+			err = fmt.Errorf("'path' argument is required and must be a non-empty string")
+		} else {
+			result, err = makeDirectory(path)
+		}
+	case "moveFile":
+		source, sourceOK := call.Args["source_path"].(string)
+		dest, destOK := call.Args["destination_path"].(string)
+		if !sourceOK || source == "" || !destOK || dest == "" {
+			err = fmt.Errorf("'source_path' and 'destination_path' arguments are required")
+		} else {
+			result, err = moveFile(source, dest)
+		}
+	case "copyFile":
+		source, sourceOK := call.Args["source_path"].(string)
+		dest, destOK := call.Args["destination_path"].(string)
+		if !sourceOK || source == "" || !destOK || dest == "" {
+			err = fmt.Errorf("'source_path' and 'destination_path' arguments are required")
+		} else {
+			result, err = copyFile(source, dest)
+		}
+	case "getFileInfo":
+		path, ok := call.Args["path"].(string)
+		if !ok || path == "" {
+			err = fmt.Errorf("'path' argument is required and must be a non-empty string")
+		} else {
+			result, err = getFileInfo(path)
+		}
+	case "searchFiles":
+		pattern, patternOK := call.Args["pattern"].(string)
+		path, _ := call.Args["path"].(string) // path is optional
+		if !patternOK || pattern == "" {
+			err = fmt.Errorf("'pattern' argument is required")
+		} else {
+			result, err = searchFiles(pattern, path)
+		}
+	case "appendToFile":
+		path, pathOK := call.Args["path"].(string)
+		content, contentOK := call.Args["content"].(string)
+		if !pathOK || path == "" || !contentOK {
+			err = fmt.Errorf("'path' and 'content' arguments are required")
+		} else {
+			result, err = appendToFile(path, content)
+		}
 	default:
 		err = fmt.Errorf("unknown tool call: %s", call.Name)
 	}
@@ -79,9 +127,10 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 	}
 
 	return &genai.FunctionResponse{
-		ID:       call.ID,
-		Name:     call.Name,
-		Response: responseMap,
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
 	}
 }
 
@@ -201,6 +250,148 @@ func deleteFile(path string) (any, error) {
 	return map[string]any{"status": fmt.Sprintf("file '%s' deleted successfully", path)}, nil
 }
 
+func makeDirectory(path string) (any, error) {
+	safePath, err := getSafePath(path)
+	if err != nil {
+		return nil, err
+	}
+	// MkdirAll creates a directory named path,
+	// along with any necessary parents, and returns nil,
+	// or else returns an error.
+	err = os.MkdirAll(safePath, 0o755)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": fmt.Sprintf("directory '%s' created successfully", path)}, nil
+}
+
+func moveFile(sourcePath, destinationPath string) (any, error) {
+	safeSourcePath, err := getSafePath(sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	safeDestinationPath, err := getSafePath(destinationPath)
+	if err != nil {
+		return nil, err
+	}
+	err = os.Rename(safeSourcePath, safeDestinationPath)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": fmt.Sprintf("moved '%s' to '%s' successfully", sourcePath, destinationPath)}, nil
+}
+
+func copyFile(sourcePath, destinationPath string) (any, error) {
+	safeSourcePath, err := getSafePath(sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	safeDestinationPath, err := getSafePath(destinationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	sourceFile, err := os.Open(safeSourcePath)
+	if err != nil {
+		return nil, err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(safeDestinationPath)
+	if err != nil {
+		return nil, err
+	}
+	defer destFile.Close()
+
+	bytesCopied, err := io.Copy(destFile, sourceFile)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"status":      fmt.Sprintf("file '%s' copied to '%s' successfully", sourcePath, destinationPath),
+		"bytesCopied": bytesCopied,
+	}, nil
+}
+
+func getFileInfo(path string) (any, error) {
+	safePath, err := getSafePath(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(safePath)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"name":    info.Name(),
+		"size":    info.Size(),
+		"isDir":   info.IsDir(),
+		"modTime": info.ModTime().Format(time.RFC3339),
+		"perms":   info.Mode().String(),
+	}, nil
+}
+
+func searchFiles(pattern, path string) (any, error) {
+	// get the absolute path of the workspace root
+	baseDir, err := getSafePath("")
+	if err != nil {
+		return nil, err
+	}
+
+	// get the absolute path of the search directory
+	searchRoot, err := getSafePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var foundFiles []string
+	err = filepath.WalkDir(searchRoot, func(currentPath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			matched, err := filepath.Match(pattern, d.Name())
+			if err != nil {
+				return err // Malformed pattern
+			}
+			if matched {
+				// We want to return the path relative to the workspace root for the user
+				relPath, err := filepath.Rel(baseDir, currentPath)
+				if err != nil {
+					// This shouldn't happen if currentPath is inside baseDir
+					return err
+				}
+				foundFiles = append(foundFiles, relPath)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]any{"files": foundFiles}, nil
+}
+
+func appendToFile(path, content string) (any, error) {
+	safePath, err := getSafePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := os.OpenFile(safePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(content); err != nil {
+		return nil, err
+	}
+
+	return map[string]any{"status": fmt.Sprintf("content appended to file '%s' successfully", path)}, nil
+}
+
 func getFileSystemTool() *genai.Tool {
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{
@@ -228,6 +419,61 @@ func getFileSystemTool() *genai.Tool {
 				Name:        "deleteFile",
 				Description: "Delete a file from the workspace.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to delete."}}, Required: []string{"path"}},
+			},
+			{
+				Name:        "makeDirectory",
+				Description: "Create a new directory at the specified path within the workspace. It can create parent directories if they don't exist.",
+				Parameters: &genai.Schema{
+					Type:       genai.TypeObject,
+					Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path for the new directory."}},
+					Required:   []string{"path"},
+				},
+			},
+			{
+				Name:        "moveFile",
+				Description: "Move or rename a file or directory within the workspace.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"source_path":      {Type: genai.TypeString, Description: "The current path of the file or directory."},
+						"destination_path": {Type: genai.TypeString, Description: "The new path for the file or directory."},
+					},
+					Required: []string{"source_path", "destination_path"},
+				},
+			},
+			{
+				Name:        "copyFile",
+				Description: "Copy a file from a source path to a destination path within the workspace.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"source_path":      {Type: genai.TypeString, Description: "The path of the file to copy."},
+						"destination_path": {Type: genai.TypeString, Description: "The path to copy the file to."},
+					},
+					Required: []string{"source_path", "destination_path"},
+				},
+			},
+			{
+				Name:        "getFileInfo",
+				Description: "Get detailed information about a file or directory.",
+				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file or directory."}}, Required: []string{"path"}},
+			},
+			{
+				Name:        "searchFiles",
+				Description: "Search for files recursively in a directory by a name pattern (glob).",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"pattern": {Type: genai.TypeString, Description: "The glob pattern to match file names against (e.g., '*.go', 'data*')."},
+						"path":    {Type: genai.TypeString, Description: "The directory to start the search from. Defaults to the workspace root if empty."},
+					},
+					Required: []string{"pattern"},
+				},
+			},
+			{
+				Name:        "appendToFile",
+				Description: "Append content to the end of an existing file. If the file does not exist, it will be created.",
+				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to append to."}, "content": {Type: genai.TypeString, Description: "The content to append."}}, Required: []string{"path", "content"}},
 			},
 		},
 	}
