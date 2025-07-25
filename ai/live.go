@@ -42,6 +42,7 @@ type LiveAI struct {
 	resumptionHandle string
 	warmUpDone       bool
 	mu               sync.RWMutex
+	Online           bool
 }
 
 func NewLiveSink(
@@ -75,13 +76,14 @@ func NewLiveSink(
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
 		resumptionHandle: "",
 		warmUpDone:       false,
+		Online:           false,
 	}
 }
 
 func (l *LiveAI) OpenSession() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.session != nil {
+	if l.session != nil || l.Online {
 		return
 	}
 
@@ -130,13 +132,6 @@ func (l *LiveAI) OpenSession() {
 		systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(systemPrompt))
 		log.Println("Using system prompt for live session.")
 	}
-
-	// voicePrompt := config.C.AI.VoicePrompt
-	// textResponse := !config.C.AI.VoiceEnabled
-	// if textResponse && voicePrompt != "" {
-	// 	systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(voicePrompt))
-	// 	log.Println("Using voice prompt for live session.")
-	// }
 
 	// The role for a system instruction is empty.
 	if len(systemInstructionParts) > 0 {
@@ -219,6 +214,7 @@ func (l *LiveAI) OpenSession() {
 	// Use the model specified in the config, which is suitable for streaming.
 	log.Println("Connecting to live session with model:", modelName)
 	l.session = helpers.Check(l.client.Live.Connect(l.ctx, modelName, liveConfig))
+	l.Online = true
 }
 
 func (l *LiveAI) CloseSession() {
@@ -229,6 +225,7 @@ func (l *LiveAI) CloseSession() {
 	}
 	l.session.Close()
 	l.session = nil
+	l.Online = false
 }
 
 // Run is a dedicated goroutine for writing encoded audio data to files.
@@ -291,8 +288,6 @@ func (l *LiveAI) Run() {
 			log.Println("Live session connection lost. Re-opening...")
 			l.CloseSession() // Clean up the old session object.
 			l.OpenSession()  // Re-establish the session.
-			// We must start a new response handler for the new session.
-			go l.handleResponses()
 			log.Println("Live session re-established.")
 		case cmd, ok := <-l.controlChan:
 			if !ok {
@@ -338,6 +333,18 @@ func (l *LiveAI) handleResponses() {
 	var streamPlayer *audio.PCMStreamPlayer
 	var inModelTurn bool // State to track if we are in the middle of a model's turn.
 	var turnGroundingChunks []*genai.GroundingChunk
+	listener := flow.GetListener()
+
+	fireClose := func() {
+		// Signal the main Run loop that the session is dead(dying) and needs to be reopened.
+		// Use a non-blocking send because the channel is buffered and we only need
+		// to signal once. If a signal is already pending, we don't need to send another.
+		l.Online = false
+		select {
+		case l.sessionClosed <- struct{}{}:
+		default:
+		}
+	}
 
 	// This loop will run for the lifetime of a single session connection.
 	// If it exits, the main Run loop will restart it for a new session.
@@ -349,29 +356,38 @@ func (l *LiveAI) handleResponses() {
 		session := l.session
 		l.mu.RUnlock()
 
-		if session == nil {
-			// The session has been closed by another goroutine. This handler's job is done.
-			// The main Run() loop will start a new handler for the new session.
-			return
+		// Waiting stage, until session in configuration state
+		// Online flag early show that session will be closed
+		// session = nil when session has been closed by another goroutine.
+		if session == nil || !l.Online {
+			select {
+			case <-*listener: // App closes, work done
+				return
+			default:
+			}
+			if config.C.Trace {
+				log.Println("Live stream session is temporarily unavailable.")
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 
+		// This method blocks until a message is received from the server.
+		// The returned message represents a part of or a complete model turn.
+		// If the received message is a [LiveServerToolCall],
+		// the user must call [SendToolResponse] to provide
+		// the function execution result and continue the turn.
 		msg, err := session.Receive()
 		if err != nil {
 			if err == io.EOF {
 				log.Println("Live stream ended (EOF).")
-			} else if !strings.Contains(err.Error(), "use of closed network connection") {
+			} else {
 				// This error often happens when the connection is closed, which is expected on fail.
 				// We don't want to spam the log with it during normal shutdown or reconnection.
 				log.Printf("Live session receive error: %v", err)
 			}
 
-			// Signal the main Run loop that the session is dead and needs to be reopened.
-			// Use a non-blocking send because the channel is buffered and we only need
-			// to signal once. If a signal is already pending, we don't need to send another.
-			select {
-			case l.sessionClosed <- struct{}{}:
-			default:
-			}
+			fireClose()
 
 			// Clean up the player if it exists.
 			if streamPlayer != nil {
@@ -380,10 +396,7 @@ func (l *LiveAI) handleResponses() {
 				}
 				streamPlayer = nil
 			}
-			// Ensure UI is un-muted on error/exit
-			l.formatter.Reset()
-			(*l.bus).Publish("main:topic", "draw:ai.handleResponses.error")
-			return // Exit the goroutine.
+			continue
 		}
 
 		// Process the content of the message using a switch for clarity.
@@ -437,7 +450,8 @@ func (l *LiveAI) handleResponses() {
 			}(msg.ToolCall)
 		case msg.GoAway != nil:
 			// The loop will terminate in the next iteration due to the connection closing.
-			log.Printf("Live stream session closing by server: %+v", msg.GoAway.TimeLeft)
+			log.Printf("Live stream session GoAway received: %+v", msg.GoAway.TimeLeft)
+			fireClose()
 		case msg.SessionResumptionUpdate != nil:
 			l.mu.Lock()
 			if msg.SessionResumptionUpdate.Resumable {
