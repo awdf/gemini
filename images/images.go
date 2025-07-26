@@ -18,7 +18,9 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// ScreenshotBuffer is a wrapper around bytes.Buffer that also holds a reference to the pool.
+// ScreenshotBuffer is a wrapper around bytes.Buffer that also holds a reference
+// to the pool it came from. This improves encapsulation by making the buffer
+// responsible for its own lifecycle management.
 type ScreenshotBuffer struct {
 	*bytes.Buffer
 	pool *sync.Pool

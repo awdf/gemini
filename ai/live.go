@@ -37,6 +37,7 @@ type LiveAI struct {
 	textCmdChan      <-chan string
 	bus              *EventBus.Bus
 	session          *genai.Session
+	imageBuffer      *images.ScreenshotBuffer
 	isStreaming      bool
 	mode             string
 	sessionClosed    chan struct{}
@@ -272,7 +273,6 @@ func (l *LiveAI) Run() {
 	defer ticker.Stop()
 	shutdownChan := flow.GetListener()
 
-	var imageBuffer *images.ScreenshotBuffer
 	for {
 		if config.C.Trace {
 			log.Println("Live AI accepting PCM data")
@@ -320,22 +320,28 @@ func (l *LiveAI) Run() {
 				l.isStreaming = true
 
 				if l.mode == inout.ImageMode {
-					log.Println("Taking live screenshot for AI response...")
-					var err error
-					imageBuffer, err = images.TakeScreenshot()
-					if err != nil {
-						log.Printf("failed to take screenshot: %v", err)
+					l.mu.Lock()
+					if l.imageBuffer != nil {
+						log.Println("An image is already being processed, skipping new screenshot for this turn.")
+						l.mu.Unlock()
+					} else {
+						log.Println("Taking live screenshot for AI response...")
+						var err error
+						l.imageBuffer, err = images.TakeScreenshot()
+						l.mu.Unlock() // Unlock before logging and sending to avoid holding lock during I/O
+						if err != nil {
+							log.Printf("failed to take screenshot: %v", err)
+						} else {
+							l.sendLiveImage()
+						}
 					}
 				}
-				l.sendLiveImage(imageBuffer)
 			case strings.HasPrefix(cmd, vad.MarkerStop):
 				// The response is handled by the handleResponses goroutine.
 				// No action needed here to process the stream.
 				log.Println("VAD Stop: finishing turn.")
 				l.isStreaming = false
-				if l.mode == inout.ImageMode {
-					imageBuffer.Release()
-				}
+				// The image buffer is now released upon GenerationComplete, not here.
 			default:
 				log.Printf("WARNING: received unknown control command: %s", cmd)
 			}
@@ -463,6 +469,14 @@ func (l *LiveAI) handleResponses() {
 					streamPlayer = nil
 				}
 				l.formatter.Reset()
+				// Release the image buffer now that the turn is fully complete.
+				l.mu.Lock()
+				if l.imageBuffer != nil {
+					log.Println("Releasing screenshot buffer after completed turn.")
+					l.imageBuffer.Release()
+					l.imageBuffer = nil
+				}
+				l.mu.Unlock()
 				(*l.bus).Publish("main:topic", "draw:ai.handleResponses")
 			}
 		case msg.ToolCall != nil:
@@ -630,21 +644,27 @@ func (l *LiveAI) sendInitialFiles() {
 	}
 }
 
-func (l *LiveAI) sendLiveImage(imageBuffer *images.ScreenshotBuffer) {
-	if !l.Online || imageBuffer == nil {
+func (l *LiveAI) sendLiveImage() {
+	l.mu.RLock()
+	imageBuffer := l.imageBuffer
+	online := l.Online
+	l.mu.RUnlock()
+
+	if !online || imageBuffer == nil {
 		return
 	}
+	log.Println("Sending live image to session context...")
 
 	l.writeMu.Lock()
 	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
 		Media: &genai.Blob{
 			MIMEType: "image/png",
-			Data:     imageBuffer.Bytes(),
+			Data:     imageBuffer.Bytes(), // This is safe because imageBuffer is a local var now
 		},
 	})
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf("ERROR: failed to send realtime audio input: %v", err)
+		log.Printf("ERROR: failed to send realtime image input: %v", err)
 		// Stop streaming on error to prevent flooding with more errors.
 	}
 }
@@ -754,20 +774,89 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
-		if call.Name == "uploadImage" {
-			response := l.handleUploadImageTool(call)
-			responses = append(responses, response)
-		} else {
-			response := executeSingleToolCall(call)
-			responses = append(responses, response)
+		var response *genai.FunctionResponse
+		switch call.Name {
+		case "uploadImage":
+			response = l.handleUploadImageTool(call)
+		case "detectObjects":
+			response = l.handleDetectObjectsTool(call)
+		default:
+			response = executeSingleToolCall(call)
 		}
+		responses = append(responses, response)
 	}
 	return responses
+}
+
+// handleDetectObjectsTool processes the 'detectObjects' tool call.
+// It uses a specialized Agent to analyze an image from the current session's
+// image buffer and return the findings.
+func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	// Get the query from the tool call arguments.
+	query, ok := call.Args["query"].(string)
+	if !ok || query == "" {
+		err = fmt.Errorf("'query' argument is required and must be a non-empty string")
+	} else {
+		// This tool uses the session's image buffer.
+		l.mu.RLock()
+		imageBuf := l.imageBuffer
+		l.mu.RUnlock()
+
+		if imageBuf == nil || imageBuf.Len() == 0 {
+			err = fmt.Errorf("no image found in the current session context to detect objects from")
+		} else {
+			// Create the agent with a specific system prompt for object detection.
+			agentConfig := AgentConfig{
+				Model:             config.C.AI.Model,
+				SystemInstruction: "You are an object detection specialist. For all requested items in the image, provide their label and a bounding box. The bounding box coordinates in the 'box_2d' object should be normalized to 0-1000.",
+				EnableTools:       false,
+				ResponseSchema:    GetObjectDetectionSchema(),
+			}
+			agent := NewAgent(l.ctx, agentConfig)
+
+			// Process the image with the agent, using the query from the tool call as the prompt.
+			// The image buffer is PNG encoded.
+			detectionResult, processErr := agent.Process(query, imageBuf.Bytes(), "image/png")
+			if processErr != nil {
+				err = fmt.Errorf("object detection failed: %w", processErr)
+			} else {
+				log.Printf("Object detection successful for query: '%s'", query)
+				result = map[string]any{"detected_objects": detectionResult}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
 }
 
 // handleUploadImageTool processes the 'uploadImage' tool call, which is specific to LiveAI.
 // It reads an image from the workspace and sends it to the live session as media input.
 func (l *LiveAI) handleUploadImageTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
 	var result any
 	var err error
 

@@ -105,6 +105,10 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 		} else {
 			result, err = appendToFile(path, content)
 		}
+	case "detectObjects":
+		// This tool is special and handled in LiveAI, as it requires access to the session's image buffer.
+		// This case is a fallback for non-live mode.
+		err = fmt.Errorf("the 'detectObjects' tool is only available in live mode")
 	case "uploadImage":
 		err = fmt.Errorf("the 'uploadImage' tool is only available in live mode")
 	default:
@@ -489,9 +493,21 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "uploadImage",
-				Description: "Upload an image file from the workspace to the current session context. The model can then see and analyze the image.",
+				Description: "Upload an image file from the workspace to the session context. Use this tool when the user explicitly asks to analyze a specific file by its name. For analyzing a screenshot just taken, use the `detectObjects` tool directly.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the image file to upload."}}, Required: []string{"path"}},
 				Behavior:    genai.BehaviorNonBlocking,
+			},
+			{
+				Name:        "detectObjects",
+				Description: "Analyzes the image currently in the session context (e.g., from a recent screenshot) to detect specific objects based on a query. Do not use this tool with a file path; it operates on the image already provided in the turn. Returns a list of detected objects and their bounding boxes.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"query": {Type: genai.TypeString, Description: "A natural language query describing the objects to detect (e.g., 'all the cars', 'the red apple')."},
+					},
+					Required: []string{"query"},
+				},
+				Behavior: genai.BehaviorNonBlocking,
 			},
 		},
 	}
