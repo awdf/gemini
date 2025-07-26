@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -195,6 +196,16 @@ func (a *AIConfig) GetSystemInstruction() string {
 	var sb strings.Builder
 	if a.SystemPrompt != "" {
 		sb.WriteString(a.SystemPrompt)
+	}
+
+	// If function calling is enabled, inform the model about its workspace constraints.
+	// This helps it generate correct, relative paths for file system tools.
+	if a.EnableFunctionCalling && a.WorkspaceDir != "" {
+		sb.WriteString(fmt.Sprintf(`\n\nYou have access to a file system toolset.
+		All file operations are restricted to the "%s" directory.
+		All paths provided to tools like "listFiles","readFile", "createFile", etc., must be relative to this workspace.`,
+			a.WorkspaceDir,
+		))
 	}
 
 	if a.DirectivesPrompt != "" {

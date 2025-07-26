@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,8 +42,15 @@ type LiveAI struct {
 	sessionClosed    chan struct{}
 	resumptionHandle string
 	warmUpDone       bool
-	mu               sync.RWMutex
 	Online           bool
+	// mu protects the internal state of the LiveAI struct (e.g., session, Online, resumptionHandle).
+	// It allows multiple concurrent readers but only one writer, which is ideal for state
+	// that is read often but changed infrequently (like during session setup/teardown).
+	mu sync.RWMutex
+	// writeMu serializes all write operations to the underlying websocket connection.
+	// The Gemini library is not safe for concurrent writes, so this mutex prevents panics
+	// by ensuring that only one goroutine can call Send... methods at a time.
+	writeMu sync.Mutex
 }
 
 func NewLiveSink(
@@ -264,6 +272,7 @@ func (l *LiveAI) Run() {
 	defer ticker.Stop()
 	shutdownChan := flow.GetListener()
 
+	var imageBuffer *images.ScreenshotBuffer
 	for {
 		if config.C.Trace {
 			log.Println("Live AI accepting PCM data")
@@ -302,17 +311,34 @@ func (l *LiveAI) Run() {
 			}
 			switch {
 			case strings.HasPrefix(cmd, vad.MarkerStart):
+				// The native audio models perform their own VAD (automatic activity detection).
+				// Sending explicit ActivityStart/ActivityEnd signals conflicts with this,
+				// causing a websocket error. We still use our application's VAD to control
+				// when we *stream* audio to the API by toggling `isStreaming`, but we don't
+				// send the explicit start/end markers.
 				log.Println("VAD Start: beginning to stream audio to Live API.")
 				l.isStreaming = true
+
+				if l.mode == inout.ImageMode {
+					log.Println("Taking live screenshot for AI response...")
+					var err error
+					imageBuffer, err = images.TakeScreenshot()
+					if err != nil {
+						log.Printf("failed to take screenshot: %v", err)
+					}
+				}
+				l.sendLiveImage(imageBuffer)
 			case strings.HasPrefix(cmd, vad.MarkerStop):
-				log.Println("VAD Stop: finishing turn.")
-				l.isStreaming = false
 				// The response is handled by the handleResponses goroutine.
 				// No action needed here to process the stream.
+				log.Println("VAD Stop: finishing turn.")
+				l.isStreaming = false
+				if l.mode == inout.ImageMode {
+					imageBuffer.Release()
+				}
 			default:
 				log.Printf("WARNING: received unknown control command: %s", cmd)
 			}
-
 		case textCmd, ok := <-l.textCmdChan:
 			if !ok {
 				l.textCmdChan = nil // Mark as closed
@@ -449,9 +475,11 @@ func (l *LiveAI) handleResponses() {
 				l.mu.RLock()
 				defer l.mu.RUnlock()
 				if l.session != nil {
+					l.writeMu.Lock()
 					if err := l.session.SendToolResponse(toolInput); err != nil {
 						log.Printf("ERROR: failed to send tool response: %v", err)
 					}
+					l.writeMu.Unlock()
 				}
 			}(msg.ToolCall)
 		case msg.GoAway != nil:
@@ -527,6 +555,7 @@ func (l *LiveAI) printGroundingChunks(chunks []*genai.GroundingChunk) {
 		} else {
 			l.formatter.Println(fmt.Sprintf("%s %s", sourcePrefix, uri), inout.ColorDarkBlue)
 		}
+		l.formatter.Reset()
 	}
 }
 
@@ -601,6 +630,25 @@ func (l *LiveAI) sendInitialFiles() {
 	}
 }
 
+func (l *LiveAI) sendLiveImage(imageBuffer *images.ScreenshotBuffer) {
+	if !l.Online || imageBuffer == nil {
+		return
+	}
+
+	l.writeMu.Lock()
+	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
+		Media: &genai.Blob{
+			MIMEType: "image/png",
+			Data:     imageBuffer.Bytes(),
+		},
+	})
+	l.writeMu.Unlock()
+	if err != nil {
+		log.Printf("ERROR: failed to send realtime audio input: %v", err)
+		// Stop streaming on error to prevent flooding with more errors.
+	}
+}
+
 // sendTextPrompt sends a text prompt (and potentially a screenshot) to the live session.
 // The response is handled by the separate handleResponses goroutine.
 func (l *LiveAI) sendTextPrompt(prompt string) error {
@@ -636,9 +684,12 @@ func (l *LiveAI) sendTextPrompt(prompt string) error {
 		return fmt.Errorf("session is temporarily unavailable, please try again")
 	}
 
+	l.writeMu.Lock()
 	if err := session.SendClientContent(content); err != nil {
+		l.writeMu.Unlock()
 		return fmt.Errorf("failed to send client content: %w", err)
 	}
+	l.writeMu.Unlock()
 
 	return nil
 }
@@ -674,12 +725,14 @@ func (l *LiveAI) pullAndSendSamples() {
 
 			// The pipeline is configured for 16-bit, 16kHz mono PCM audio.
 			// The correct MIME type for this is audio/l16;rate=16000.
+			l.writeMu.Lock()
 			err := session.SendRealtimeInput(genai.LiveRealtimeInput{
 				Audio: &genai.Blob{
 					MIMEType: fmt.Sprintf("audio/pcm;rate=%d", audio.LiveSampleRate),
 					Data:     buffer.Bytes(),
 				},
 			})
+			l.writeMu.Unlock()
 			if err != nil {
 				log.Printf("ERROR: failed to send realtime audio input: %v", err)
 				// Stop streaming on error to prevent flooding with more errors.
@@ -701,8 +754,88 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
-		response := executeSingleToolCall(call)
-		responses = append(responses, response)
+		if call.Name == "uploadImage" {
+			response := l.handleUploadImageTool(call)
+			responses = append(responses, response)
+		} else {
+			response := executeSingleToolCall(call)
+			responses = append(responses, response)
+		}
 	}
 	return responses
+}
+
+// handleUploadImageTool processes the 'uploadImage' tool call, which is specific to LiveAI.
+// It reads an image from the workspace and sends it to the live session as media input.
+func (l *LiveAI) handleUploadImageTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	var result any
+	var err error
+
+	path, ok := call.Args["path"].(string)
+	if !ok || path == "" {
+		err = fmt.Errorf("'path' argument is required and must be a non-empty string")
+	} else {
+		// Use getSafePath to ensure the file is within the configured workspace.
+		safePath, pathErr := getSafePath(path)
+		if pathErr != nil {
+			err = pathErr
+		} else {
+			// Read the file content.
+			data, readErr := os.ReadFile(safePath)
+			if readErr != nil {
+				err = fmt.Errorf("failed to read image file '%s': %w", path, readErr)
+			} else {
+				// Determine MIME type from file extension.
+				mimeType := mime.TypeByExtension(filepath.Ext(safePath))
+				if !strings.HasPrefix(mimeType, "image/") {
+					err = fmt.Errorf("file '%s' is not a supported image type (MIME: %s)", path, mimeType)
+				} else {
+					// Send the image data to the live session.
+					l.mu.RLock()
+					session := l.session
+					l.mu.RUnlock()
+
+					if session == nil {
+						err = fmt.Errorf("live session is not active, cannot upload image")
+					} else {
+						// Use SendClientContent to send the image as a new user turn. This avoids
+						// concurrency issues with SendRealtimeInput used for audio streaming and
+						// correctly represents the image as a discrete piece of user-provided context.
+						parts := []*genai.Part{genai.NewPartFromBytes(data, mimeType)}
+						turn := genai.NewContentFromParts(parts, genai.RoleUser)
+						content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+						l.writeMu.Lock()
+						sendErr := session.SendClientContent(content)
+						l.writeMu.Unlock()
+						if sendErr != nil {
+							err = fmt.Errorf("failed to send image to session: %w", sendErr)
+						} else {
+							log.Printf("Successfully sent image '%s' to live session.", path)
+							result = map[string]any{"status": fmt.Sprintf("image '%s' uploaded successfully", path)}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
 }

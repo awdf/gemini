@@ -105,6 +105,11 @@ func NewAI(
 		mode:                inout.MixMode,
 	}
 
+	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
+		// This log confirms that PostAI mode is aware of the workspace for file system tools.
+		log.Printf("AI function calling is enabled. Workspace is set to: %s", config.C.AI.WorkspaceDir)
+	}
+
 	if config.C.AI.EnableCache {
 		ai.uploadCache()
 	} else {

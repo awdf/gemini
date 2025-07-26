@@ -105,6 +105,8 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 		} else {
 			result, err = appendToFile(path, content)
 		}
+	case "uploadImage":
+		err = fmt.Errorf("the 'uploadImage' tool is only available in live mode")
 	default:
 		err = fmt.Errorf("unknown tool call: %s", call.Name)
 	}
@@ -483,6 +485,12 @@ func getFileSystemTool() *genai.Tool {
 				Name:        "appendToFile",
 				Description: "Append content to the end of an existing file. If the file does not exist, it will be created.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to append to."}, "content": {Type: genai.TypeString, Description: "The content to append."}}, Required: []string{"path", "content"}},
+				Behavior:    genai.BehaviorNonBlocking,
+			},
+			{
+				Name:        "uploadImage",
+				Description: "Upload an image file from the workspace to the current session context. The model can then see and analyze the image.",
+				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the image file to upload."}}, Required: []string{"path"}},
 				Behavior:    genai.BehaviorNonBlocking,
 			},
 		},
