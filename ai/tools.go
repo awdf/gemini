@@ -15,14 +15,13 @@ import (
 
 	"gemini/config"
 	"gemini/inout"
-	"gemini/wayland"
 )
 
 // --- File System Tool Implementations (Shared) ---
 
 // executeSingleToolCall dispatches a single tool call to the appropriate Go function
 // and returns a structured FunctionResponse. This function is shared between PostAI and LiveAI.
-func executeSingleToolCall(call *genai.FunctionCall, verifyed bool) *genai.FunctionResponse {
+func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 	var result any
 	var err error
 
@@ -113,19 +112,7 @@ func executeSingleToolCall(call *genai.FunctionCall, verifyed bool) *genai.Funct
 	case "uploadImage":
 		err = fmt.Errorf("the 'uploadImage' tool is only available in live mode")
 	case "mouseClick":
-		// The genai library unmarshals JSON numbers into float64 by default.
-		xFloat, xOK := call.Args["x"].(float64)
-		yFloat, yOK := call.Args["y"].(float64)
-		clicksFloat, _ := call.Args["clicks"].(float64)
-		if !xOK || !yOK {
-			err = fmt.Errorf("arguments 'x' and 'y' are required and must be numbers")
-		} else {
-			clicks := int(clicksFloat)
-			if clicks < 1 {
-				clicks = 1
-			}
-			result, err = mouseClick(xFloat, yFloat, clicks, verifyed)
-		}
+		err = fmt.Errorf("the 'mouseClick' tool is only available in live mode")
 	default:
 		err = fmt.Errorf("unknown tool call: %s", call.Name)
 	}
@@ -413,25 +400,6 @@ func appendToFile(path, content string) (any, error) {
 	return map[string]any{"status": fmt.Sprintf("content appended to file '%s' successfully", path)}, nil
 }
 
-func mouseClick(x, y float64, clicks int, verifyed bool) (any, error) {
-	if !verifyed {
-		return map[string]any{"error": fmt.Sprintln("You must get positive approve from 'verifyObjectDetection' tool before apply mouse actions.")}, nil
-	}
-	// The coordinates are now absolute pixel coordinates, no normalization needed.
-	absX := int(x)
-	absY := int(y)
-
-	log.Printf("Performing %d mouse click(s) at absolute pixel coordinates (%d, %d)", clicks, absX, absY)
-
-	// Execute the desktop automation.
-	wayland.MoveMouseToPosition(absX, absY)
-	// A small delay can help ensure the OS has processed the move event before the click event arrives.
-	time.Sleep(100 * time.Millisecond)
-	wayland.MouseLeftClick(clicks)
-
-	return map[string]any{"status": fmt.Sprintf("%d mouse click(s) performed at (%d, %d)", clicks, absX, absY)}, nil
-}
-
 func getFileSystemTool() *genai.Tool {
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{
@@ -537,10 +505,10 @@ func getFileSystemTool() *genai.Tool {
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
-						"xmin": {Type: genai.TypeInteger, Description: "The normalized x-coordinate of the left edge of the box (0-1000)."},
-						"ymin": {Type: genai.TypeInteger, Description: "The normalized y-coordinate of the top edge of the box (0-1000)."},
-						"xmax": {Type: genai.TypeInteger, Description: "The normalized x-coordinate of the right edge of the box (0-1000)."},
-						"ymax": {Type: genai.TypeInteger, Description: "The normalized y-coordinate of the bottom edge of the box (0-1000)."},
+						"xmin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the left edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+						"ymin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the top edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+						"xmax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the right edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+						"ymax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the bottom edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
 					},
 					Required: []string{"xmin", "ymin", "xmax", "ymax"},
 				},
@@ -560,12 +528,12 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "mouseClick",
-				Description: "Moves the mouse to a specified absolute pixel coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object. Can perform multiple clicks for actions like double-clicking.",
+				Description: fmt.Sprintf("Moves the mouse to a specified normalized coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object, normalized to a %dx%d grid. Can perform multiple clicks for actions like double-clicking.", ObjectDetectionNormalizationGrid, ObjectDetectionNormalizationGrid),
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
-						"x":      {Type: genai.TypeInteger, Description: "The absolute x-coordinate in pixels of the click target."},
-						"y":      {Type: genai.TypeInteger, Description: "The absolute y-coordinate in pixels of the click target."},
+						"x":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the click target (0-%d).", ObjectDetectionNormalizationGrid)},
+						"y":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the click target (0-%d).", ObjectDetectionNormalizationGrid)},
 						"clicks": {Type: genai.TypeInteger, Description: "The number of times to click. Defaults to 1. Use 2 for a double-click."},
 					},
 					Required: []string{"x", "y"},

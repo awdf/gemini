@@ -709,7 +709,7 @@ func (a *AI) generateAndProcessContent(
 func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResponseParts []*genai.Part) {
 	for _, fc := range calls {
 		modelParts = append(modelParts, &genai.Part{FunctionCall: fc})
-		fr := executeSingleToolCall(fc, false)
+		fr := executeSingleToolCall(fc)
 		toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(fr.Name, fr.Response))
 	}
 	return modelParts, toolResponseParts

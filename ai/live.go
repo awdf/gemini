@@ -28,11 +28,17 @@ import (
 	"gemini/images"
 	"gemini/inout"
 	"gemini/vad"
+	"gemini/wayland"
+)
+
+const (
+	objectDetectionAgent = "objectDetection"
 )
 
 type LiveAI struct {
 	ctx              context.Context
 	client           *genai.Client
+	agents           map[string]Callable
 	formatter        *inout.Formatter
 	liveSink         *app.Sink
 	Element          *gst.Element
@@ -70,15 +76,48 @@ func NewLiveSink(
 		APIKey:  config.C.AI.APIKey,
 		Backend: genai.BackendGeminiAPI,
 	}))
+
+	// --- AppSink Initialization ---
 	sink := helpers.Check(app.NewAppSink())
 	helpers.Verify(sink.SetProperty("sync", false))
 	sink.SetDrop(false)    // Do not drop data; ensure all samples are received for recording.
 	sink.SetMaxBuffers(10) // Set a max buffer to prevent runaway memory usage and add stability.
 
+	agents := make(map[string]Callable)
+	// --- Agent Initialization ---
+	{
+		// Object Detection Agent
+		bounds := helpers.Check(images.DisplayBounds())
+		width := bounds.Dx()
+		height := bounds.Dy()
+		grid := ObjectDetectionNormalizationGrid
+		halfGrid := grid / 2
+		boundingBoxSystemInstructions := fmt.Sprintf(`You are an object detection specialist.
+The user has provided an image with dimensions %d x %d (width x height).
+Your task is to detect the 2d bounding boxes of the requested objects.
+The origin (0,0) is at the top-left corner of the image.
+You MUST return the bounding box coordinates normalized to a %dx%d grid.
+For example, for a 200x400 image, a point at (x=100, y=200) should be returned as (x=%d, y=%d).
+Return the response as a JSON array with labels. Never return masks or code fencing. Limit to 25 objects.
+If an object is present multiple times, name them according to their unique characteristic (colors, size, position, unique characteristics, etc..).`,
+			width, height, grid, grid, halfGrid, halfGrid)
+		odAgentConfig := AgentConfig{
+			Name:              objectDetectionAgent,
+			Model:             config.C.AI.ModelObjectDetection,
+			SystemInstruction: boundingBoxSystemInstructions,
+			Temperature:       helpers.Ptr(float32(0.0)),
+			EnableTools:       false,
+			ResponseSchema:    GetObjectDetectionSchema(),
+		}
+		agents[objectDetectionAgent] = NewAgent(ctx, client, odAgentConfig)
+
+	}
+
 	return &LiveAI{
 		wg:               wg,
 		ctx:              ctx,
 		client:           client,
+		agents:           agents,
 		formatter:        inout.NewFormatter(),
 		bus:              bus,
 		controlChan:      controlChan,
@@ -779,13 +818,91 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 		case "verifyObjectDetection":
 			response = l.handleVerifyObjectDetectionTool(call)
 			l.verification = true
-		default:
-			response = executeSingleToolCall(call, l.verification)
+		case "mouseClick":
+			response = l.handleMouseClickTool(call)
 			l.verification = false
+		default:
+			response = executeSingleToolCall(call)
 		}
 		responses = append(responses, response)
 	}
 	return responses
+}
+
+func (l *LiveAI) handleMouseClickTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	if !l.verification {
+		err = fmt.Errorf("you must get positive approve from 'verifyObjectDetection' tool before apply mouse actions")
+	} else {
+		// 1. Parse arguments
+		xNorm, xOK := call.Args["x"].(float64)
+		yNorm, yOK := call.Args["y"].(float64)
+		clicksFloat, _ := call.Args["clicks"].(float64)
+
+		if !xOK || !yOK {
+			err = fmt.Errorf("arguments 'x' and 'y' are required and must be numbers")
+		} else {
+			// 2. Get image dimensions from session buffer
+			l.mu.RLock()
+			imageBuf := l.imageBuffer
+			l.mu.RUnlock()
+
+			if imageBuf == nil || imageBuf.Len() == 0 {
+				err = fmt.Errorf("no image found in the current session context to calculate click coordinates")
+			} else {
+				// 3. Decode image config to get bounds efficiently
+				imgConfig, _, decodeErr := image.DecodeConfig(bytes.NewReader(imageBuf.Bytes()))
+				if decodeErr != nil {
+					err = fmt.Errorf("failed to decode screenshot config for click: %w", decodeErr)
+				} else {
+					// 4. Denormalize coordinates
+					imgWidth := float64(imgConfig.Width)
+					imgHeight := float64(imgConfig.Height)
+
+					absX := int((xNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
+					absY := int((yNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
+
+					clicks := int(clicksFloat)
+					if clicks < 1 {
+						clicks = 1
+					}
+
+					log.Printf("Performing %d mouse click(s) at absolute pixel coordinates (%d, %d)", clicks, absX, absY)
+
+					// 5. Execute the desktop automation.
+					wayland.MoveMouseToPosition(absX, absY)
+					time.Sleep(100 * time.Millisecond)
+					wayland.MouseLeftClick(clicks)
+
+					result = map[string]any{"status": fmt.Sprintf("%d mouse click(s) performed at (%d, %d)", clicks, absX, absY)}
+				}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
 }
 
 func (l *LiveAI) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *genai.FunctionResponse {
@@ -821,10 +938,10 @@ func (l *LiveAI) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *gena
 				imgWidth := float64(bounds.Dx())
 				imgHeight := float64(bounds.Dy())
 
-				xmin := int((xminNorm / 1000.0) * imgWidth)
-				ymin := int((yminNorm / 1000.0) * imgHeight)
-				xmax := int((xmaxNorm / 1000.0) * imgWidth)
-				ymax := int((ymaxNorm / 1000.0) * imgHeight)
+				xmin := int((xminNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
+				ymin := int((yminNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
+				xmax := int((xmaxNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
+				ymax := int((ymaxNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
 
 				// 5. Draw the rectangle
 				rect := image.Rect(xmin, ymin, xmax, ymax)
@@ -916,34 +1033,21 @@ func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.Functi
 			if boundsErr != nil {
 				err = fmt.Errorf("failed to get display bounds for object detection context: %w", boundsErr)
 			} else {
-				width := bounds.Dx()
-				height := bounds.Dy()
-				boundingBoxSystemInstructions := `You are an object detection specialist.
-The user has provided an image with dimensions %d x %d (width x height).
-Your task is to detect the 2d bounding boxes of the requested objects.
-The origin (0,0) is at the top-left corner of the image.
-You MUST return the bounding box coordinates normalized to a 1000x1000 grid.
-For example, for a 200x400 image, a point at (x=100, y=200) should be returned as (x=500, y=500).
-Return the response as a JSON array with labels. Never return masks or code fencing. Limit to 25 objects.
-If an object is present multiple times, name them according to their unique characteristic (colors, size, position, unique characteristics, etc..).`
-				log.Printf("Object detection image size %d x %d (width x height).", width, height)
+				log.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
 				// Create the agent with a specific system prompt for object detection.
-				agentConfig := AgentConfig{
-					Model:             config.C.AI.ModelObjectDetection,
-					SystemInstruction: fmt.Sprintf(boundingBoxSystemInstructions, width, height),
-					EnableTools:       false,
-					ResponseSchema:    GetObjectDetectionSchema(),
-				}
-				agent := NewAgent(l.ctx, agentConfig)
-
-				// Process the image with the agent, using the query from the tool call as the prompt.
-				// The image buffer is PNG encoded.
-				detectionResult, processErr := agent.Process(query, imageBuf.Bytes(), "image/png")
-				if processErr != nil {
-					err = fmt.Errorf("object detection failed: %w", processErr)
+				agent, ok := l.agents[objectDetectionAgent]
+				if !ok {
+					err = fmt.Errorf("object detection agent not initialized")
 				} else {
-					log.Printf("Object detection successful for query: '%s'", query)
-					result = map[string]any{"detected_objects": detectionResult}
+					// Process the image with the agent, using the query from the tool call as the prompt.
+					// The image buffer is PNG encoded.
+					detectionResult, processErr := agent.Process(query, imageBuf.Bytes(), "image/png")
+					if processErr != nil {
+						err = fmt.Errorf("object detection failed: %w", processErr)
+					} else {
+						log.Printf("Object detection successful for query: '%s'", query)
+						result = map[string]any{"detected_objects": detectionResult}
+					}
 				}
 			}
 		}

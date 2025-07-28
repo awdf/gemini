@@ -8,44 +8,55 @@ import (
 
 	"google.golang.org/genai"
 
-	"gemini/config"
 	"gemini/helpers"
 )
+
+// ObjectDetectionNormalizationGrid defines the grid size for normalized bounding box coordinates.
+const ObjectDetectionNormalizationGrid = 1000
+
+type Callable interface {
+	Process(prompt string, data []byte, mimeType string) (string, error)
+}
 
 // Agent is a specialized, self-contained AI processor for specific tasks.
 // It operates without the main application's event bus or pipeline, making it
 // suitable for on-demand, synchronous processing like in tool calls.
 type Agent struct {
+	name              string
 	ctx               context.Context
 	client            *genai.Client
 	modelName         string
 	systemInstruction *genai.Content
 	responseSchema    *genai.Schema
+	temperature       *float32
 	tools             []*genai.Tool
 }
 
 // AgentConfig defines the configuration for an Agent.
 type AgentConfig struct {
-	Model             string
-	SystemInstruction string
-	EnableTools       bool
-	ResponseSchema    *genai.Schema
+	Name                  string
+	Model                 string
+	SystemInstruction     string
+	Temperature           *float32
+	EnableTools           bool
+	EnableGoogleSearch    bool
+	EnableURLContext      bool
+	EnableCodeExecution   bool
+	EnableFunctionCalling bool
+	ResponseSchema        *genai.Schema
 }
 
 // NewAgent creates a new AI agent with a specific configuration.
-func NewAgent(ctx context.Context, agentConfig AgentConfig) *Agent {
-	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  config.C.AI.APIKey, // Still using global API key for now
-		Backend: genai.BackendGeminiAPI,
-	}))
-
-	log.Printf("Creating new Agent with model: %s", agentConfig.Model)
+func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig) *Agent {
+	log.Printf("Creating new %s agent with model: %s", agentConfig.Name, agentConfig.Model)
 
 	agent := &Agent{
+		name:           agentConfig.Name,
 		ctx:            ctx,
 		client:         client,
 		modelName:      agentConfig.Model,
 		responseSchema: agentConfig.ResponseSchema,
+		temperature:    agentConfig.Temperature,
 	}
 
 	if agentConfig.SystemInstruction != "" {
@@ -53,10 +64,37 @@ func NewAgent(ctx context.Context, agentConfig AgentConfig) *Agent {
 	}
 
 	if agentConfig.EnableTools {
-		// This is a simplified tool setup for an agent.
-		if config.C.AI.EnableFunctionCalling {
-			log.Println("Agent created with file system tools.")
-			agent.tools = append(agent.tools, getFileSystemTool())
+		log.Printf("[%s Agent] Tool use is enabled for this request.", agentConfig.Name)
+		var tools []*genai.Tool
+
+		// Standard tools can be combined into a single tool definition.
+		if agentConfig.EnableGoogleSearch || agentConfig.EnableURLContext {
+			standardTool := &genai.Tool{}
+			if agentConfig.EnableGoogleSearch {
+				log.Printf("GoogleSearch tool enabled for %s.", agentConfig.Name)
+				standardTool.GoogleSearch = &genai.GoogleSearch{}
+			}
+			if agentConfig.EnableURLContext {
+				log.Printf("URLContext tool enabled for %s.", agentConfig.Name)
+				standardTool.URLContext = &genai.URLContext{}
+			}
+			tools = append(tools, standardTool)
+		}
+
+		if agentConfig.EnableCodeExecution {
+			codeExecutionTool := &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}}
+			tools = append(tools, codeExecutionTool)
+			log.Printf("Code execution tool enabled for %s.", agentConfig.Name)
+		}
+
+		// Function calling tools, don't works togather with sandart tools.
+		if agentConfig.EnableFunctionCalling {
+			tools = append(tools, getFileSystemTool()) // Add file system tools
+			log.Printf("Function calling tool enabled for %s.", agentConfig.Name)
+		}
+
+		if len(tools) > 0 {
+			agent.tools = tools
 		}
 	}
 
@@ -65,17 +103,17 @@ func NewAgent(ctx context.Context, agentConfig AgentConfig) *Agent {
 
 // Process sends a prompt (with an optional image) to the agent's model and returns the text response.
 // It's a synchronous, one-shot call.
-func (a *Agent) Process(prompt string, imageData []byte, mimeType string) (string, error) {
-	log.Printf("Agent processing prompt: '%s'", prompt)
-	if len(imageData) > 0 {
-		log.Printf("Agent processing with image data (MIME: %s, Size: %d bytes)", mimeType, len(imageData))
+func (a *Agent) Process(prompt string, data []byte, mimeType string) (string, error) {
+	log.Printf("[%s Agent] Processing prompt: '%s'", a.name, prompt)
+	if len(data) > 0 {
+		log.Printf("[%s Agent] Processing with data (MIME: %s, Size: %d bytes)", a.name, mimeType, len(data))
 	}
 
 	startTime := time.Now()
 
 	parts := []*genai.Part{genai.NewPartFromText(prompt)}
-	if len(imageData) > 0 && mimeType != "" {
-		parts = append(parts, genai.NewPartFromBytes(imageData, mimeType))
+	if len(data) > 0 && mimeType != "" {
+		parts = append(parts, genai.NewPartFromBytes(data, mimeType))
 	}
 
 	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
@@ -83,8 +121,12 @@ func (a *Agent) Process(prompt string, imageData []byte, mimeType string) (strin
 
 	genConfig := &genai.GenerateContentConfig{
 		ThinkingConfig:   &genai.ThinkingConfig{ThinkingBudget: helpers.Ptr(int32(0))},
-		Temperature:      helpers.Ptr(float32(0.5)),
 		ResponseMIMEType: "application/json",
+	}
+	if a.temperature != nil {
+		genConfig.Temperature = a.temperature
+	} else {
+		genConfig.Temperature = helpers.Ptr(float32(0.5)) // Default temperature if not specified
 	}
 	if a.systemInstruction != nil {
 		genConfig.SystemInstruction = a.systemInstruction
@@ -98,12 +140,12 @@ func (a *Agent) Process(prompt string, imageData []byte, mimeType string) (strin
 
 	resp, err := a.client.Models.GenerateContent(a.ctx, a.modelName, conversation, genConfig)
 	if err != nil {
-		log.Printf("ERROR: Agent content generation failed: %v", err)
-		return "", fmt.Errorf("agent content generation failed: %w", err)
+		log.Printf("ERROR: [%s Agent] Content generation failed: %v", a.name, err)
+		return "", fmt.Errorf("[%s Agent] content generation failed: %w", a.name, err)
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("Agent processing successful in %v. Response length: %d", duration, len(resp.Text()))
+	log.Printf("[%s Agent] Processing successful in %v. Response length: %d", a.name, duration, len(resp.Text()))
 	return resp.Text(), nil
 }
 
@@ -126,12 +168,12 @@ func GetObjectDetectionSchema() *genai.Schema {
 						},
 						"box_2d": {
 							Type:        genai.TypeObject,
-							Description: "A map containing the bounding box coordinates normalized to a 1000x1000 grid, where (0,0) is the top-left corner.",
+							Description: fmt.Sprintf("A map containing the bounding box coordinates normalized to a %dx%d grid, where (0,0) is the top-left corner.", ObjectDetectionNormalizationGrid, ObjectDetectionNormalizationGrid),
 							Properties: map[string]*genai.Schema{
-								"xmin": {Type: genai.TypeInteger, Description: "The normalized x-coordinate of the left edge of the box (0-1000)."},
-								"ymin": {Type: genai.TypeInteger, Description: "The normalized y-coordinate of the top edge of the box (0-1000)."},
-								"xmax": {Type: genai.TypeInteger, Description: "The normalized x-coordinate of the right edge of the box (0-1000)."},
-								"ymax": {Type: genai.TypeInteger, Description: "The normalized y-coordinate of the bottom edge of the box (0-1000)."},
+								"xmin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the left edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+								"ymin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the top edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+								"xmax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the right edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+								"ymax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the bottom edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
 							},
 							Required: []string{"ymin", "xmin", "xmax", "ymax"},
 						},

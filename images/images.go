@@ -46,12 +46,6 @@ func DisplayBounds() (*image.Rectangle, error) {
 		return nil, fmt.Errorf("invalid display bounds: %+v", bounds)
 	}
 
-	// TODO: remove after object detection live testing
-	bounds = image.Rectangle{
-		Min: image.Point{X: 0, Y: 0},
-		Max: image.Point{X: 999, Y: 999},
-	}
-
 	return &bounds, nil
 }
 
