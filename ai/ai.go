@@ -102,7 +102,7 @@ func NewAI(
 		formatter:           inout.NewFormatter(),
 		bus:                 bus,
 		initialContextAdded: false,
-		mode:                inout.MixMode,
+		mode:                config.C.Mode,
 	}
 
 	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
@@ -612,7 +612,7 @@ func (a *AI) generateAndProcessContent(
 
 	// Start the waiting animation in a separate goroutine.
 	done := make(chan struct{})
-	go inout.DisplayWaiting("Thinking...", done)
+	// go inout.DisplayWaiting("Thinking...", done)
 
 	defer close(done) // Signal the waiting display to stop.
 
@@ -709,7 +709,7 @@ func (a *AI) generateAndProcessContent(
 func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResponseParts []*genai.Part) {
 	for _, fc := range calls {
 		modelParts = append(modelParts, &genai.Part{FunctionCall: fc})
-		fr := executeSingleToolCall(fc)
+		fr := executeSingleToolCall(fc, false)
 		toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(fr.Name, fr.Response))
 	}
 	return modelParts, toolResponseParts

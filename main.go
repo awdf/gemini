@@ -24,6 +24,7 @@ import (
 	"gemini/pipeline"
 	"gemini/recorder"
 	"gemini/vad"
+	"gemini/wayland"
 )
 
 // CliFlags holds the parsed command-line flags for the application.
@@ -150,7 +151,15 @@ func main() {
 		config.C.AI.Transcript = true
 	}
 	gst.Init(nil)
+	wayland.DisableJoystick()
+	wayland.Init()
+	wayland.SetOffset(10)  // Default
+	wayland.SetAccuracy(2) // Default
+	defer wayland.Done()
 
+	// TODO: Remove after object detection live testing
+	// wayland.MoveMouseToPosition(72, 303)
+	// wayland.MouseLeftClick(2)
 	NewApp(flags).run()
 }
 

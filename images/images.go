@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
 	"image/png"
 	"os"
 	"sync"
@@ -32,8 +35,7 @@ func (sb *ScreenshotBuffer) Release() {
 	sb.pool.Put(sb.Buffer)
 }
 
-// TakeScreenshot captures a screenshot and returns it as a ScreenshotBuffer.
-func TakeScreenshot() (*ScreenshotBuffer, error) {
+func DisplayBounds() (*image.Rectangle, error) {
 	n := screenshot.NumActiveDisplays()
 	if n <= 0 {
 		return nil, errors.New("no active monitors found")
@@ -44,7 +46,54 @@ func TakeScreenshot() (*ScreenshotBuffer, error) {
 		return nil, fmt.Errorf("invalid display bounds: %+v", bounds)
 	}
 
-	img, err := screenshot.CaptureRect(bounds)
+	// TODO: remove after object detection live testing
+	bounds = image.Rectangle{
+		Min: image.Point{X: 0, Y: 0},
+		Max: image.Point{X: 999, Y: 999},
+	}
+
+	return &bounds, nil
+}
+
+// DrawRectangle draws a rectangle with a specified thickness on the given image.
+func DrawRectangle(img image.Image, rect image.Rectangle, thickness int, col color.Color) image.Image {
+	// Create a new writable image of the same size and type.
+	b := img.Bounds()
+	newImg := image.NewRGBA(b)
+	draw.Draw(newImg, b, img, image.Point{}, draw.Src)
+
+	// Draw the rectangle by drawing 'thickness' number of rectangles, each one pixel smaller.
+	for i := 0; i < thickness; i++ {
+		// Create a rectangle for the current thickness layer.
+		// Ensure the rectangle doesn't shrink to be invalid.
+		r := image.Rect(rect.Min.X+i, rect.Min.Y+i, rect.Max.X-i, rect.Max.Y-i)
+		if r.Empty() {
+			break
+		}
+
+		// Draw horizontal lines
+		for x := r.Min.X; x < r.Max.X; x++ {
+			newImg.Set(x, r.Min.Y, col)
+			newImg.Set(x, r.Max.Y-1, col)
+		}
+		// Draw vertical lines
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			newImg.Set(r.Min.X, y, col)
+			newImg.Set(r.Max.X-1, y, col)
+		}
+	}
+
+	return newImg
+}
+
+// TakeScreenshot captures a screenshot and returns it as a ScreenshotBuffer.
+func TakeScreenshot() (*ScreenshotBuffer, error) {
+	bounds, err := DisplayBounds()
+	if err != nil {
+		return nil, err
+	}
+
+	img, err := screenshot.CaptureRect(*bounds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to capture screenshot: %w", err)
 	}

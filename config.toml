@@ -4,6 +4,7 @@ LogFile = "gemini.log"
 # Enable or disable debug logging for all modules.
 Debug = false
 Trace = false
+Mode = "mix"
 
 [ai]
 # The API Key for the AI service. Can be set directly or via an environment variable.
@@ -12,6 +13,7 @@ APIKey = "${GOOGLE_API_KEY}"
 # Post AI models, default
 Model = "gemini-2.5-flash"
 ModelTTS = "gemini-2.5-flash-preview-tts"
+ModelObjectDetection = "gemini-2.5-flash-preview-05-20"
 # Live AI models, CLI option -live
 ModelLive = "gemini-live-2.5-flash-preview"
 ModelLiveTTS = "gemini-2.5-flash-preview-native-audio-dialog"

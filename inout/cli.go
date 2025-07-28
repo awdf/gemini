@@ -78,7 +78,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		muted:      true,
 		aiEnabled:  aiEnabled,
 		warmUpDone: false,
-		mode:       MixMode,
+		mode:       config.C.Mode,
 	}
 }
 

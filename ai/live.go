@@ -1,8 +1,12 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log"
 	"mime"
@@ -44,6 +48,7 @@ type LiveAI struct {
 	resumptionHandle string
 	warmUpDone       bool
 	Online           bool
+	verification     bool
 	// mu protects the internal state of the LiveAI struct (e.g., session, Online, resumptionHandle).
 	// It allows multiple concurrent readers but only one writer, which is ideal for state
 	// that is read often but changed infrequently (like during session setup/teardown).
@@ -81,7 +86,7 @@ func NewLiveSink(
 		liveSink:         sink,
 		Element:          sink.Element,
 		isStreaming:      false,
-		mode:             inout.MixMode,
+		mode:             config.C.Mode,
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
 		resumptionHandle: "",
 		warmUpDone:       false,
@@ -321,19 +326,20 @@ func (l *LiveAI) Run() {
 
 				if l.mode == inout.ImageMode {
 					l.mu.Lock()
+					// If an old image buffer exists from a previous turn, release it.
 					if l.imageBuffer != nil {
-						log.Println("An image is already being processed, skipping new screenshot for this turn.")
-						l.mu.Unlock()
+						log.Println("Releasing previous screenshot buffer for new turn.")
+						l.imageBuffer.Release()
+						l.imageBuffer = nil
+					}
+					log.Println("Taking live screenshot for AI response...")
+					var err error
+					l.imageBuffer, err = images.TakeScreenshot()
+					l.mu.Unlock() // Unlock before logging and sending to avoid holding lock during I/O
+					if err != nil {
+						log.Printf("failed to take screenshot: %v", err)
 					} else {
-						log.Println("Taking live screenshot for AI response...")
-						var err error
-						l.imageBuffer, err = images.TakeScreenshot()
-						l.mu.Unlock() // Unlock before logging and sending to avoid holding lock during I/O
-						if err != nil {
-							log.Printf("failed to take screenshot: %v", err)
-						} else {
-							l.sendLiveImage()
-						}
+						l.sendLiveImage()
 					}
 				}
 			case strings.HasPrefix(cmd, vad.MarkerStop):
@@ -469,14 +475,6 @@ func (l *LiveAI) handleResponses() {
 					streamPlayer = nil
 				}
 				l.formatter.Reset()
-				// Release the image buffer now that the turn is fully complete.
-				l.mu.Lock()
-				if l.imageBuffer != nil {
-					log.Println("Releasing screenshot buffer after completed turn.")
-					l.imageBuffer.Release()
-					l.imageBuffer = nil
-				}
-				l.mu.Unlock()
 				(*l.bus).Publish("main:topic", "draw:ai.handleResponses")
 			}
 		case msg.ToolCall != nil:
@@ -608,40 +606,37 @@ func (l *LiveAI) sendInitialFiles() {
 
 	log.Printf("Found %d files to send as initial context for live session.", len(filesToInclude))
 
+	var parts []*genai.Part
+
 	// Send the introductory prompt first.
 	if config.C.AI.CacheSystemPrompt != "" {
-		if err := l.sendTextPrompt(config.C.AI.CacheSystemPrompt); err != nil {
-			log.Printf("ERROR: failed to send initial context prompt: %v", err)
-			return // If this fails, don't proceed.
-		}
+		parts = append(parts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
 	}
 
-	// Send each file as a separate message.
+	// Send each file as a separate turn.
 	for _, file := range filesToInclude {
 		localPath := filepath.Join(cacheDir, file.Name())
-		data, err := os.ReadFile(localPath)
+		document, err := l.client.Files.UploadFromPath(l.ctx, localPath, &genai.UploadFileConfig{
+			MIMEType: "text/plain",
+		})
 		if err != nil {
 			log.Printf("ERROR: could not read file %s for live session context: %v", localPath, err)
 			continue
 		}
-		// Add a header to each file part to give the model more structure.
-		fileContentWithHeader := fmt.Sprintf("\n\n--- Context part start ---\n\n%s\n\n--- End of context part ---", string(data))
-
-		// Re-using sendTextPrompt to send the file content.
-		if err := l.sendTextPrompt(fileContentWithHeader); err != nil {
-			log.Printf("ERROR: failed to send initial file %s: %v", file.Name(), err)
-			// If one file fails, we should probably stop to avoid confusing the model with partial context.
-			return
-		}
-		log.Printf("Cache file sent %s", localPath)
+		log.Printf("Cache file %s succefully uploaded", localPath)
+		part := genai.NewPartFromURI(document.URI, document.MIMEType)
+		parts = append(parts, part)
 	}
+	parts = append(parts, genai.NewPartFromText(CheckQuestion))
 
-	// Finally, send the check question to prompt the model to acknowledge the files.
-	if err := l.sendTextPrompt(CheckQuestion); err != nil {
-		log.Printf("ERROR: failed to send final check question: %v", err)
-	} else {
-		log.Println("Successfully sent all initial files and final prompt.")
+	turn := genai.NewContentFromParts(parts, genai.RoleUser)
+	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+
+	l.writeMu.Lock()
+	if err := l.session.SendClientContent(content); err != nil {
+		log.Printf("failed to send client content: %v", err)
 	}
+	l.writeMu.Unlock()
 }
 
 func (l *LiveAI) sendLiveImage() {
@@ -672,21 +667,23 @@ func (l *LiveAI) sendLiveImage() {
 // sendTextPrompt sends a text prompt (and potentially a screenshot) to the live session.
 // The response is handled by the separate handleResponses goroutine.
 func (l *LiveAI) sendTextPrompt(prompt string) error {
-	var imageBuffer *images.ScreenshotBuffer
-	var err error
+	parts := []*genai.Part{genai.NewPartFromText(prompt)}
+
 	if l.mode == inout.ImageMode {
+		l.mu.Lock()
+		// Release any old buffer and take a new screenshot for this turn.
+		if l.imageBuffer != nil {
+			log.Println("Releasing previous screenshot buffer for new text prompt turn.")
+			l.imageBuffer.Release()
+		}
 		log.Println("Taking screenshot for AI response...")
-		imageBuffer, err = images.TakeScreenshot()
+		var err error
+		l.imageBuffer, err = images.TakeScreenshot()
+		l.mu.Unlock()
 		if err != nil {
 			return fmt.Errorf("failed to take screenshot: %w", err)
 		}
-		defer imageBuffer.Release()
-	}
-
-	parts := []*genai.Part{genai.NewPartFromText(prompt)}
-
-	if imageBuffer != nil {
-		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
+		parts = append(parts, genai.NewPartFromBytes(l.imageBuffer.Bytes(), "image/png"))
 	}
 
 	turn := genai.NewContentFromParts(parts, genai.RoleUser)
@@ -706,7 +703,6 @@ func (l *LiveAI) sendTextPrompt(prompt string) error {
 
 	l.writeMu.Lock()
 	if err := session.SendClientContent(content); err != nil {
-		l.writeMu.Unlock()
 		return fmt.Errorf("failed to send client content: %w", err)
 	}
 	l.writeMu.Unlock()
@@ -769,7 +765,6 @@ func (l *LiveAI) pullAndSendSamples() {
 // It executes them sequentially, in the order they are received, and returns a slice of their responses.
 func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.FunctionResponse {
 	var responses []*genai.FunctionResponse
-
 	// Execute tool calls sequentially, in the order they are received.
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
@@ -780,17 +775,123 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 			response = l.handleUploadImageTool(call)
 		case "detectObjects":
 			response = l.handleDetectObjectsTool(call)
+			l.verification = false
+		case "verifyObjectDetection":
+			response = l.handleVerifyObjectDetectionTool(call)
+			l.verification = true
 		default:
-			response = executeSingleToolCall(call)
+			response = executeSingleToolCall(call, l.verification)
+			l.verification = false
 		}
 		responses = append(responses, response)
 	}
 	return responses
 }
 
+func (l *LiveAI) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	// 1. Parse arguments from the tool call
+	xminNorm, xminOK := call.Args["xmin"].(float64)
+	yminNorm, yminOK := call.Args["ymin"].(float64)
+	xmaxNorm, xmaxOK := call.Args["xmax"].(float64)
+	ymaxNorm, ymaxOK := call.Args["ymax"].(float64)
+
+	if !xminOK || !yminOK || !xmaxOK || !ymaxOK {
+		err = fmt.Errorf("invalid or missing normalized bounding box arguments (xmin, ymin, xmax, ymax)")
+	} else {
+		// 2. Get the original screenshot from the session buffer
+		l.mu.RLock()
+		imageBuf := l.imageBuffer
+		l.mu.RUnlock()
+
+		if imageBuf == nil || imageBuf.Len() == 0 {
+			err = fmt.Errorf("no image found in the current session context to verify")
+		} else {
+			// 3. Decode the image
+			originalImg, decodeErr := png.Decode(bytes.NewReader(imageBuf.Bytes()))
+			if decodeErr != nil {
+				err = fmt.Errorf("failed to decode screenshot for verification: %w", decodeErr)
+			} else {
+				// 4. Get image dimensions and denormalize coordinates
+				bounds := originalImg.Bounds()
+				imgWidth := float64(bounds.Dx())
+				imgHeight := float64(bounds.Dy())
+
+				xmin := int((xminNorm / 1000.0) * imgWidth)
+				ymin := int((yminNorm / 1000.0) * imgHeight)
+				xmax := int((xmaxNorm / 1000.0) * imgWidth)
+				ymax := int((ymaxNorm / 1000.0) * imgHeight)
+
+				// 5. Draw the rectangle
+				rect := image.Rect(xmin, ymin, xmax, ymax)
+				imgWithBox := images.DrawRectangle(originalImg, rect, 3, color.RGBA{R: 255, A: 255}) // Red box, 3px thick
+
+				// 6. Encode the new image back to a PNG buffer
+				newImageBuf := new(bytes.Buffer)
+				if encodeErr := png.Encode(newImageBuf, imgWithBox); encodeErr != nil {
+					err = fmt.Errorf("failed to encode verification image: %w", encodeErr)
+				} else {
+					// TODO: remove after object detection live testing
+					helpers.Verify(images.SaveImage("Detect.png", newImageBuf.Bytes()))
+					// 7. Send the new image and a verification prompt to the session
+					parts := []*genai.Part{
+						genai.NewPartFromText("Tool have drawn the red box according to provided coordinates. Is the user requested object to detect inside the red box correctly identified? If not, try resolve this issue without user confirmation"),
+						genai.NewPartFromBytes(newImageBuf.Bytes(), "image/png"),
+					}
+					turn := genai.NewContentFromParts(parts, genai.RoleUser)
+					content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+
+					l.mu.RLock()
+					session := l.session
+					l.mu.RUnlock()
+
+					if session == nil {
+						err = fmt.Errorf("live session is not active, cannot send verification image")
+					} else {
+						l.writeMu.Lock()
+						sendErr := session.SendClientContent(content)
+						l.writeMu.Unlock()
+						if sendErr != nil {
+							err = fmt.Errorf("failed to send verification image to session: %w", sendErr)
+						} else {
+							log.Println("Successfully sent verification image to live session.")
+							result = map[string]any{"status": "Verification image sent. Awaiting confirmation."}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
+}
+
 // handleDetectObjectsTool processes the 'detectObjects' tool call.
 // It uses a specialized Agent to analyze an image from the current session's
 // image buffer and return the findings.
+// Cookbook: https://github.com/google-gemini/cookbook/blob/d1eed253584683b1a435783cf5f319bb235aea97/quickstarts/Spatial_understanding.ipynb
 func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
 
@@ -810,23 +911,40 @@ func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.Functi
 		if imageBuf == nil || imageBuf.Len() == 0 {
 			err = fmt.Errorf("no image found in the current session context to detect objects from")
 		} else {
-			// Create the agent with a specific system prompt for object detection.
-			agentConfig := AgentConfig{
-				Model:             config.C.AI.Model,
-				SystemInstruction: "You are an object detection specialist. For all requested items in the image, provide their label and a bounding box. The bounding box coordinates in the 'box_2d' object should be normalized to 0-1000.",
-				EnableTools:       false,
-				ResponseSchema:    GetObjectDetectionSchema(),
-			}
-			agent := NewAgent(l.ctx, agentConfig)
-
-			// Process the image with the agent, using the query from the tool call as the prompt.
-			// The image buffer is PNG encoded.
-			detectionResult, processErr := agent.Process(query, imageBuf.Bytes(), "image/png")
-			if processErr != nil {
-				err = fmt.Errorf("object detection failed: %w", processErr)
+			// Get screen dimensions to provide context to the model.
+			bounds, boundsErr := images.DisplayBounds()
+			if boundsErr != nil {
+				err = fmt.Errorf("failed to get display bounds for object detection context: %w", boundsErr)
 			} else {
-				log.Printf("Object detection successful for query: '%s'", query)
-				result = map[string]any{"detected_objects": detectionResult}
+				width := bounds.Dx()
+				height := bounds.Dy()
+				boundingBoxSystemInstructions := `You are an object detection specialist.
+The user has provided an image with dimensions %d x %d (width x height).
+Your task is to detect the 2d bounding boxes of the requested objects.
+The origin (0,0) is at the top-left corner of the image.
+You MUST return the bounding box coordinates normalized to a 1000x1000 grid.
+For example, for a 200x400 image, a point at (x=100, y=200) should be returned as (x=500, y=500).
+Return the response as a JSON array with labels. Never return masks or code fencing. Limit to 25 objects.
+If an object is present multiple times, name them according to their unique characteristic (colors, size, position, unique characteristics, etc..).`
+				log.Printf("Object detection image size %d x %d (width x height).", width, height)
+				// Create the agent with a specific system prompt for object detection.
+				agentConfig := AgentConfig{
+					Model:             config.C.AI.ModelObjectDetection,
+					SystemInstruction: fmt.Sprintf(boundingBoxSystemInstructions, width, height),
+					EnableTools:       false,
+					ResponseSchema:    GetObjectDetectionSchema(),
+				}
+				agent := NewAgent(l.ctx, agentConfig)
+
+				// Process the image with the agent, using the query from the tool call as the prompt.
+				// The image buffer is PNG encoded.
+				detectionResult, processErr := agent.Process(query, imageBuf.Bytes(), "image/png")
+				if processErr != nil {
+					err = fmt.Errorf("object detection failed: %w", processErr)
+				} else {
+					log.Printf("Object detection successful for query: '%s'", query)
+					result = map[string]any{"detected_objects": detectionResult}
+				}
 			}
 		}
 	}

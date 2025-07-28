@@ -17,6 +17,7 @@ var C Config
 type Config struct {
 	Debug    bool
 	Trace    bool
+	Mode     string
 	LogFile  string
 	AI       AIConfig
 	VAD      VADConfig
@@ -28,6 +29,7 @@ type Config struct {
 // AIConfig holds settings related to the AI model.
 type AIConfig struct {
 	Model                    string
+	ModelObjectDetection     string `toml:"modelObjectDetection"`
 	ModelLive                string
 	ModelLiveTTS             string
 	TranscriptionPrompt      string
@@ -136,8 +138,10 @@ func createDefaultConfig(path string) {
 	// Populate with default values
 	defaultConfig.Debug = false
 	defaultConfig.Trace = false
+	defaultConfig.Mode = "mix"
 	defaultConfig.LogFile = "app.log"
 	defaultConfig.AI.Model = "gemini-2.5-flash"
+	defaultConfig.AI.ModelObjectDetection = "gemini-2.5-flash"
 	defaultConfig.AI.ModelTTS = "gemini-2.5-flash-preview-tts"
 	defaultConfig.AI.ModelLive = "gemini-live-2.5-flash-preview"
 	defaultConfig.AI.ModelLiveTTS = "gemini-2.5-flash-preview-native-audio-dialog"
@@ -158,7 +162,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.EnableFunctionCalling = true
 	defaultConfig.AI.EnableCodeExecution = true
 	defaultConfig.AI.CacheDir = "cache"
-	defaultConfig.AI.CacheSystemPrompt = "The following files are provided as context:"
+	defaultConfig.AI.CacheSystemPrompt = "The following data are provided as context, you must accept it silently:"
 	defaultConfig.AI.EnableCache = false
 	defaultConfig.AI.VoiceHistory = true
 	defaultConfig.AI.VoiceEnabled = false

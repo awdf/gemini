@@ -15,13 +15,14 @@ import (
 
 	"gemini/config"
 	"gemini/inout"
+	"gemini/wayland"
 )
 
 // --- File System Tool Implementations (Shared) ---
 
 // executeSingleToolCall dispatches a single tool call to the appropriate Go function
 // and returns a structured FunctionResponse. This function is shared between PostAI and LiveAI.
-func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
+func executeSingleToolCall(call *genai.FunctionCall, verifyed bool) *genai.FunctionResponse {
 	var result any
 	var err error
 
@@ -111,6 +112,20 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 		err = fmt.Errorf("the 'detectObjects' tool is only available in live mode")
 	case "uploadImage":
 		err = fmt.Errorf("the 'uploadImage' tool is only available in live mode")
+	case "mouseClick":
+		// The genai library unmarshals JSON numbers into float64 by default.
+		xFloat, xOK := call.Args["x"].(float64)
+		yFloat, yOK := call.Args["y"].(float64)
+		clicksFloat, _ := call.Args["clicks"].(float64)
+		if !xOK || !yOK {
+			err = fmt.Errorf("arguments 'x' and 'y' are required and must be numbers")
+		} else {
+			clicks := int(clicksFloat)
+			if clicks < 1 {
+				clicks = 1
+			}
+			result, err = mouseClick(xFloat, yFloat, clicks, verifyed)
+		}
 	default:
 		err = fmt.Errorf("unknown tool call: %s", call.Name)
 	}
@@ -398,6 +413,25 @@ func appendToFile(path, content string) (any, error) {
 	return map[string]any{"status": fmt.Sprintf("content appended to file '%s' successfully", path)}, nil
 }
 
+func mouseClick(x, y float64, clicks int, verifyed bool) (any, error) {
+	if !verifyed {
+		return map[string]any{"error": fmt.Sprintln("You must get positive approve from 'verifyObjectDetection' tool before apply mouse actions.")}, nil
+	}
+	// The coordinates are now absolute pixel coordinates, no normalization needed.
+	absX := int(x)
+	absY := int(y)
+
+	log.Printf("Performing %d mouse click(s) at absolute pixel coordinates (%d, %d)", clicks, absX, absY)
+
+	// Execute the desktop automation.
+	wayland.MoveMouseToPosition(absX, absY)
+	// A small delay can help ensure the OS has processed the move event before the click event arrives.
+	time.Sleep(100 * time.Millisecond)
+	wayland.MouseLeftClick(clicks)
+
+	return map[string]any{"status": fmt.Sprintf("%d mouse click(s) performed at (%d, %d)", clicks, absX, absY)}, nil
+}
+
 func getFileSystemTool() *genai.Tool {
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{
@@ -410,25 +444,25 @@ func getFileSystemTool() *genai.Tool {
 						"path": {Type: genai.TypeString, Description: "The directory path to list. Defaults to the workspace root if empty."},
 					},
 				},
-				Behavior: genai.BehaviorNonBlocking,
+				Behavior: genai.BehaviorBlocking,
 			},
 			{
 				Name:        "readFile",
 				Description: "Read the entire content of a file from the workspace.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to read."}}, Required: []string{"path"}},
-				Behavior:    genai.BehaviorNonBlocking,
+				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "createFile",
 				Description: "Create or overwrite a file in the workspace with specified content.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to create."}, "content": {Type: genai.TypeString, Description: "The content to write to the file."}}, Required: []string{"path", "content"}},
-				Behavior:    genai.BehaviorNonBlocking,
+				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "deleteFile",
 				Description: "Delete a file from the workspace.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to delete."}}, Required: []string{"path"}},
-				Behavior:    genai.BehaviorNonBlocking,
+				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "makeDirectory",
@@ -438,7 +472,7 @@ func getFileSystemTool() *genai.Tool {
 					Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path for the new directory."}},
 					Required:   []string{"path"},
 				},
-				Behavior: genai.BehaviorNonBlocking,
+				Behavior: genai.BehaviorBlocking,
 			},
 			{
 				Name:        "moveFile",
@@ -451,7 +485,7 @@ func getFileSystemTool() *genai.Tool {
 					},
 					Required: []string{"source_path", "destination_path"},
 				},
-				Behavior: genai.BehaviorNonBlocking,
+				Behavior: genai.BehaviorBlocking,
 			},
 			{
 				Name:        "copyFile",
@@ -464,13 +498,13 @@ func getFileSystemTool() *genai.Tool {
 					},
 					Required: []string{"source_path", "destination_path"},
 				},
-				Behavior: genai.BehaviorNonBlocking,
+				Behavior: genai.BehaviorBlocking,
 			},
 			{
 				Name:        "getFileInfo",
 				Description: "Get detailed information about a file or directory.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file or directory."}}, Required: []string{"path"}},
-				Behavior:    genai.BehaviorNonBlocking,
+				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "searchFiles",
@@ -483,23 +517,38 @@ func getFileSystemTool() *genai.Tool {
 					},
 					Required: []string{"pattern"},
 				},
-				Behavior: genai.BehaviorNonBlocking,
+				Behavior: genai.BehaviorBlocking,
 			},
 			{
 				Name:        "appendToFile",
 				Description: "Append content to the end of an existing file. If the file does not exist, it will be created.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to append to."}, "content": {Type: genai.TypeString, Description: "The content to append."}}, Required: []string{"path", "content"}},
-				Behavior:    genai.BehaviorNonBlocking,
+				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "uploadImage",
-				Description: "Upload an image file from the workspace to the session context. Use this tool when the user explicitly asks to analyze a specific file by its name. For analyzing a screenshot just taken, use the `detectObjects` tool directly.",
+				Description: "For analyzing a screenshot just taken, use the `detectObjects` tool directly. Upload an image file from the workspace to the session context. Use this tool when the user explicitly asks to analyze a specific file by its name.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the image file to upload."}}, Required: []string{"path"}},
-				Behavior:    genai.BehaviorNonBlocking,
+				Behavior:    genai.BehaviorBlocking,
+			},
+			{
+				Name:        "verifyObjectDetection",
+				Description: "After using 'detectObjects', use this helper tool to draw the returned bounding box on the image. The tool will upload image with red box to context. This helps model ensure the correct object is identified before clicking.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"xmin": {Type: genai.TypeInteger, Description: "The normalized x-coordinate of the left edge of the box (0-1000)."},
+						"ymin": {Type: genai.TypeInteger, Description: "The normalized y-coordinate of the top edge of the box (0-1000)."},
+						"xmax": {Type: genai.TypeInteger, Description: "The normalized x-coordinate of the right edge of the box (0-1000)."},
+						"ymax": {Type: genai.TypeInteger, Description: "The normalized y-coordinate of the bottom edge of the box (0-1000)."},
+					},
+					Required: []string{"xmin", "ymin", "xmax", "ymax"},
+				},
+				Behavior: genai.BehaviorBlocking,
 			},
 			{
 				Name:        "detectObjects",
-				Description: "Analyzes the image currently in the session context (e.g., from a recent screenshot) to detect specific objects based on a query. Do not use this tool with a file path; it operates on the image already provided in the turn. Returns a list of detected objects and their bounding boxes.",
+				Description: "Automaticaly upload image in the session context. Analyzes the image currently in the session context (e.g., from a recent screenshot) to detect specific objects based on a query. Returns a list of detected objects and their bounding boxes.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -507,7 +556,21 @@ func getFileSystemTool() *genai.Tool {
 					},
 					Required: []string{"query"},
 				},
-				Behavior: genai.BehaviorNonBlocking,
+				Behavior: genai.BehaviorBlocking,
+			},
+			{
+				Name:        "mouseClick",
+				Description: "Moves the mouse to a specified absolute pixel coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object. Can perform multiple clicks for actions like double-clicking.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"x":      {Type: genai.TypeInteger, Description: "The absolute x-coordinate in pixels of the click target."},
+						"y":      {Type: genai.TypeInteger, Description: "The absolute y-coordinate in pixels of the click target."},
+						"clicks": {Type: genai.TypeInteger, Description: "The number of times to click. Defaults to 1. Use 2 for a double-click."},
+					},
+					Required: []string{"x", "y"},
+				},
+				Behavior: genai.BehaviorBlocking,
 			},
 		},
 	}

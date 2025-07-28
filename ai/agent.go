@@ -82,6 +82,8 @@ func (a *Agent) Process(prompt string, imageData []byte, mimeType string) (strin
 	conversation := []*genai.Content{userContent}
 
 	genConfig := &genai.GenerateContentConfig{
+		ThinkingConfig:   &genai.ThinkingConfig{ThinkingBudget: helpers.Ptr(int32(0))},
+		Temperature:      helpers.Ptr(float32(0.5)),
 		ResponseMIMEType: "application/json",
 	}
 	if a.systemInstruction != nil {
@@ -112,7 +114,7 @@ func GetObjectDetectionSchema() *genai.Schema {
 	return &genai.Schema{
 		Type: genai.TypeObject,
 		Properties: map[string]*genai.Schema{
-			"predictions": {
+			"objects": {
 				Type:        genai.TypeArray,
 				Description: "A list of detected objects.",
 				Items: &genai.Schema{
@@ -124,20 +126,20 @@ func GetObjectDetectionSchema() *genai.Schema {
 						},
 						"box_2d": {
 							Type:        genai.TypeObject,
-							Description: "A map containing the bounding box coordinates.",
+							Description: "A map containing the bounding box coordinates normalized to a 1000x1000 grid, where (0,0) is the top-left corner.",
 							Properties: map[string]*genai.Schema{
-								"ymin": {Type: genai.TypeInteger, Description: "The minimum y-coordinate, normalized to 1000."},
-								"xmin": {Type: genai.TypeInteger, Description: "The minimum x-coordinate, normalized to 1000."},
-								"ymax": {Type: genai.TypeInteger, Description: "The maximum y-coordinate, normalized to 1000."},
-								"xmax": {Type: genai.TypeInteger, Description: "The maximum x-coordinate, normalized to 1000."},
+								"xmin": {Type: genai.TypeInteger, Description: "The normalized x-coordinate of the left edge of the box (0-1000)."},
+								"ymin": {Type: genai.TypeInteger, Description: "The normalized y-coordinate of the top edge of the box (0-1000)."},
+								"xmax": {Type: genai.TypeInteger, Description: "The normalized x-coordinate of the right edge of the box (0-1000)."},
+								"ymax": {Type: genai.TypeInteger, Description: "The normalized y-coordinate of the bottom edge of the box (0-1000)."},
 							},
-							Required: []string{"ymin", "xmin", "ymax", "xmax"},
+							Required: []string{"ymin", "xmin", "xmax", "ymax"},
 						},
 					},
 					Required: []string{"label", "box_2d"},
 				},
 			},
 		},
-		Required: []string{"predictions"},
+		Required: []string{"objects"},
 	}
 }
