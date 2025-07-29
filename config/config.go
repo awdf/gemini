@@ -212,6 +212,9 @@ func (a *AIConfig) GetSystemInstruction() string {
 		))
 	}
 
+	currentTime := time.Now().Format(time.RFC1123)
+	sb.WriteString(fmt.Sprintf("Current date and time is %s. ", currentTime))
+
 	if a.DirectivesPrompt != "" {
 		if sb.Len() > 0 {
 			sb.WriteString("\n\nDirectives:\n")

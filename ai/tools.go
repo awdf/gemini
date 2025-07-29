@@ -15,6 +15,7 @@ import (
 
 	"gemini/config"
 	"gemini/inout"
+	"gemini/wayland"
 )
 
 // --- File System Tool Implementations (Shared) ---
@@ -113,6 +114,13 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 		err = fmt.Errorf("the 'uploadImage' tool is only available in live mode")
 	case "mouseClick":
 		err = fmt.Errorf("the 'mouseClick' tool is only available in live mode")
+	case "typeText":
+		text, ok := call.Args["text"].(string)
+		if !ok || text == "" {
+			err = fmt.Errorf("argument 'text' is required and must be a non-empty string")
+		} else {
+			result, err = typeText(text)
+		}
 	default:
 		err = fmt.Errorf("unknown tool call: %s", call.Name)
 	}
@@ -400,6 +408,12 @@ func appendToFile(path, content string) (any, error) {
 	return map[string]any{"status": fmt.Sprintf("content appended to file '%s' successfully", path)}, nil
 }
 
+func typeText(text string) (any, error) {
+	log.Printf("Typing text: %s", text)
+	wayland.Type(text)
+	return map[string]any{"status": fmt.Sprintf("text '%s' typed successfully", text)}, nil
+}
+
 func getFileSystemTool() *genai.Tool {
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{
@@ -537,6 +551,18 @@ func getFileSystemTool() *genai.Tool {
 						"clicks": {Type: genai.TypeInteger, Description: "The number of times to click. Defaults to 1. Use 2 for a double-click."},
 					},
 					Required: []string{"x", "y"},
+				},
+				Behavior: genai.BehaviorBlocking,
+			},
+			{
+				Name:        "typeText",
+				Description: "Types the given string of text using the virtual keyboard. Useful for filling out forms or typing commands.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"text": {Type: genai.TypeString, Description: "The text to be typed."},
+					},
+					Required: []string{"text"},
 				},
 				Behavior: genai.BehaviorBlocking,
 			},
