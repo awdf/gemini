@@ -3,15 +3,21 @@ package wayland
 /*
 #cgo LDFLAGS: -L/home/awdf/Workspace/cpp/wl-mouse-automation/builddir/ -lwl_automation -lwayland-client
 #cgo CFLAGS: -I/home/awdf/Workspace/cpp/wl-mouse-automation/
+#include <stdlib.h>
 #include "wl_automation.h"
+
+// Create a wrapper for the 'type' function to avoid a cgo name collision
+// with the 'type' field in 'struct key'.
+static inline void proxy_type(const char *str) {
+	type(str);
+}
+
 */
 import "C"
 
 import (
 	"fmt"
 	"image"
-	"log"
-	"os"
 	"time"
 	"unsafe"
 )
@@ -20,6 +26,7 @@ import (
 const (
 	BTN_PRESSED  = 1
 	BTN_RELEASED = 0
+	BTN_REPEATED = 2
 )
 
 // // Event types
@@ -81,11 +88,11 @@ type JEvent struct {
 	Number uint8
 }
 
-func Init() {
+func Init() error {
 	if !C.init() {
-		log.Fatal("Failed to init wayland")
-		os.Exit(1)
+		return fmt.Errorf("failed to initialize C library")
 	}
+	return nil
 }
 
 func Done() {
@@ -137,10 +144,26 @@ func TouchPadRelease() {
 	C.touchpadRelease()
 }
 
-func ReadKey() int {
-	return int(C.kbd_read())
+// KeyEvent represents a keyboard event read from a device.
+type KeyEvent struct {
+	Type  int
+	Code  int
+	Value int
 }
 
+// ReadKey reads a single event from the physical keyboard. It is a blocking call
+// and will wait until a key event is available.
+func ReadKey() (*KeyEvent, error) {
+	var cKey C.struct_key
+	if C.kbdRead(&cKey) < 0 {
+		return nil, fmt.Errorf("failed to read key event")
+	}
+	return &KeyEvent{
+		Type:  int(cKey._type),
+		Code:  int(cKey.code),
+		Value: int(cKey.value),
+	}, nil
+}
 func DisableJoystick() {
 	C.disableJoystick()
 }
@@ -158,13 +181,38 @@ func ReadJEvent() (*JEvent, error) {
 	return &JEvent{
 		Time:   uint32(jsEvent.time),
 		Value:  int16(jsEvent.value),
-		Type:   uint8(jsEvent.etype),
+		Type:   uint8(jsEvent._type),
 		Number: uint8(jsEvent.number),
 	}, nil
 }
 
-func JoystickVibrate(left, right, delay int) {
-	C.vibrateJoystick(C.ushort(left), C.ushort(right), C.uint(delay))
+func JoystickVibrate(left, right, delay int) error {
+	if C.vibrateJoystick(C.ushort(left), C.ushort(right), C.uint(delay)) == 0 {
+		return fmt.Errorf("failed to vibrate joystick")
+	}
+	return nil
+}
+
+// Type sends a string of characters to be typed.
+// Note: `type` is a keyword in Go, so the C function is accessed via `C._type`.
+func Type(s string) {
+	cStr := C.CString(s)
+	defer C.free(unsafe.Pointer(cStr))
+	C.proxy_type(cStr)
+}
+
+// KeyAction sends a key press, release, or repeat event for one or more keys simultaneously (e.g., for shortcuts like Ctrl+C).
+// The key codes should be from the linux/input-event-codes.h header.
+// The state should be one of BTN_PRESSED, BTN_RELEASED, or BTN_REPEATED.
+func KeyAction(keyCodes []int, state int) {
+	if len(keyCodes) == 0 {
+		return
+	}
+	cKeyCodes := make([]C.int, len(keyCodes))
+	for i, code := range keyCodes {
+		cKeyCodes[i] = C.int(code)
+	}
+	C.keyAction(&cKeyCodes[0], C.int(len(keyCodes)), C.int(state))
 }
 
 // Calculate pointer move step based on event axis offset.
