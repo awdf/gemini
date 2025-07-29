@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
@@ -156,6 +157,8 @@ type PCMStreamPlayer struct {
 	appsrc   *app.Source
 	loop     *glib.MainLoop
 	wg       sync.WaitGroup
+	rate     int
+	channels int
 }
 
 // NewPCMStreamPlayer creates and starts a new GStreamer pipeline for playing PCM audio.
@@ -190,12 +193,16 @@ func NewPCMStreamPlayer(rate, channels int) (*PCMStreamPlayer, error) {
 		pipeline: pipeline,
 		appsrc:   appsrc,
 		loop:     glib.NewMainLoop(glib.MainContextDefault(), false),
+		rate:     rate,
+		channels: channels,
 	}
 
 	bus := pipeline.GetBus()
 	bus.AddWatch(func(msg *gst.Message) bool {
 		switch msg.Type() {
 		case gst.MessageEOS:
+			// This message signifies that the *entire stream* has finished playing,
+			// not just a single chunk.
 			log.Println("Audio stream playback finished (EOS).")
 			player.loop.Quit()
 			return false
@@ -225,6 +232,17 @@ func (p *PCMStreamPlayer) Write(data []byte) error {
 		return nil
 	}
 	buffer := gst.NewBufferFromBytes(data)
+
+	// Calculate the duration of the buffer based on the sample rate and format.
+	// This is crucial for `appsrc` in `format=time` mode to generate correct
+	// timestamps and avoid gaps or glitches in the playback of a live stream.
+	bytesPerSample := p.channels * (WavBitsPerSample / 8)
+	if bytesPerSample > 0 {
+		numSamples := len(data) / bytesPerSample
+		duration := gst.ClockTime(uint64(numSamples) * uint64(time.Second) / uint64(p.rate))
+		buffer.SetDuration(duration)
+	}
+
 	if ret := p.appsrc.PushBuffer(buffer); ret != gst.FlowOK {
 		return fmt.Errorf("failed to push buffer to appsrc: %v", ret)
 	}
@@ -238,6 +256,7 @@ func (p *PCMStreamPlayer) Close() error {
 	}
 	p.wg.Wait() // Wait for the main loop to exit.
 	helpers.Verify(p.pipeline.SetState(gst.StateNull))
+	log.Println("Audio stream player closed.")
 	return nil
 }
 

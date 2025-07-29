@@ -16,7 +16,7 @@ ModelTTS = "gemini-2.5-flash-preview-tts"
 ModelObjectDetection = "gemini-2.5-flash-preview-05-20"
 # Live AI models, CLI option -live
 ModelLive = "gemini-live-2.5-flash-preview"
-ModelLiveTTS = "gemini-2.5-flash-preview-native-audio-dialog"
+ModelLiveTTS = "gemini-2.5-flash-exp-native-audio-thinking-dialog"
 # Model prompts
 SystemPrompt = "Role: You are expert in software development. Context: It is your interview process, so respond from 1st person."
 DirectivesPrompt = """1.Never reffer to yourself as LLM.

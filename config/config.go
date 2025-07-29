@@ -198,6 +198,10 @@ func createDefaultConfig(path string) {
 // GetSystemInstruction combines the system prompt and directives into a single string.
 func (a *AIConfig) GetSystemInstruction() string {
 	var sb strings.Builder
+
+	currentTime := time.Now().Format(time.RFC1123)
+	sb.WriteString(fmt.Sprintf("Current date and time is %s. ", currentTime))
+
 	if a.SystemPrompt != "" {
 		sb.WriteString(a.SystemPrompt)
 	}
@@ -211,9 +215,6 @@ func (a *AIConfig) GetSystemInstruction() string {
 			a.WorkspaceDir,
 		))
 	}
-
-	currentTime := time.Now().Format(time.RFC1123)
-	sb.WriteString(fmt.Sprintf("Current date and time is %s. ", currentTime))
 
 	if a.DirectivesPrompt != "" {
 		if sb.Len() > 0 {

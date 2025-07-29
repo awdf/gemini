@@ -49,6 +49,7 @@ type LiveAI struct {
 	session          *genai.Session
 	imageBuffer      *images.ScreenshotBuffer
 	isStreaming      bool
+	streamPlayer     *audio.PCMStreamPlayer
 	mode             string
 	sessionClosed    chan struct{}
 	resumptionHandle string
@@ -83,6 +84,22 @@ func NewLiveSink(
 	sink.SetDrop(false)    // Do not drop data; ensure all samples are received for recording.
 	sink.SetMaxBuffers(10) // Set a max buffer to prevent runaway memory usage and add stability.
 
+	var streamPlayer *audio.PCMStreamPlayer
+	if config.C.AI.VoiceEnabled {
+		// In a CI environment without a running audio server, creating an 'autoaudiosink'
+		// will fail. We check for its existence to avoid a fatal error.
+		_, err := gst.NewElement("autoaudiosink")
+		if err != nil {
+			log.Printf("WARNING: Could not create autoaudiosink, voice output will be disabled. Error: %v", err)
+		} else {
+			streamPlayer, err = audio.NewPCMStreamPlayer(audio.TTSSampleRate, audio.TTSChannels)
+			if err != nil {
+				// This is a non-fatal error if the player can't be created, but we should log it.
+				log.Printf("ERROR: Could not create PCM stream player, voice output will be disabled. Error: %v", err)
+				streamPlayer = nil // Ensure it's nil on error
+			}
+		}
+	}
 	agents := make(map[string]Callable)
 	// --- Agent Initialization ---
 	{
@@ -124,6 +141,7 @@ If an object is present multiple times, name them according to their unique char
 		textCmdChan:      textCmdChan,
 		liveSink:         sink,
 		Element:          sink.Element,
+		streamPlayer:     streamPlayer,
 		isStreaming:      false,
 		mode:             config.C.Mode,
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
@@ -164,6 +182,8 @@ func (l *LiveAI) OpenSession() {
 				},
 			},
 		}
+		// No session continue for voice models
+		config.C.AI.SessionResumption.Enabled = false
 	} else {
 		// Half-cascade audio models
 		// Model: gemini-live-2.5-flash-preview, gemini-2.0-flash-live-001
@@ -292,6 +312,14 @@ func (l *LiveAI) CloseSession() {
 func (l *LiveAI) Run() {
 	defer l.wg.Done()
 	defer l.CloseSession()
+	defer func() {
+		if l.streamPlayer != nil {
+			log.Println("Closing LiveAI stream player...")
+			if err := l.streamPlayer.Close(); err != nil {
+				log.Printf("ERROR: closing LiveAI stream player: %v", err)
+			}
+		}
+	}()
 
 	// Subscribe to the main event topic to listen for the warm-up completion signal from VAD.
 	helpers.Verify((*l.bus).SubscribeAsync("main:topic", func(event string) {
@@ -413,7 +441,6 @@ func (l *LiveAI) Run() {
 
 // handleResponses runs in a dedicated goroutine, processing all messages from the server.
 func (l *LiveAI) handleResponses() {
-	var streamPlayer *audio.PCMStreamPlayer
 	var inModelTurn bool // State to track if we are in the middle of a model's turn.
 	var turnGroundingChunks []*genai.GroundingChunk
 	listener := flow.GetListener()
@@ -472,13 +499,6 @@ func (l *LiveAI) handleResponses() {
 
 			fireClose()
 
-			// Clean up the player if it exists.
-			if streamPlayer != nil {
-				if closeErr := streamPlayer.Close(); closeErr != nil {
-					log.Printf("ERROR: closing audio stream player on exit: %v", closeErr)
-				}
-				streamPlayer = nil
-			}
 			continue
 		}
 
@@ -496,7 +516,7 @@ func (l *LiveAI) handleResponses() {
 					l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
 				}
 
-				streamPlayer = l.processModelTurnParts(msg.ServerContent.ModelTurn.Parts, streamPlayer)
+				l.processModelTurnParts(msg.ServerContent.ModelTurn.Parts)
 			}
 
 			if msg.ServerContent.GroundingMetadata != nil {
@@ -507,12 +527,6 @@ func (l *LiveAI) handleResponses() {
 				log.Println("Live stream generation complete, ending turn.")
 				l.printGroundingChunks(turnGroundingChunks)
 				inModelTurn = false
-				if streamPlayer != nil {
-					if err := streamPlayer.Close(); err != nil {
-						log.Printf("ERROR: closing audio stream player: %v", err)
-					}
-					streamPlayer = nil
-				}
 				l.formatter.Reset()
 				(*l.bus).Publish("main:topic", "draw:ai.handleResponses")
 			}
@@ -561,29 +575,19 @@ func (l *LiveAI) handleResponses() {
 }
 
 // processModelTurnParts handles the processing of text and audio parts from a model's turn.
-func (l *LiveAI) processModelTurnParts(parts []*genai.Part, player *audio.PCMStreamPlayer) *audio.PCMStreamPlayer {
+func (l *LiveAI) processModelTurnParts(parts []*genai.Part) {
 	for _, part := range parts {
 		if part.Text != "" {
 			l.formatter.Print(part.Text)
 		}
 		if part.InlineData != nil && len(part.InlineData.Data) > 0 {
-			var err error
-			// Create the player on the first audio chunk received.
-			if player == nil && config.C.AI.VoiceEnabled {
-				player, err = audio.NewPCMStreamPlayer(audio.TTSSampleRate, audio.TTSChannels)
-				if err != nil {
-					log.Printf("ERROR: could not create audio stream player: %v", err)
-					player = nil // Ensure it's nil on error
-				}
-			}
-			if player != nil {
-				if err := player.Write(part.InlineData.Data); err != nil {
+			if l.streamPlayer != nil {
+				if err := l.streamPlayer.Write(part.InlineData.Data); err != nil {
 					log.Printf("ERROR: writing to audio stream: %v", err)
 				}
 			}
 		}
 	}
-	return player
 }
 
 // printGroundingChunks formats and prints the source attribution information.
@@ -676,6 +680,25 @@ func (l *LiveAI) sendInitialFiles() {
 		log.Printf("failed to send client content: %v", err)
 	}
 	l.writeMu.Unlock()
+}
+
+func (l *LiveAI) sendLiveMessage(text string) {
+	online := l.Online
+
+	if !online {
+		return
+	}
+	log.Println("Sending live message to session context...")
+
+	l.writeMu.Lock()
+	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
+		Text: text,
+	})
+	l.writeMu.Unlock()
+	if err != nil {
+		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		// Stop streaming on error to prevent flooding with more errors.
+	}
 }
 
 func (l *LiveAI) sendLiveImage() {
