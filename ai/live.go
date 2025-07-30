@@ -178,7 +178,7 @@ func (l *LiveAI) OpenSession() {
 	// Model inputs: Audio, images, videos, and text
 	// Model outputs: Text, Audio
 	// For responses with text. Free RPD 250 per model
-	// Tools: Search, Function calling, Code execution, Url context
+	// Tools: Search, Url context, Structured outputs, Function calling, Code execution
 	if config.C.AI.VoiceEnabled {
 		modelName = config.C.AI.ModelLiveTTS
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityAudio}
