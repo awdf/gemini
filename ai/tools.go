@@ -377,10 +377,27 @@ func readFile(path string) (any, error) {
 // or empty directory) already exists at the path, it is removed before the new
 // file is created. This ensures a clean state and handles edge cases like
 // replacing symlinks. The function also creates any necessary parent directories.
+// createFile ensures a file is created at the specified path with the given
+// content. It follows a "remove-then-create" logic: if an item (file, symlink,
+// or empty directory) already exists at the path, it is removed before the new
+// file is created. This ensures a clean state and handles edge cases like
+// replacing symlinks. The function also creates any necessary parent directories.
 func createFile(path string, content string) (any, error) {
 	safePath, err := getSafePath(path)
 	if err != nil {
 		return nil, err
+	}
+
+	// Ensure the parent directory exists to avoid errors when writing the file.
+	if err := os.MkdirAll(filepath.Dir(safePath), 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create parent directory: %w", err)
+	}
+
+	// Remove the file if it already exists. This is done to honor the request
+	// to "remove before create", which also handles replacing things like symlinks.
+	// We ignore "not found" errors, but fail on others (e.g., permission denied, or non-empty directory).
+	if err := os.Remove(safePath); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to remove existing item at path '%s': %w", path, err)
 	}
 
 	// Ensure the parent directory exists to avoid errors when writing the file.
@@ -559,7 +576,11 @@ func appendToFile(path, content string) (any, error) {
 func typeText(text string) (any, error) {
 	log.Printf("Typing text: %s", text)
 	wayland.Type(text)
-	return map[string]any{"status": fmt.Sprintf("text '%s' typed successfully", text)}, nil
+	return map[string]any{
+		"action": "type_text",
+		"length": len(text),
+		"result": "success",
+	}, nil
 }
 
 func keyAction(keyCodes []int) (any, error) {
@@ -583,7 +604,11 @@ func keyAction(keyCodes []int) (any, error) {
 	time.Sleep(50 * time.Millisecond)
 	// Release the keys.
 	wayland.KeyAction(keyCodes, wayland.BTN_RELEASED)
-	return map[string]any{"status": fmt.Sprintf("key press performed for: %s", keyNamesStr)}, nil
+	return map[string]any{
+		"action": "key_action",
+		"keys":   keyNames,
+		"result": "success",
+	}, nil
 }
 
 func getFileSystemTool() *genai.Tool {
@@ -591,7 +616,7 @@ func getFileSystemTool() *genai.Tool {
 		FunctionDeclarations: []*genai.FunctionDeclaration{
 			{
 				Name:        "listFiles",
-				Description: "List files and directories in a given path relative to the workspace. Use '.' for the current directory.",
+				Description: "FILE SYSTEM: List files and directories in a given path relative to the workspace. Use '.' for the current directory.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -602,25 +627,25 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "readFile",
-				Description: "Read the entire content of a file from the workspace.",
+				Description: "FILE SYSTEM: Read the entire content of a file from the workspace.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to read."}}, Required: []string{"path"}},
 				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "createFile",
-				Description: "Create or overwrite a file in the workspace with specified content.",
+				Description: "FILE SYSTEM: Create or overwrite a file in the workspace with specified content.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to create."}, "content": {Type: genai.TypeString, Description: "The content to write to the file."}}, Required: []string{"path", "content"}},
 				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "deleteFile",
-				Description: "Delete a file from the workspace.",
+				Description: "FILE SYSTEM: Delete a file from the workspace.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to delete."}}, Required: []string{"path"}},
 				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "makeDirectory",
-				Description: "Create a new directory at the specified path within the workspace. It can create parent directories if they don't exist.",
+				Description: "FILE SYSTEM: Create a new directory at the specified path within the workspace. It can create parent directories if they don't exist.",
 				Parameters: &genai.Schema{
 					Type:       genai.TypeObject,
 					Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path for the new directory."}},
@@ -630,7 +655,7 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "moveFile",
-				Description: "Move or rename a file or directory within the workspace.",
+				Description: "FILE SYSTEM: Move or rename a file or directory within the workspace.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -643,7 +668,7 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "copyFile",
-				Description: "Copy a file from a source path to a destination path within the workspace.",
+				Description: "FILE SYSTEM: Copy a file from a source path to a destination path within the workspace.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -656,13 +681,13 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "getFileInfo",
-				Description: "Get detailed information about a file or directory.",
+				Description: "FILE SYSTEM: Get detailed information about a file or directory.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file or directory."}}, Required: []string{"path"}},
 				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "searchFiles",
-				Description: "Search for files recursively in a directory by a name pattern (glob).",
+				Description: "FILE SYSTEM: Search for files recursively in a directory by a name pattern (glob).",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -675,19 +700,19 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "appendToFile",
-				Description: "Append content to the end of an existing file. If the file does not exist, it will be created.",
+				Description: "FILE SYSTEM: Append content to the end of an existing file. If the file does not exist, it will be created.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to append to."}, "content": {Type: genai.TypeString, Description: "The content to append."}}, Required: []string{"path", "content"}},
 				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "uploadImage",
-				Description: "For analyzing a screenshot just taken, use the `detectObjects` tool directly. Upload an image file from the workspace to the session context. Use this tool when the user explicitly asks to analyze a specific file by its name.",
+				Description: "FILE SYSTEM: For analyzing a screenshot just taken, use the `detectObjects` tool directly. Upload an image file from the workspace to the session context. Use this tool when the user explicitly asks to analyze a specific file by its name.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the image file to upload."}}, Required: []string{"path"}},
 				Behavior:    genai.BehaviorBlocking,
 			},
 			{
 				Name:        "verifyObjectDetection",
-				Description: "After using 'detectObjects', use this helper tool to draw the returned bounding box on the image. The tool will upload image with red box to context. This helps model ensure the correct object is identified before clicking.",
+				Description: "DESKTOP AUTOMATION: After using 'detectObjects', use this helper tool to draw the returned bounding box on the image. The tool will upload image with red box to context. This helps model ensure the correct object is identified before clicking.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -702,7 +727,7 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "detectObjects",
-				Description: "Automaticaly upload image in the session context. Analyzes the image currently in the session context (e.g., from a recent screenshot) to detect specific objects based on a query. Returns a list of detected objects and their bounding boxes.",
+				Description: "DESKTOP AUTOMATION: Automaticaly upload image in the session context. Analyzes the image currently in the session context (e.g., from a recent screenshot) to detect specific objects based on a query. Returns a list of detected objects and their bounding boxes.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -714,7 +739,7 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "mouseClick",
-				Description: fmt.Sprintf("Moves the mouse to a specified normalized coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object, normalized to a %dx%d grid. Can perform multiple clicks for actions like double-clicking.", ObjectDetectionNormalizationGrid, ObjectDetectionNormalizationGrid),
+				Description: fmt.Sprintf("DESKTOP AUTOMATION: Moves the mouse to a specified normalized coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object, normalized to a %dx%d grid. Can perform multiple clicks for actions like double-clicking.", ObjectDetectionNormalizationGrid, ObjectDetectionNormalizationGrid),
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -728,7 +753,7 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "typeText",
-				Description: "Types the given string of text using the virtual keyboard. Useful for filling out forms or typing commands. Each line MUST be finished with a newline character. Charters Tab and Backspace are supported.",
+				Description: "DESKTOP AUTOMATION: Types the given string of text using the virtual keyboard. Use this for interacting with the user interface, like filling out forms or typing commands. Each line MUST be finished with a newline character. Characters Tab and Backspace are supported.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
@@ -740,7 +765,7 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "keyAction",
-				Description: "Simulates a key press (press and release) for one or more keys simultaneously (e.g., for shortcuts like Ctrl+C). Key codes should be from the linux/input-event-codes.h header.",
+				Description: "DESKTOP AUTOMATION: Simulates a key press (press and release) for one or more keys simultaneously (e.g., for shortcuts like Ctrl+C). Use this for keyboard shortcuts to control applications. Key codes should be from the linux/input-event-codes.h header.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{

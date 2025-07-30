@@ -160,7 +160,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.EnableTools = true
 	defaultConfig.AI.EnableStandardTools = true
 	defaultConfig.AI.EnableFunctionCalling = true
-	defaultConfig.AI.EnableCodeExecution = true
+	defaultConfig.AI.EnableCodeExecution = false
 	defaultConfig.AI.CacheDir = "cache"
 	defaultConfig.AI.CacheSystemPrompt = "The following data are provided as context, you must accept it silently:"
 	defaultConfig.AI.EnableCache = false
