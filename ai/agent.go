@@ -16,6 +16,7 @@ const ObjectDetectionNormalizationGrid = 1000
 
 type Callable interface {
 	Process(prompt string, data []byte, mimeType string) (string, error)
+	WarmUp()
 }
 
 // Agent is a specialized, self-contained AI processor for specific tasks.
@@ -147,6 +148,23 @@ func (a *Agent) Process(prompt string, data []byte, mimeType string) (string, er
 	duration := time.Since(startTime)
 	log.Printf("[%s Agent] Processing successful in %v. Response length: %d", a.name, duration, len(resp.Text()))
 	return resp.Text(), nil
+}
+
+// WarmUp sends a simple, low-cost prompt to the agent's model to reduce
+// the "cold start" latency on the first real request. It runs in a goroutine
+// to avoid blocking the application's startup sequence.
+func (a *Agent) WarmUp() {
+	go func() {
+		log.Printf("[%s Agent] Warming up model...", a.name)
+		// Use a simple prompt. The goal is just to make the model endpoint "hot".
+		// We don't care about the response, only that the call is made.
+		// We pass nil for data and an empty mimeType.
+		_, err := a.Process("ping", nil, "")
+		if err != nil {
+			// This is not a fatal error, but we should log it for debugging.
+			log.Printf("WARNING: [%s Agent] Warm-up call failed: %v", a.name, err)
+		}
+	}()
 }
 
 // GetObjectDetectionSchema returns the schema for object detection responses.

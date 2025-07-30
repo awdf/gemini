@@ -727,11 +727,11 @@ func getFileSystemTool() *genai.Tool {
 			},
 			{
 				Name:        "detectObjects",
-				Description: "DESKTOP AUTOMATION: Automaticaly upload image in the session context. Analyzes the image currently in the session context (e.g., from a recent screenshot) to detect specific objects based on a query. Returns a list of detected objects and their bounding boxes.",
+				Description: "DESKTOP AUTOMATION: Analyzes the current screen to find UI elements. Use this to get the coordinates of an object you want to interact with. You must follow up with 'verifyObjectDetection' before clicking.",
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
-						"query": {Type: genai.TypeString, Description: "A natural language query describing the objects to detect (e.g., 'all the cars', 'the red apple')."},
+						"query": {Type: genai.TypeString, Description: "A detailed natural language query describing the object(s) to detect. Be specific. For example, instead of 'button', say 'the blue \"Submit\" button in the center of the form'."},
 					},
 					Required: []string{"query"},
 				},

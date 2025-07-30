@@ -55,7 +55,7 @@ type LiveAI struct {
 	resumptionHandle string
 	warmUpDone       bool
 	Online           bool
-	verification     bool
+	odRoadMap        [3]bool
 	// mu protects the internal state of the LiveAI struct (e.g., session, Online, resumptionHandle).
 	// It allows multiple concurrent readers but only one writer, which is ideal for state
 	// that is read often but changed infrequently (like during session setup/teardown).
@@ -109,10 +109,10 @@ func NewLiveSink(
 		height := bounds.Dy()
 		grid := ObjectDetectionNormalizationGrid
 		halfGrid := grid / 2
-		boundingBoxSystemInstructions := fmt.Sprintf(`You are an object detection specialist.
-The user has provided an image with dimensions %d x %d (width x height).
-Your task is to detect the 2d bounding boxes of the requested objects.
-The origin (0,0) is at the top-left corner of the image.
+		boundingBoxSystemInstructions := fmt.Sprintf(`You are an object detection specialist. 
+The user will provide a query describing an object to find in the provided image. 
+Your task is to locate that object and return its 2D bounding box.
+The image dimensions are %d x %d (width x height). The origin (0,0) is at the top-left corner.
 You MUST return the bounding box coordinates normalized to a %dx%d grid.
 For example, for a 200x400 image, a point at (x=100, y=200) should be returned as (x=%d, y=%d).
 Return the response as a JSON array with labels. Never return masks or code fencing. Limit to 25 objects.
@@ -126,8 +126,9 @@ If an object is present multiple times, name them according to their unique char
 			EnableTools:       false,
 			ResponseSchema:    GetObjectDetectionSchema(),
 		}
-		agents[objectDetectionAgent] = NewAgent(ctx, client, odAgentConfig)
-
+		agent := NewAgent(ctx, client, odAgentConfig)
+		agent.WarmUp()
+		agents[objectDetectionAgent] = agent
 	}
 
 	return &LiveAI{
@@ -402,6 +403,8 @@ func (l *LiveAI) Run() {
 					log.Println("Taking live screenshot for AI response...")
 					var err error
 					l.imageBuffer, err = images.TakeScreenshot()
+					// TODO: Remove after live testing
+					go helpers.Verify(images.SaveImage("Screenshot.png", l.imageBuffer.Bytes()))
 					l.mu.Unlock() // Unlock before logging and sending to avoid holding lock during I/O
 					if err != nil {
 						log.Printf("failed to take screenshot: %v", err)
@@ -897,13 +900,10 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 			response = l.handleUploadImageTool(call)
 		case "detectObjects":
 			response = l.handleDetectObjectsTool(call)
-			l.verification = false
 		case "verifyObjectDetection":
 			response = l.handleVerifyObjectDetectionTool(call)
-			l.verification = true
 		case "mouseClick":
 			response = l.handleMouseClickTool(call)
-			l.verification = false
 		default:
 			response = executeSingleToolCall(call)
 		}
@@ -918,7 +918,8 @@ func (l *LiveAI) handleMouseClickTool(call *genai.FunctionCall) *genai.FunctionR
 	var result any
 	var err error
 
-	if !l.verification {
+	// Enforce the correct tool-use sequence.
+	if !l.odRoadMap[0] || !l.odRoadMap[1] {
 		err = fmt.Errorf("you must get positive approve from 'verifyObjectDetection' tool before apply mouse actions")
 	} else {
 		// 1. Parse arguments
@@ -980,6 +981,8 @@ func (l *LiveAI) handleMouseClickTool(call *genai.FunctionCall) *genai.FunctionR
 		responseMap = map[string]any{"output": result}
 	}
 
+	l.odRoadMap = [3]bool{false, false, false}
+
 	return &genai.FunctionResponse{
 		ID:         call.ID,
 		Name:       call.Name,
@@ -994,72 +997,77 @@ func (l *LiveAI) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *gena
 	var result any
 	var err error
 
-	// 1. Parse arguments from the tool call
-	xminNorm, xminOK := call.Args["xmin"].(float64)
-	yminNorm, yminOK := call.Args["ymin"].(float64)
-	xmaxNorm, xmaxOK := call.Args["xmax"].(float64)
-	ymaxNorm, ymaxOK := call.Args["ymax"].(float64)
-
-	if !xminOK || !yminOK || !xmaxOK || !ymaxOK {
-		err = fmt.Errorf("invalid or missing normalized bounding box arguments (xmin, ymin, xmax, ymax)")
+	// Enforce the correct tool-use sequence.
+	if !l.odRoadMap[0] {
+		err = fmt.Errorf("you must call 'detectObjects' successfully before you can verify the result")
 	} else {
-		// 2. Get the original screenshot from the session buffer
-		l.mu.RLock()
-		imageBuf := l.imageBuffer
-		l.mu.RUnlock()
+		// 1. Parse arguments from the tool call
+		xminNorm, xminOK := call.Args["xmin"].(float64)
+		yminNorm, yminOK := call.Args["ymin"].(float64)
+		xmaxNorm, xmaxOK := call.Args["xmax"].(float64)
+		ymaxNorm, ymaxOK := call.Args["ymax"].(float64)
 
-		if imageBuf == nil || imageBuf.Len() == 0 {
-			err = fmt.Errorf("no image found in the current session context to verify")
+		if !xminOK || !yminOK || !xmaxOK || !ymaxOK {
+			err = fmt.Errorf("invalid or missing normalized bounding box arguments (xmin, ymin, xmax, ymax)")
 		} else {
-			// 3. Decode the image
-			originalImg, decodeErr := png.Decode(bytes.NewReader(imageBuf.Bytes()))
-			if decodeErr != nil {
-				err = fmt.Errorf("failed to decode screenshot for verification: %w", decodeErr)
+			// 2. Get the original screenshot from the session buffer
+			l.mu.RLock()
+			imageBuf := l.imageBuffer
+			l.mu.RUnlock()
+
+			if imageBuf == nil || imageBuf.Len() == 0 {
+				err = fmt.Errorf("no image found in the current session context to verify")
 			} else {
-				// 4. Get image dimensions and denormalize coordinates
-				bounds := originalImg.Bounds()
-				imgWidth := float64(bounds.Dx())
-				imgHeight := float64(bounds.Dy())
-
-				xmin := int((xminNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
-				ymin := int((yminNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
-				xmax := int((xmaxNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
-				ymax := int((ymaxNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
-
-				// 5. Draw the rectangle
-				rect := image.Rect(xmin, ymin, xmax, ymax)
-				imgWithBox := images.DrawRectangle(originalImg, rect, 3, color.RGBA{R: 255, A: 255}) // Red box, 3px thick
-
-				// 6. Encode the new image back to a PNG buffer
-				newImageBuf := new(bytes.Buffer)
-				if encodeErr := png.Encode(newImageBuf, imgWithBox); encodeErr != nil {
-					err = fmt.Errorf("failed to encode verification image: %w", encodeErr)
+				// 3. Decode the image
+				originalImg, decodeErr := png.Decode(bytes.NewReader(imageBuf.Bytes()))
+				if decodeErr != nil {
+					err = fmt.Errorf("failed to decode screenshot for verification: %w", decodeErr)
 				} else {
-					// TODO: remove after object detection live testing
-					helpers.Verify(images.SaveImage("Detect.png", newImageBuf.Bytes()))
-					// 7. Send the new image and a verification prompt to the session
-					parts := []*genai.Part{
-						genai.NewPartFromText("Tool have drawn the red box according to provided coordinates. Is the user requested object to detect inside the red box correctly identified? If not, try resolve this issue without user confirmation"),
-						genai.NewPartFromBytes(newImageBuf.Bytes(), "image/png"),
-					}
-					turn := genai.NewContentFromParts(parts, genai.RoleUser)
-					content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+					// 4. Get image dimensions and denormalize coordinates
+					bounds := originalImg.Bounds()
+					imgWidth := float64(bounds.Dx())
+					imgHeight := float64(bounds.Dy())
 
-					l.mu.RLock()
-					session := l.session
-					l.mu.RUnlock()
+					xmin := int((xminNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
+					ymin := int((yminNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
+					xmax := int((xmaxNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
+					ymax := int((ymaxNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
 
-					if session == nil {
-						err = fmt.Errorf("live session is not active, cannot send verification image")
+					// 5. Draw the rectangle
+					rect := image.Rect(xmin, ymin, xmax, ymax)
+					imgWithBox := images.DrawRectangle(originalImg, rect, 3, color.RGBA{R: 255, A: 255}) // Red box, 3px thick
+
+					// 6. Encode the new image back to a PNG buffer
+					newImageBuf := new(bytes.Buffer)
+					if encodeErr := png.Encode(newImageBuf, imgWithBox); encodeErr != nil {
+						err = fmt.Errorf("failed to encode verification image: %w", encodeErr)
 					} else {
-						l.writeMu.Lock()
-						sendErr := session.SendClientContent(content)
-						l.writeMu.Unlock()
-						if sendErr != nil {
-							err = fmt.Errorf("failed to send verification image to session: %w", sendErr)
+						// TODO: remove after object detection live testing
+						go helpers.Verify(images.SaveImage("Detect.png", newImageBuf.Bytes()))
+						// 7. Send the new image and a verification prompt to the session
+						parts := []*genai.Part{
+							genai.NewPartFromText("Tool have drawn the red box according to provided coordinates. Is the user requested object to detect inside the red box correctly identified? If not, try resolve this issue without user confirmation"),
+							genai.NewPartFromBytes(newImageBuf.Bytes(), "image/png"),
+						}
+						turn := genai.NewContentFromParts(parts, genai.RoleUser)
+						content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+
+						l.mu.RLock()
+						session := l.session
+						l.mu.RUnlock()
+
+						if session == nil {
+							err = fmt.Errorf("live session is not active, cannot send verification image")
 						} else {
-							log.Println("Successfully sent verification image to live session.")
-							result = map[string]any{"status": "Verification image sent. Awaiting confirmation."}
+							l.writeMu.Lock()
+							sendErr := session.SendClientContent(content)
+							l.writeMu.Unlock()
+							if sendErr != nil {
+								err = fmt.Errorf("failed to send verification image to session: %w", sendErr)
+							} else {
+								log.Println("Successfully sent verification image to live session.")
+								result = map[string]any{"status": "Verification image sent. Awaiting confirmation."}
+							}
 						}
 					}
 				}
@@ -1070,6 +1078,9 @@ func (l *LiveAI) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *gena
 	if err != nil {
 		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
 		result = map[string]any{"error": err.Error()}
+	} else {
+		// Mark this step as complete on the roadmap only on success.
+		l.odRoadMap[1] = true
 	}
 
 	inout.LogToolResult(call.Name, result)
@@ -1103,33 +1114,41 @@ func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.Functi
 	if !ok || query == "" {
 		err = fmt.Errorf("'query' argument is required and must be a non-empty string")
 	} else {
-		// This tool uses the session's image buffer.
-		l.mu.RLock()
-		imageBuf := l.imageBuffer
-		l.mu.RUnlock()
-
-		if imageBuf == nil || imageBuf.Len() == 0 {
-			err = fmt.Errorf("no image found in the current session context to detect objects from")
+		// Add a guardrail to prevent the model from sending overly simplistic queries by
+		// checking for a minimum number of words. This is more robust than checking
+		// character length, as the model can't bypass it with extra spaces.
+		const minWordCount = 5
+		if len(strings.Fields(query)) < minWordCount {
+			err = fmt.Errorf("query '%s' is not descriptive enough (must be at least %d words). Please provide a more descriptive query, for example: 'the blue \"Submit\" button in the center of the form'", query, minWordCount)
 		} else {
-			// Get screen dimensions to provide context to the model.
-			bounds, boundsErr := images.DisplayBounds()
-			if boundsErr != nil {
-				err = fmt.Errorf("failed to get display bounds for object detection context: %w", boundsErr)
+			// This tool uses the session's image buffer.
+			l.mu.RLock()
+			imageBuf := l.imageBuffer
+			l.mu.RUnlock()
+
+			if imageBuf == nil || imageBuf.Len() == 0 {
+				err = fmt.Errorf("no image found in the current session context to detect objects from")
 			} else {
-				log.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
-				// Create the agent with a specific system prompt for object detection.
-				agent, ok := l.agents[objectDetectionAgent]
-				if !ok {
-					err = fmt.Errorf("object detection agent not initialized")
+				// Get screen dimensions to provide context to the model.
+				bounds, boundsErr := images.DisplayBounds()
+				if boundsErr != nil {
+					err = fmt.Errorf("failed to get display bounds for object detection context: %w", boundsErr)
 				} else {
-					// Process the image with the agent, using the query from the tool call as the prompt.
-					// The image buffer is PNG encoded.
-					detectionResult, processErr := agent.Process(query, imageBuf.Bytes(), "image/png")
-					if processErr != nil {
-						err = fmt.Errorf("object detection failed: %w", processErr)
+					log.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
+					// Create the agent with a specific system prompt for object detection.
+					agent, ok := l.agents[objectDetectionAgent]
+					if !ok {
+						err = fmt.Errorf("object detection agent not initialized")
 					} else {
-						log.Printf("Object detection successful for query: '%s'", query)
-						result = map[string]any{"detected_objects": detectionResult}
+						// Process the image with the agent, using the query from the tool call as the prompt.
+						// The image buffer is PNG encoded.
+						detectionResult, processErr := agent.Process(query, imageBuf.Bytes(), "image/png")
+						if processErr != nil {
+							err = fmt.Errorf("object detection failed: %w", processErr)
+						} else {
+							log.Printf("Object detection successful for query: '%s'", query)
+							result = map[string]any{"detected_objects": detectionResult}
+						}
 					}
 				}
 			}
@@ -1139,6 +1158,9 @@ func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.Functi
 	if err != nil {
 		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
 		result = map[string]any{"error": err.Error()}
+	} else {
+		// Mark this step as complete on the roadmap only on success.
+		l.odRoadMap[0] = true
 	}
 
 	inout.LogToolResult(call.Name, result)

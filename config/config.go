@@ -208,12 +208,21 @@ func (a *AIConfig) GetSystemInstruction() string {
 
 	// If function calling is enabled, inform the model about its workspace constraints.
 	// This helps it generate correct, relative paths for file system tools.
-	if a.EnableFunctionCalling && a.WorkspaceDir != "" {
-		sb.WriteString(fmt.Sprintf(`\n\nYou have access to a file system toolset.
+	if a.EnableFunctionCalling {
+		if a.WorkspaceDir != "" {
+			sb.WriteString(fmt.Sprintf(`\n\nYou have access to a file system toolset.
 		All file operations are restricted to the "%s" directory.
 		All paths provided to tools like "listFiles","readFile", "createFile", etc., must be relative to this workspace.`,
-			a.WorkspaceDir,
-		))
+				a.WorkspaceDir,
+			))
+		}
+		// Add explicit instructions for the desktop automation tool workflow.
+		sb.WriteString(`\n\nWhen using DESKTOP AUTOMATION tools ('detectObjects', 'verifyObjectDetection', 'mouseClick'):
+1. Your goal is to interact with a graphical user interface based on both the context image and the user requests.
+2. Start by using 'detectObjects' to locate UI elements. Provide a highly descriptive 'query' to this tool. For example, instead of "button", use "the blue 'Login' button under the password field".
+3. After getting a list of objects, you MUST confirm your choice using the 'verifyObjectDetection' tool. This tool will draw a red box on the object you selected and show you the result.
+4. Examine the image with the red box. If the correct object is highlighted, proceed to use 'mouseClick'.
+5. If 'verifyObjectDetection' shows the wrong object, or if 'detectObjects' found nothing, DO NOT repeat the same 'detectObjects' call. Re-analyze the screen and create a new, more specific query. If "icon" failed, try like "the green video camera icon in the toolbar". This is critical to avoid loops.`)
 	}
 
 	if a.DirectivesPrompt != "" {
