@@ -159,22 +159,28 @@ func (l *LiveAI) OpenSession() {
 		return
 	}
 
-	var urlContextDisabled bool
-
 	// 1. Configure the session based on global settings.
 	var modelName string
 	liveConfig := &genai.LiveConnectConfig{}
 	// Models documentation https://ai.google.dev/gemini-api/docs/live
+	//
+	// Native audio models:
+	// Model: gemini-2.5-flash-preview-native-audio-dialog, gemini-2.5-flash-exp-native-audio-thinking-dialog
+	// Model inputs: Audio, videos, and text
+	// Model outputs: Text and audio, interleaved
+	// For responses with voice. Free RPD 5 per model
+	// gemini-2.5-flash-preview-native-audio-dialog tools: Search, Function calling
+	// gemini-2.5-flash-exp-native-audio-thinking-dialog
+	// Tools: Search, Function calling
+	//
+	// Half-cascade audio models:
+	// Model: gemini-live-2.5-flash-preview, gemini-2.0-flash-live-001
+	// Model inputs: Audio, images, videos, and text
+	// Model outputs: Text, Audio
+	// For responses with text. Free RPD 250 per model
+	// Tools: Search, Function calling, Code execution, Url context
 	if config.C.AI.VoiceEnabled {
-		// Native audio models
-		// Model: gemini-2.5-flash-preview-native-audio-dialog, gemini-2.5-flash-exp-native-audio-thinking-dialog
-		// Model inputs: Audio, videos, and text
-		// Model outputs: Text and audio, interleaved
-		// For responses with voice. RPD 5 per model
-		// gemini-2.5-flash-preview-native-audio-dialog tools: Search, Function calling
-		// gemini-2.5-flash-exp-native-audio-thinking-dialog tools: Search
-		modelName = config.C.AI.ModelLiveTTS // This model does not support URLContext.
-		urlContextDisabled = true
+		modelName = config.C.AI.ModelLiveTTS
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityAudio}
 		liveConfig.SpeechConfig = &genai.SpeechConfig{
 			VoiceConfig: &genai.VoiceConfig{
@@ -183,16 +189,7 @@ func (l *LiveAI) OpenSession() {
 				},
 			},
 		}
-		// No session continue for voice models
-		config.C.AI.SessionResumption.Enabled = false
 	} else {
-		// Half-cascade audio models
-		// Model: gemini-live-2.5-flash-preview, gemini-2.0-flash-live-001
-		// Model inputs: Audio, images, videos, and text
-		// Model outputs: Text
-		// For responses with text. RPD 250 per model
-		// Tools: Search, Function calling, Code execution, Url context
-		urlContextDisabled = false // This model supports URLContext.
 		modelName = config.C.AI.ModelLive
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityText}
 	}
@@ -218,7 +215,7 @@ func (l *LiveAI) OpenSession() {
 		var tools []*genai.Tool
 		if config.C.AI.EnableStandardTools {
 			searchTool := &genai.Tool{GoogleSearch: &genai.GoogleSearch{}}
-			if urlContextDisabled {
+			if config.C.AI.URLContextDisabled {
 				log.Println("Tools enabled for live session: GoogleSearch")
 			} else {
 				log.Println("Tools enabled for live session: GoogleSearch, URLContext")
@@ -513,22 +510,26 @@ func (l *LiveAI) handleResponses() {
 		case msg.ServerContent != nil:
 			if msg.ServerContent.ModelTurn != nil {
 				if !inModelTurn {
+					// Do once per content block
+					log.Println("Live stream generation started.")
 					inModelTurn = true
 					turnGroundingChunks = nil
 					(*l.bus).Publish("main:topic", "mute:ai.handleResponses")
 					l.formatter.Clear()
 					l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
 				}
-
+				// Do on each turn
 				l.processModelTurnParts(msg.ServerContent.ModelTurn.Parts)
 			}
 
 			if msg.ServerContent.GroundingMetadata != nil {
+				// Turn has metadata
 				turnGroundingChunks = append(turnGroundingChunks, msg.ServerContent.GroundingMetadata.GroundingChunks...)
 			}
 
 			if msg.ServerContent.GenerationComplete {
-				log.Println("Live stream generation complete, ending turn.")
+				// Do once per content block
+				log.Println("Live stream generation complete.")
 				l.printGroundingChunks(turnGroundingChunks)
 				inModelTurn = false
 				l.formatter.Reset()
@@ -581,10 +582,12 @@ func (l *LiveAI) handleResponses() {
 // processModelTurnParts handles the processing of text and audio parts from a model's turn.
 func (l *LiveAI) processModelTurnParts(parts []*genai.Part) {
 	for _, part := range parts {
+		config.DebugPrintf("Live stream received part: %+v", part)
 		if part.Text != "" {
 			l.formatter.Print(part.Text)
 		}
 		if part.InlineData != nil && len(part.InlineData.Data) > 0 {
+			config.DebugPrintf("Live stream received data blob: %s, size: %d", part.InlineData.MIMEType, len(part.InlineData.Data))
 			if l.streamPlayer != nil {
 				if err := l.streamPlayer.Write(part.InlineData.Data); err != nil {
 					log.Printf("ERROR: writing to audio stream: %v", err)

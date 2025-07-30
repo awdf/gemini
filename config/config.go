@@ -43,6 +43,7 @@ type AIConfig struct {
 	Thoughts                 bool
 	EnableTools              bool
 	EnableStandardTools      bool `toml:"enableStandardTools"`
+	URLContextDisabled       bool
 	EnableFunctionCalling    bool `toml:"enableFunctionCalling"`
 	EnableCodeExecution      bool `toml:"enableCodeExecution"`
 	CacheDir                 string
@@ -144,7 +145,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.ModelObjectDetection = "gemini-2.5-flash"
 	defaultConfig.AI.ModelTTS = "gemini-2.5-flash-preview-tts"
 	defaultConfig.AI.ModelLive = "gemini-live-2.5-flash-preview"
-	defaultConfig.AI.ModelLiveTTS = "gemini-2.5-flash-preview-native-audio-dialog"
+	defaultConfig.AI.ModelLiveTTS = "gemini-live-2.5-flash-preview"
 	defaultConfig.AI.Voice = "Kore"
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}"
