@@ -412,6 +412,7 @@ func (l *LiveAI) Run() {
 			case strings.HasPrefix(cmd, vad.MarkerStop):
 				// The response is handled by the handleResponses goroutine.
 				// No action needed here to process the stream.
+				l.notifyStreamDone()
 				log.Println("VAD Stop: finishing turn.")
 				l.isStreaming = false
 				// The image buffer is now released upon GenerationComplete, not here.
@@ -819,6 +820,65 @@ func (l *LiveAI) pullAndSendSamples() {
 			buffer.Unmap()
 		}
 		// IMPORTANT: Go GStreamer unrefs the sample automatically.
+	}
+}
+
+func (l *LiveAI) notifyStreamDone() {
+	online := l.Online
+
+	if !online {
+		return
+	}
+	log.Println("Live stream voice activity complete, ending stream")
+
+	l.writeMu.Lock()
+	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
+		AudioStreamEnd: true,
+	})
+	l.writeMu.Unlock()
+	if err != nil {
+		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		// Stop streaming on error to prevent flooding with more errors.
+	}
+}
+
+// Explicit activity control is not supported when automatic activity detection is enabled.
+func (l *LiveAI) notifyActivityStart() {
+	online := l.Online
+
+	if !online {
+		return
+	}
+	log.Println("Live stream voice activity started")
+
+	l.writeMu.Lock()
+	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
+		ActivityStart: &genai.ActivityStart{},
+	})
+	l.writeMu.Unlock()
+	if err != nil {
+		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		// Stop streaming on error to prevent flooding with more errors.
+	}
+}
+
+// Explicit activity control is not supported when automatic activity detection is enabled.
+func (l *LiveAI) notifyActivityEnd() {
+	online := l.Online
+
+	if !online {
+		return
+	}
+	log.Println("Live stream activity ended")
+
+	l.writeMu.Lock()
+	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
+		ActivityEnd: &genai.ActivityEnd{},
+	})
+	l.writeMu.Unlock()
+	if err != nil {
+		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		// Stop streaming on error to prevent flooding with more errors.
 	}
 }
 
