@@ -194,20 +194,12 @@ func (l *LiveAI) OpenSession() {
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityText}
 	}
 
-	// Add system prompt if configured.
-	systemPrompt := config.C.AI.GetSystemInstruction()
-	var systemInstructionParts []*genai.Part
-	if systemPrompt != "" {
-		currentTime := time.Now().Format(time.RFC1123)
-		systemPrompt = fmt.Sprintf("Current date and time is %s. %s", currentTime, systemPrompt)
-		systemInstructionParts = append(systemInstructionParts, genai.NewPartFromText(systemPrompt))
-		log.Println("Using system prompt for live session.")
-	}
-
 	// The role for a system instruction is empty.
-	if len(systemInstructionParts) > 0 {
-		liveConfig.SystemInstruction = genai.NewContentFromParts(systemInstructionParts, "")
-	}
+	systemPrompt := config.C.AI.GetSystemInstruction()
+	liveConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{
+		genai.NewPartFromText(systemPrompt),
+	}, "")
+	config.DebugPrintf("Using system prompt for live session: %s", systemPrompt)
 
 	// Conditionally enable tools based on the configuration.
 	// This is only done for the main response generation, not transcription.
@@ -232,7 +224,7 @@ func (l *LiveAI) OpenSession() {
 
 		if config.C.AI.EnableFunctionCalling {
 			// Add file system tools
-			tools = append(tools, getFileSystemTool())
+			tools = append(tools, getFunctionTools())
 			log.Println("File system tools enabled for live session.")
 		}
 

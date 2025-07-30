@@ -611,7 +611,7 @@ func keyAction(keyCodes []int) (any, error) {
 	}, nil
 }
 
-func getFileSystemTool() *genai.Tool {
+func getFunctionTools() *genai.Tool {
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{
 			{

@@ -658,7 +658,7 @@ func (a *AI) generateAndProcessContent(
 
 			// Function calling tools, don't works togather with sandart tools.
 			if config.C.AI.EnableFunctionCalling {
-				tools = append(tools, getFileSystemTool()) // Add file system tools
+				tools = append(tools, getFunctionTools()) // Add file system tools
 			}
 
 			if len(tools) > 0 {

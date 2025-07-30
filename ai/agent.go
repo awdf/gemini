@@ -90,7 +90,7 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 
 		// Function calling tools, don't works togather with sandart tools.
 		if agentConfig.EnableFunctionCalling {
-			tools = append(tools, getFileSystemTool()) // Add file system tools
+			tools = append(tools, getFunctionTools()) // Add file system tools
 			log.Printf("Function calling tool enabled for %s.", agentConfig.Name)
 		}
 
