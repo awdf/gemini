@@ -34,6 +34,7 @@ import (
 const (
 	objectDetectionAgent = "objectDetection"
 	pdfAwareAgent        = "pdfAwareAgent"
+	youtubeAgent         = "youtubeAgent"
 )
 
 type LiveAI struct {
@@ -128,7 +129,6 @@ If an object is present multiple times, name them according to their unique char
 			ResponseSchema:    GetObjectDetectionSchema(),
 		}
 		agent := NewAgent(ctx, client, agentConfig)
-		agent.WarmUp()
 		agents[objectDetectionAgent] = agent
 	}
 
@@ -145,8 +145,42 @@ The user will provide a query with pdf document, read document please and provid
 			ResponseSchema:    GetPdfReaderSchema(),
 		}
 		agent := NewAgent(ctx, client, agentConfig)
-		agent.WarmUp()
 		agents[pdfAwareAgent] = agent
+	}
+
+	{
+		// YouTube analysis agent
+		agentSystemInstructions := `You are a comprehensive YouTube video analysis expert. Your goal is to extract as much meaningful information as possible from the provided video. Analyze both the audio and visual components to generate a detailed report.
+
+Your response MUST be a single block of text and should be structured using Markdown headings for the following sections:
+
+### Summary
+Provide a concise, high-level summary of the video's main topic and purpose.
+
+### Key Topics
+Identify the main topics or chapters discussed in the video.
+
+### Detailed Transcript with Visual Context
+Provide a full and accurate transcript of the video's audio. Where relevant, interleave descriptions of important visual elements, on-screen text, or actions that provide context to the speech. For example: "[Visual: A diagram of a neural network is shown on screen]".
+
+### Key Takeaways
+List the most important points, conclusions, or actionable advice presented in the video.
+
+Analyze the video thoroughly to provide a rich and informative response.`
+		agentConfig := AgentConfig{
+			Name:              youtubeAgent,
+			Model:             config.C.AI.Model,
+			SystemInstruction: agentSystemInstructions,
+			Temperature:       helpers.Ptr(float32(0.2)),
+			EnableTools:       false,
+			ResponseSchema:    GetYoutubeAgentSchema(),
+		}
+		agent := NewAgent(ctx, client, agentConfig)
+		agents[youtubeAgent] = agent
+	}
+
+	for _, agent := range agents {
+		agent.WarmUp()
 	}
 
 	return &LiveAI{
@@ -919,6 +953,8 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 			response = l.handleMouseClickTool(call)
 		case "readPdf":
 			response = l.handleReadPdfTool(call)
+		case "analyzeYoutubeVideo":
+			response = l.handleYoutubeAnalysisTool(call)
 		default:
 			response = executeSingleToolCall(call)
 		}
@@ -955,7 +991,7 @@ func (l *LiveAI) handleReadPdfTool(call *genai.FunctionCall) *genai.FunctionResp
 					err = fmt.Errorf("PDF reader agent not initialized")
 				} else {
 					// 4. Process with the agent
-					summary, processErr := agent.Process(query, pdfBytes, "application/pdf")
+					summary, processErr := agent.Process(query, genai.NewPartFromBytes(pdfBytes, "application/pdf"))
 					if processErr != nil {
 						err = fmt.Errorf("PDF processing failed: %w", processErr)
 					} else {
@@ -963,6 +999,57 @@ func (l *LiveAI) handleReadPdfTool(call *genai.FunctionCall) *genai.FunctionResp
 						result = map[string]any{"summary": summary}
 					}
 				}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
+}
+
+func (l *LiveAI) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	// 1. Parse arguments
+	url, urlOK := call.Args["url"].(string)
+	query := "Please analyze the provided video and generate a comprehensive report based on your instructions."
+
+	if !urlOK || url == "" {
+		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
+	} else {
+		// 2. Get and use the agent
+		agent, ok := l.agents[youtubeAgent]
+		if !ok {
+			err = fmt.Errorf("YouTube analysis agent not initialized")
+		} else {
+			// 3. Process with the agent. The Gemini API accepts various video MIME types,
+			// but "video/mp4" is recommended in documentation for YouTube URLs.
+			resultText, processErr := agent.Process(query, genai.NewPartFromURI(url, "video/mp4"))
+			if processErr != nil {
+				err = fmt.Errorf("YouTube video processing failed: %w", processErr)
+			} else {
+				log.Printf("YouTube video analysis successful for url: '%s'", url)
+				result = map[string]any{"result": resultText}
 			}
 		}
 	}
@@ -1218,7 +1305,7 @@ func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.Functi
 					} else {
 						// Process the image with the agent, using the query from the tool call as the prompt.
 						// The image buffer is PNG encoded.
-						detectionResult, processErr := agent.Process(query, imageBuf.Bytes(), "image/png")
+						detectionResult, processErr := agent.Process(query, genai.NewPartFromBytes(imageBuf.Bytes(), "image/png"))
 						if processErr != nil {
 							err = fmt.Errorf("object detection failed: %w", processErr)
 						} else {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"google.golang.org/genai"
@@ -15,7 +16,7 @@ import (
 const ObjectDetectionNormalizationGrid = 1000
 
 type Callable interface {
-	Process(prompt string, data []byte, mimeType string) (string, error)
+	Process(prompt string, parts ...*genai.Part) (string, error)
 	WarmUp()
 }
 
@@ -102,20 +103,26 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 	return agent
 }
 
-// Process sends a prompt (with an optional image) to the agent's model and returns the text response.
+// Process sends a prompt (with optional other parts like images or URIs) to the agent's model and returns the text response.
 // It's a synchronous, one-shot call.
-func (a *Agent) Process(prompt string, data []byte, mimeType string) (string, error) {
+func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error) {
 	log.Printf("[%s Agent] Processing prompt: '%s'", a.name, prompt)
-	if len(data) > 0 {
-		log.Printf("[%s Agent] Processing with data (MIME: %s, Size: %d bytes)", a.name, mimeType, len(data))
+	if len(otherParts) > 0 {
+		var partDescriptions []string
+		for _, p := range otherParts {
+			if p.InlineData != nil {
+				partDescriptions = append(partDescriptions, fmt.Sprintf("InlineData(MIME: %s, Size: %d)", p.InlineData.MIMEType, len(p.InlineData.Data)))
+			} else if p.FileData != nil {
+				partDescriptions = append(partDescriptions, fmt.Sprintf("FileURI(%s)", p.FileData.FileURI))
+			}
+		}
+		log.Printf("[%s Agent] Processing with %d additional parts: %s", a.name, len(otherParts), strings.Join(partDescriptions, ", "))
 	}
 
 	startTime := time.Now()
 
 	parts := []*genai.Part{genai.NewPartFromText(prompt)}
-	if len(data) > 0 && mimeType != "" {
-		parts = append(parts, genai.NewPartFromBytes(data, mimeType))
-	}
+	parts = append(parts, otherParts...)
 
 	userContent := genai.NewContentFromParts(parts, genai.RoleUser)
 	conversation := []*genai.Content{userContent}
@@ -158,8 +165,7 @@ func (a *Agent) WarmUp() {
 		log.Printf("[%s Agent] Warming up model...", a.name)
 		// Use a simple prompt. The goal is just to make the model endpoint "hot".
 		// We don't care about the response, only that the call is made.
-		// We pass nil for data and an empty mimeType.
-		_, err := a.Process("ping", nil, "")
+		_, err := a.Process("ping")
 		if err != nil {
 			// This is not a fatal error, but we should log it for debugging.
 			log.Printf("WARNING: [%s Agent] Warm-up call failed: %v", a.name, err)
@@ -215,5 +221,19 @@ func GetPdfReaderSchema() *genai.Schema {
 			},
 		},
 		Required: []string{"summary"},
+	}
+}
+
+func GetYoutubeAgentSchema() *genai.Schema {
+	return &genai.Schema{
+		Type:        genai.TypeObject,
+		Description: "A comprehensive analysis of the YouTube video.",
+		Properties: map[string]*genai.Schema{
+			"result": {
+				Type:        genai.TypeString,
+				Description: "A detailed report of the video, including a summary, key topics, takeaways, and a full transcript with visual context, formatted as a single Markdown string.",
+			},
+		},
+		Required: []string{"result"},
 	}
 }
