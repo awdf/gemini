@@ -203,3 +203,17 @@ func GetObjectDetectionSchema() *genai.Schema {
 		Required: []string{"objects"},
 	}
 }
+
+func GetPdfReaderSchema() *genai.Schema {
+	return &genai.Schema{
+		Type:        genai.TypeObject,
+		Description: "The summary or answer extracted from the PDF document.",
+		Properties: map[string]*genai.Schema{
+			"summary": {
+				Type:        genai.TypeString,
+				Description: "A concise summary of the key points from the PDF document, or a direct answer to the user's query.",
+			},
+		},
+		Required: []string{"summary"},
+	}
+}

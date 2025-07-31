@@ -33,6 +33,7 @@ import (
 
 const (
 	objectDetectionAgent = "objectDetection"
+	pdfAwareAgent        = "pdfAwareAgent"
 )
 
 type LiveAI struct {
@@ -118,7 +119,7 @@ For example, for a 200x400 image, a point at (x=100, y=200) should be returned a
 Return the response as a JSON array with labels. Never return masks or code fencing. Limit to 25 objects.
 If an object is present multiple times, name them according to their unique characteristic (colors, size, position, unique characteristics, etc..).`,
 			width, height, grid, grid, halfGrid, halfGrid)
-		odAgentConfig := AgentConfig{
+		agentConfig := AgentConfig{
 			Name:              objectDetectionAgent,
 			Model:             config.C.AI.ModelObjectDetection,
 			SystemInstruction: boundingBoxSystemInstructions,
@@ -126,9 +127,26 @@ If an object is present multiple times, name them according to their unique char
 			EnableTools:       false,
 			ResponseSchema:    GetObjectDetectionSchema(),
 		}
-		agent := NewAgent(ctx, client, odAgentConfig)
+		agent := NewAgent(ctx, client, agentConfig)
 		agent.WarmUp()
 		agents[objectDetectionAgent] = agent
+	}
+
+	{
+		// PDF reader agent
+		agentSystemInstructions := `You are an PDF document reader specialist. 
+The user will provide a query with pdf document, read document please and provide concise and accurate response.`
+		agentConfig := AgentConfig{
+			Name:              pdfAwareAgent,
+			Model:             config.C.AI.Model,
+			SystemInstruction: agentSystemInstructions,
+			Temperature:       helpers.Ptr(float32(0.0)),
+			EnableTools:       false,
+			ResponseSchema:    GetPdfReaderSchema(),
+		}
+		agent := NewAgent(ctx, client, agentConfig)
+		agent.WarmUp()
+		agents[pdfAwareAgent] = agent
 	}
 
 	return &LiveAI{
@@ -899,12 +917,75 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 			response = l.handleVerifyObjectDetectionTool(call)
 		case "mouseClick":
 			response = l.handleMouseClickTool(call)
+		case "readPdf":
+			response = l.handleReadPdfTool(call)
 		default:
 			response = executeSingleToolCall(call)
 		}
 		responses = append(responses, response)
 	}
 	return responses
+}
+
+func (l *LiveAI) handleReadPdfTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	// 1. Parse arguments
+	path, pathOK := call.Args["path"].(string)
+	query, queryOK := call.Args["query"].(string)
+
+	if !pathOK || path == "" || !queryOK || query == "" {
+		err = fmt.Errorf("'path' and 'query' arguments are required and must be non-empty strings")
+	} else {
+		// 2. Get safe path and read file
+		safePath, pathErr := getSafePath(path)
+		if pathErr != nil {
+			err = pathErr
+		} else {
+			pdfBytes, readErr := os.ReadFile(safePath)
+			if readErr != nil {
+				err = fmt.Errorf("failed to read PDF file '%s': %w", path, readErr)
+			} else {
+				// 3. Get and use the agent
+				agent, ok := l.agents[pdfAwareAgent]
+				if !ok {
+					err = fmt.Errorf("PDF reader agent not initialized")
+				} else {
+					// 4. Process with the agent
+					summary, processErr := agent.Process(query, pdfBytes, "application/pdf")
+					if processErr != nil {
+						err = fmt.Errorf("PDF processing failed: %w", processErr)
+					} else {
+						log.Printf("PDF processing successful for query: '%s'", query)
+						result = map[string]any{"summary": summary}
+					}
+				}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
 }
 
 func (l *LiveAI) handleMouseClickTool(call *genai.FunctionCall) *genai.FunctionResponse {

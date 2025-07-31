@@ -705,6 +705,25 @@ func getFunctionTools() *genai.Tool {
 				Behavior:    genai.BehaviorBlocking,
 			},
 			{
+				Name:        "readPdf",
+				Description: "PDF Reader: Reads the content of a PDF file from the workspace and answers a question about it.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"path": {
+							Type:        genai.TypeString,
+							Description: "The path of the PDF file to read.",
+						},
+						"query": {
+							Type:        genai.TypeString,
+							Description: "The question to ask about the PDF document (e.g., 'Summarize this document').",
+						},
+					},
+					Required: []string{"path", "query"},
+				},
+				Behavior: genai.BehaviorBlocking,
+			},
+			{
 				Name:        "uploadImage",
 				Description: "FILE SYSTEM: For analyzing a screenshot just taken, use the `detectObjects` tool directly. Upload an image file from the workspace to the session context. Use this tool when the user explicitly asks to analyze a specific file by its name.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the image file to upload."}}, Required: []string{"path"}},
