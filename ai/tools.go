@@ -739,6 +739,21 @@ func getFunctionTools() *genai.Tool {
 				Behavior: genai.BehaviorNonBlocking, // IMPORTANT: Works only in non blocking mode
 			},
 			{
+				Name:        "browseWebPage",
+				Description: "WEB BROWSER: Scrapes and provides a comprehensive analysis of the content of a web page URL.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"url": {
+							Type:        genai.TypeString,
+							Description: "The full URL of the web page to analyze.",
+						},
+					},
+					Required: []string{"url"},
+				},
+				Behavior: genai.BehaviorNonBlocking,
+			},
+			{
 				Name:        "uploadImage",
 				Description: "FILE SYSTEM: For analyzing a screenshot just taken, use the `detectObjects` tool directly. Upload an image file from the workspace to the session context. Use this tool when the user explicitly asks to analyze a specific file by its name.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the image file to upload."}}, Required: []string{"path"}},

@@ -237,3 +237,17 @@ func GetYoutubeAgentSchema() *genai.Schema {
 		Required: []string{"result"},
 	}
 }
+
+func GetWebScraperSchema() *genai.Schema {
+	return &genai.Schema{
+		Type:        genai.TypeObject,
+		Description: "A comprehensive analysis or summary of the web page.",
+		Properties: map[string]*genai.Schema{
+			"result": {
+				Type:        genai.TypeString,
+				Description: "A detailed report of the web page content, formatted as a single Markdown string.",
+			},
+		},
+		Required: []string{"result"},
+	}
+}

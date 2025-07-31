@@ -35,6 +35,7 @@ const (
 	objectDetectionAgent = "objectDetection"
 	pdfAwareAgent        = "pdfAwareAgent"
 	youtubeAgent         = "youtubeAgent"
+	webScraperAgent      = "webScraperAgent"
 )
 
 type LiveAI struct {
@@ -161,7 +162,8 @@ Provide a concise, high-level summary of the video's main topic and purpose.
 Identify the main topics or chapters discussed in the video.
 
 ### Detailed Transcript with Visual Context
-Provide a full and accurate transcript of the video's audio. Where relevant, interleave descriptions of important visual elements, on-screen text, or actions that provide context to the speech. For example: "[Visual: A diagram of a neural network is shown on screen]".
+Provide a full and accurate transcript of the video's audio. Where relevant, interleave descriptions of important visual elements, 
+on-screen text, or actions that provide context to the speech. For example: "[Visual: A diagram of a neural network is shown on screen]".
 
 ### Key Takeaways
 List the most important points, conclusions, or actionable advice presented in the video.
@@ -177,6 +179,25 @@ Analyze the video thoroughly to provide a rich and informative response.`
 		}
 		agent := NewAgent(ctx, client, agentConfig)
 		agents[youtubeAgent] = agent
+	}
+
+	{
+		// Web Scraper agent
+		agentSystemInstructions := `You are a web page analysis expert with vision capabilities. 
+Your goal is to extract as much meaningful information as possible from the provided web page URL. 
+Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report. 
+Describe important visual elements like images, charts, and the overall page structure in your analysis.`
+		agentConfig := AgentConfig{
+			Name:              webScraperAgent,
+			Model:             config.C.AI.Model,
+			SystemInstruction: agentSystemInstructions,
+			Temperature:       helpers.Ptr(float32(0.2)),
+			EnableTools:       true,
+			EnableURLContext:  true,
+			ResponseSchema:    GetWebScraperSchema(),
+		}
+		agent := NewAgent(ctx, client, agentConfig)
+		agents[webScraperAgent] = agent
 	}
 
 	for _, agent := range agents {
@@ -955,6 +976,8 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 			response = l.handleReadPdfTool(call)
 		case "analyzeYoutubeVideo":
 			response = l.handleYoutubeAnalysisTool(call)
+		case "browseWebPage":
+			response = l.handleWebScraperTool(call)
 		default:
 			response = executeSingleToolCall(call)
 		}
@@ -1049,6 +1072,57 @@ func (l *LiveAI) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.Func
 				err = fmt.Errorf("YouTube video processing failed: %w", processErr)
 			} else {
 				log.Printf("YouTube video analysis successful for url: '%s'", url)
+				result = map[string]any{"result": resultText}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
+}
+
+func (l *LiveAI) handleWebScraperTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	// 1. Parse arguments
+	url, urlOK := call.Args["url"].(string)
+
+	if !urlOK || url == "" {
+		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
+	} else {
+		// 2. Get and use the agent
+		agent, ok := l.agents[webScraperAgent]
+		if !ok {
+			err = fmt.Errorf("web scraper agent not initialized")
+		} else {
+			// 3. Process with the agent. The agent is configured with URLContext,
+			// so we just pass the URL in the prompt. The model will use its tool.
+			prompt := fmt.Sprintf("Please analyze the provided web page and generate a comprehensive report based on your instructions. URL: %s", url)
+			resultText, processErr := agent.Process(prompt)
+			if processErr != nil {
+				err = fmt.Errorf("web page processing failed: %w", processErr)
+			} else {
+				log.Printf("Web page analysis successful for url: '%s'", url)
 				result = map[string]any{"result": resultText}
 			}
 		}
