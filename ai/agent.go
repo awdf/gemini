@@ -40,7 +40,6 @@ type AgentConfig struct {
 	Model                 string
 	SystemInstruction     string
 	Temperature           *float32
-	EnableTools           bool
 	EnableGoogleSearch    bool
 	EnableURLContext      bool
 	EnableCodeExecution   bool
@@ -65,8 +64,10 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 		agent.systemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(agentConfig.SystemInstruction)}, "")
 	}
 
-	if agentConfig.EnableTools {
-		log.Printf("[%s Agent] Tool use is enabled for this request.", agentConfig.Name)
+	// Determine if any tools are enabled by checking the specific configuration flags.
+	toolsEnabled := agentConfig.EnableGoogleSearch || agentConfig.EnableURLContext || agentConfig.EnableCodeExecution || agentConfig.EnableFunctionCalling
+	if toolsEnabled {
+		log.Printf("[%s] Tool use is enabled.", agentConfig.Name)
 		var tools []*genai.Tool
 
 		// Standard tools can be combined into a single tool definition.
@@ -106,7 +107,7 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 // Process sends a prompt (with optional other parts like images or URIs) to the agent's model and returns the text response.
 // It's a synchronous, one-shot call.
 func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error) {
-	log.Printf("[%s Agent] Processing prompt: '%s'", a.name, prompt)
+	log.Printf("[%s] Processing prompt: '%s'", a.name, prompt)
 	if len(otherParts) > 0 {
 		var partDescriptions []string
 		for _, p := range otherParts {
@@ -116,7 +117,7 @@ func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error
 				partDescriptions = append(partDescriptions, fmt.Sprintf("FileURI(%s)", p.FileData.FileURI))
 			}
 		}
-		log.Printf("[%s Agent] Processing with %d additional parts: %s", a.name, len(otherParts), strings.Join(partDescriptions, ", "))
+		log.Printf("[%s] Processing with %d additional parts: %s", a.name, len(otherParts), strings.Join(partDescriptions, ", "))
 	}
 
 	startTime := time.Now()
@@ -128,9 +129,15 @@ func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error
 	conversation := []*genai.Content{userContent}
 
 	genConfig := &genai.GenerateContentConfig{
-		ThinkingConfig:   &genai.ThinkingConfig{ThinkingBudget: helpers.Ptr(int32(0))},
-		ResponseMIMEType: "application/json",
+		ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: helpers.Ptr(int32(0))},
 	}
+
+	if len(a.tools) == 0 && a.responseSchema != nil {
+		// Only set the response MIME type if we are NOT using tools, as they are incompatible.
+		// The presence of a ResponseSchema is sufficient to get JSON output when using tools.
+		genConfig.ResponseMIMEType = "application/json"
+	}
+
 	if a.temperature != nil {
 		genConfig.Temperature = a.temperature
 	} else {
@@ -148,12 +155,12 @@ func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error
 
 	resp, err := a.client.Models.GenerateContent(a.ctx, a.modelName, conversation, genConfig)
 	if err != nil {
-		log.Printf("ERROR: [%s Agent] Content generation failed: %v", a.name, err)
-		return "", fmt.Errorf("[%s Agent] content generation failed: %w", a.name, err)
+		log.Printf("ERROR: [%s] Content generation failed: %v", a.name, err)
+		return "", fmt.Errorf("[%s] content generation failed: %w", a.name, err)
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("[%s Agent] Processing successful in %v. Response length: %d", a.name, duration, len(resp.Text()))
+	log.Printf("[%s] Processing successful in %v. Response length: %d", a.name, duration, len(resp.Text()))
 	return resp.Text(), nil
 }
 
@@ -162,13 +169,13 @@ func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error
 // to avoid blocking the application's startup sequence.
 func (a *Agent) WarmUp() {
 	go func() {
-		log.Printf("[%s Agent] Warming up model...", a.name)
+		log.Printf("[%s] Warming up model...", a.name)
 		// Use a simple prompt. The goal is just to make the model endpoint "hot".
 		// We don't care about the response, only that the call is made.
 		_, err := a.Process("ping")
 		if err != nil {
 			// This is not a fatal error, but we should log it for debugging.
-			log.Printf("WARNING: [%s Agent] Warm-up call failed: %v", a.name, err)
+			log.Printf("WARNING: [%s] Warm-up call failed: %v", a.name, err)
 		}
 	}()
 }

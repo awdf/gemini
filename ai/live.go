@@ -126,7 +126,6 @@ If an object is present multiple times, name them according to their unique char
 			Model:             config.C.AI.ModelObjectDetection,
 			SystemInstruction: boundingBoxSystemInstructions,
 			Temperature:       helpers.Ptr(float32(0.0)),
-			EnableTools:       false,
 			ResponseSchema:    GetObjectDetectionSchema(),
 		}
 		agent := NewAgent(ctx, client, agentConfig)
@@ -142,7 +141,6 @@ The user will provide a query with pdf document, read document please and provid
 			Model:             config.C.AI.Model,
 			SystemInstruction: agentSystemInstructions,
 			Temperature:       helpers.Ptr(float32(0.0)),
-			EnableTools:       false,
 			ResponseSchema:    GetPdfReaderSchema(),
 		}
 		agent := NewAgent(ctx, client, agentConfig)
@@ -174,7 +172,6 @@ Analyze the video thoroughly to provide a rich and informative response.`
 			Model:             config.C.AI.Model,
 			SystemInstruction: agentSystemInstructions,
 			Temperature:       helpers.Ptr(float32(0.2)),
-			EnableTools:       false,
 			ResponseSchema:    GetYoutubeAgentSchema(),
 		}
 		agent := NewAgent(ctx, client, agentConfig)
@@ -192,7 +189,6 @@ Describe important visual elements like images, charts, and the overall page str
 			Model:             config.C.AI.Model,
 			SystemInstruction: agentSystemInstructions,
 			Temperature:       helpers.Ptr(float32(0.2)),
-			EnableTools:       true,
 			EnableURLContext:  true,
 			ResponseSchema:    GetWebScraperSchema(),
 		}
@@ -233,8 +229,6 @@ func (l *LiveAI) OpenSession() {
 	}
 
 	// 1. Configure the session based on global settings.
-	var modelName string
-	liveConfig := &genai.LiveConnectConfig{}
 	// Models documentation https://ai.google.dev/gemini-api/docs/live
 	//
 	// Native audio models:
@@ -252,9 +246,15 @@ func (l *LiveAI) OpenSession() {
 	// Model outputs: Text, Audio
 	// For responses with text. Free RPD 250 per model
 	// Tools: Search, Url context, Structured outputs, Function calling, Code execution
+
+	var modelName string
+	liveConfig := &genai.LiveConnectConfig{}
+	// Input audio transcript
+	liveConfig.InputAudioTranscription = &genai.AudioTranscriptionConfig{}
 	if config.C.AI.VoiceEnabled {
 		modelName = config.C.AI.ModelLiveTTS
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityAudio}
+		liveConfig.OutputAudioTranscription = &genai.AudioTranscriptionConfig{}
 		liveConfig.SpeechConfig = &genai.SpeechConfig{
 			VoiceConfig: &genai.VoiceConfig{
 				PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
@@ -507,7 +507,9 @@ func (l *LiveAI) Run() {
 
 // handleResponses runs in a dedicated goroutine, processing all messages from the server.
 func (l *LiveAI) handleResponses() {
-	var inModelTurn bool // State to track if we are in the middle of a model's turn.
+	var inModelTurn bool   // State to track if we are in the middle of a model's turn.
+	var inTranscript bool  // State to track if we are in the middle of a model's turn.
+	var outTranscript bool // State to track if we are in the middle of a model's turn.
 	var turnGroundingChunks []*genai.GroundingChunk
 	listener := flow.GetListener()
 
@@ -573,6 +575,9 @@ func (l *LiveAI) handleResponses() {
 		case msg.SetupComplete != nil:
 			log.Println("Live session setup complete.")
 		case msg.ServerContent != nil:
+			l.processTranscript(msg.ServerContent.InputTranscription, &inTranscript, "\nTranscript:")
+			l.processTranscript(msg.ServerContent.OutputTranscription, &outTranscript, "")
+
 			if msg.ServerContent.ModelTurn != nil {
 				if !inModelTurn {
 					// Do once per content block
@@ -580,10 +585,9 @@ func (l *LiveAI) handleResponses() {
 					inModelTurn = true
 					turnGroundingChunks = nil
 					(*l.bus).Publish("main:topic", "mute:ai.handleResponses")
-					l.formatter.Clear()
 					l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
 				}
-				// Do on each turn
+				// Do on each turn for text or voice data
 				l.processModelTurnParts(msg.ServerContent.ModelTurn.Parts)
 			}
 
@@ -596,6 +600,8 @@ func (l *LiveAI) handleResponses() {
 				// Do once per content block
 				log.Println("Live stream generation complete.")
 				l.printGroundingChunks(turnGroundingChunks)
+				inTranscript = false
+				outTranscript = false
 				inModelTurn = false
 				l.formatter.Reset()
 				(*l.bus).Publish("main:topic", "draw:ai.handleResponses")
@@ -626,9 +632,6 @@ func (l *LiveAI) handleResponses() {
 			if msg.SessionResumptionUpdate.Resumable {
 				log.Printf("Live session resumption handle updated. New handle received.")
 				l.resumptionHandle = msg.SessionResumptionUpdate.NewHandle
-			} else {
-				log.Printf("Live session is no longer resumable. Clearing handle.")
-				l.resumptionHandle = "" // Clear the handle when the session is not resumable.
 			}
 			l.mu.Unlock()
 		default:
@@ -642,6 +645,26 @@ func (l *LiveAI) handleResponses() {
 				msg.UsageMetadata.TotalTokenCount)
 		}
 	}
+}
+
+// processTranscript handles the printing of both input and output transcriptions
+// from the server, managing the state to correctly format the output.
+func (l *LiveAI) processTranscript(transcript *genai.Transcription, inProgress *bool, label string) {
+	if transcript == nil {
+		return
+	}
+
+	if !*inProgress {
+		config.DebugPrintln("Transcript generetion started")
+		*inProgress = true
+		if label != "" {
+			l.formatter.Clear()
+			l.formatter.Println(fmt.Sprintf("\n%s", label), inout.ColorDarkCyan)
+		}
+	}
+
+	// Always print the text part of the transcript chunk.
+	l.formatter.Print(transcript.Text)
 }
 
 // processModelTurnParts handles the processing of text and audio parts from a model's turn.
