@@ -19,6 +19,7 @@ const (
 	PdfReaderAgent       = "pdfReaderAgent"
 	YoutubeAgent         = "youtubeAgent"
 	WebScraperAgent      = "webScraperAgent"
+	GmailClientAgent     = "gmailAgent"
 )
 
 type Callable interface {

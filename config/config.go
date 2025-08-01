@@ -23,6 +23,7 @@ type Config struct {
 	VAD      VADConfig      `toml:"vad"`
 	Recorder RecorderConfig `toml:"recorder"`
 	Display  DisplayConfig  `toml:"display"`
+	Google   GoogleConfig   `toml:"google"`
 	Pipeline PipelineConfig `toml:"pipeline"`
 }
 
@@ -110,6 +111,13 @@ type ProactivityConfig struct {
 	ProactiveAudio bool `toml:"ProactiveAudio"`
 }
 
+// GoogleConfig holds settings for Google Workspace integrations.
+type GoogleConfig struct {
+	Enabled         bool   `toml:"Enabled"`
+	CredentialsFile string `toml:"CredentialsFile"`
+	TokenFile       string `toml:"TokenFile"`
+}
+
 // Load reads the configuration from the specified file path.
 // It supports expanding environment variables in the format ${VAR} or $VAR.
 func Load(path string) {
@@ -187,6 +195,9 @@ func createDefaultConfig(path string) {
 	defaultConfig.Recorder.MinFileSizeBytes = 600000
 	defaultConfig.Display.BarWidth = 100
 	defaultConfig.Display.UpdateIntervalMs = 50
+	defaultConfig.Google.Enabled = false
+	defaultConfig.Google.CredentialsFile = "client_secret.json"
+	defaultConfig.Google.TokenFile = "token.json"
 	defaultConfig.Pipeline.BufferTimeUs = 500000
 
 	f, err := os.Create(path)

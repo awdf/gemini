@@ -105,6 +105,12 @@ func NewAI(
 		mode:                config.C.Mode,
 	}
 
+	if config.C.Google.Enabled {
+		if err := InitGmailAgent(ctx); err != nil {
+			log.Printf("WARNING: Could not create Gmail agent, Gmail tools will be disabled. Error: %v", err)
+		}
+	}
+
 	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
 		// This log confirms that PostAI mode is aware of the workspace for file system tools.
 		log.Printf("AI function calling is enabled. Workspace is set to: %s", config.C.AI.WorkspaceDir)

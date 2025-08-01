@@ -216,6 +216,44 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 		} else {
 			result, err = appendToFile(path, content)
 		}
+	case "listEmails":
+		agent := agentGmail
+		if agent == nil {
+			err = fmt.Errorf("gmail agent not initialized or enabled")
+		} else {
+			query, _ := call.Args["query"].(string)
+			maxResultsFloat, _ := call.Args["max_results"].(float64)
+			maxResults := int64(maxResultsFloat)
+			if maxResults <= 0 {
+				maxResults = 10 // Default value
+			}
+
+			emails, listErr := agent.ListEmails(query, maxResults)
+			if listErr != nil {
+				err = fmt.Errorf("failed to list emails: %w", listErr)
+			} else {
+				log.Printf("Successfully listed %d emails for query: '%s'", len(emails), query)
+				result = map[string]any{"emails": emails}
+			}
+		}
+	case "readEmail":
+		agent := agentGmail
+		if agent == nil {
+			err = fmt.Errorf("gmail agent not initialized or enabled")
+		} else {
+			messageID, ok := call.Args["message_id"].(string)
+			if !ok || messageID == "" {
+				err = fmt.Errorf("'message_id' argument is required and must be a non-empty string")
+			} else {
+				content, readErr := agent.ReadEmail(messageID)
+				if readErr != nil {
+					err = fmt.Errorf("failed to read email with ID '%s': %w", messageID, readErr)
+				} else {
+					log.Printf("Successfully read email with ID: '%s'", messageID)
+					result = map[string]any{"content": content}
+				}
+			}
+		}
 	case "detectObjects":
 		// This tool is special and handled in LiveAI, as it requires access to the session's image buffer.
 		// This case is a fallback for non-live mode.
@@ -703,6 +741,39 @@ func getFunctionTools() *genai.Tool {
 				Description: "FILE SYSTEM: Append content to the end of an existing file. If the file does not exist, it will be created.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to append to."}, "content": {Type: genai.TypeString, Description: "The content to append."}}, Required: []string{"path", "content"}},
 				Behavior:    genai.BehaviorBlocking,
+			},
+			{
+				Name:        "listEmails",
+				Description: "GMAIL: Lists emails from the user's Gmail account. Can be filtered with a query.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"query": {
+							Type:        genai.TypeString,
+							Description: "A standard Gmail search query (e.g., 'from:hello@example.com is:unread'). Optional.",
+						},
+						"max_results": {
+							Type:        genai.TypeInteger,
+							Description: "The maximum number of emails to return. Defaults to 10 if not specified.",
+						},
+					},
+				},
+				Behavior: genai.BehaviorBlocking,
+			},
+			{
+				Name:        "readEmail",
+				Description: "GMAIL: Reads the full content of a specific email using its message ID.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"message_id": {
+							Type:        genai.TypeString,
+							Description: "The ID of the message to read, obtained from 'listEmails'.",
+						},
+					},
+					Required: []string{"message_id"},
+				},
+				Behavior: genai.BehaviorBlocking,
 			},
 			{
 				Name:        "readPdf",

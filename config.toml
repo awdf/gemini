@@ -107,6 +107,14 @@ BarWidth = 100
 # How often to refresh the display in milliseconds.
 UpdateIntervalMs = 50
 
+[google]
+# Enable Google Workspace integrations (e.g., Gmail).
+Enabled = true
+# Path to the client_secret.json from Google Cloud Console.
+CredentialsFile = "/home/awdf/Workspace/go/src/client_secret.json"
+# Path to store the generated OAuth2 token.
+TokenFile = "/home/awdf/Workspace/go/src/token.json"
+
 [pipeline]
 # GStreamer source buffer time in microseconds. Helps prevent race conditions.
 BufferTimeUs = 500000# Physical sound device for input (Default system device by default)
