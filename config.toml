@@ -2,7 +2,7 @@
 LogFile = "gemini.log"
 
 # Enable or disable debug logging for all modules.
-Debug = true
+Debug = false
 Trace = false
 Mode = "mix"
 
@@ -70,8 +70,8 @@ Enabled = true
 [ai.proactivity]
 # Configuration for model proactivity features.
 Enabled = false
-# If enabled, the model can reject responding to the last prompt (e.g., ignore out-of-context speech).
-proactive_audio = true
+# If enabled, the model can proactively interrupt the user to provide relevant information.
+ProactiveAudio = true
 
 [ai.retry]
 # Configuration for retrying failed API calls.
@@ -87,6 +87,10 @@ HangoverDurationSec = 2.0
 # Duration to ignore audio at startup to allow the pipeline to stabilize.
 # This prevents initial hardware "pops" from triggering a recording.
 WarmupDuration = "2500ms"
+# Disable the native VAD in the Gemini Live API. When true, the application's
+# VAD is used to send explicit start/stop signals. When false, the API handles
+# voice activity detection automatically.
+DisableNativeVAD = true
 
 [recorder]
 # Recordings shorter than this (in bytes) will be deleted.

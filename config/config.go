@@ -15,45 +15,45 @@ var C Config
 
 // Config defines the structure of the configuration file.
 type Config struct {
-	Debug    bool
-	Trace    bool
-	Mode     string
-	LogFile  string
-	AI       AIConfig
-	VAD      VADConfig
-	Recorder RecorderConfig
-	Display  DisplayConfig
-	Pipeline PipelineConfig
+	Debug    bool           `toml:"Debug"`
+	Trace    bool           `toml:"Trace"`
+	Mode     string         `toml:"Mode"`
+	LogFile  string         `toml:"LogFile"`
+	AI       AIConfig       `toml:"ai"`
+	VAD      VADConfig      `toml:"vad"`
+	Recorder RecorderConfig `toml:"recorder"`
+	Display  DisplayConfig  `toml:"display"`
+	Pipeline PipelineConfig `toml:"pipeline"`
 }
 
 // AIConfig holds settings related to the AI model.
 type AIConfig struct {
-	Model                    string
-	ModelObjectDetection     string `toml:"modelObjectDetection"`
-	ModelLive                string
-	ModelLiveTTS             string
-	TranscriptionPrompt      string
-	ModelTTS                 string
-	Voice                    string
-	APIKey                   string
-	VoicePrompt              string
-	SystemPrompt             string
-	DirectivesPrompt         string
-	Thinking                 int32
-	Thoughts                 bool
-	EnableTools              bool
-	EnableStandardTools      bool `toml:"enableStandardTools"`
-	URLContextDisabled       bool
-	EnableFunctionCalling    bool `toml:"enableFunctionCalling"`
-	EnableCodeExecution      bool `toml:"enableCodeExecution"`
-	CacheDir                 string
-	CacheSystemPrompt        string
-	EnableCache              bool
-	VoiceHistory             bool
-	VoiceEnabled             bool
-	WorkspaceDir             string
-	Transcript               bool
-	Retry                    RetryConfig
+	Model                    string                         `toml:"Model"`
+	ModelObjectDetection     string                         `toml:"ModelObjectDetection"`
+	ModelLive                string                         `toml:"ModelLive"`
+	ModelLiveTTS             string                         `toml:"ModelLiveTTS"`
+	TranscriptionPrompt      string                         `toml:"TranscriptionPrompt"`
+	ModelTTS                 string                         `toml:"ModelTTS"`
+	Voice                    string                         `toml:"Voice"`
+	APIKey                   string                         `toml:"APIKey"`
+	VoicePrompt              string                         `toml:"VoicePrompt"`
+	SystemPrompt             string                         `toml:"SystemPrompt"`
+	DirectivesPrompt         string                         `toml:"DirectivesPrompt"`
+	Thinking                 int32                          `toml:"Thinking"`
+	Thoughts                 bool                           `toml:"Thoughts"`
+	EnableTools              bool                           `toml:"EnableTools"`
+	EnableStandardTools      bool                           `toml:"EnableStandardTools"`
+	URLContextDisabled       bool                           `toml:"URLContextDisabled"`
+	EnableFunctionCalling    bool                           `toml:"EnableFunctionCalling"`
+	EnableCodeExecution      bool                           `toml:"EnableCodeExecution"`
+	CacheDir                 string                         `toml:"CacheDir"`
+	CacheSystemPrompt        string                         `toml:"CacheSystemPrompt"`
+	EnableCache              bool                           `toml:"EnableCache"`
+	VoiceHistory             bool                           `toml:"VoiceHistory"`
+	VoiceEnabled             bool                           `toml:"VoiceEnabled"`
+	WorkspaceDir             string                         `toml:"WorkspaceDir"`
+	Transcript               bool                           `toml:"Transcript"`
+	Retry                    RetryConfig                    `toml:"retry"`
 	ContextWindowCompression ContextWindowCompressionConfig `toml:"context_window_compression"`
 	SessionResumption        SessionResumptionConfig        `toml:"session_resumption"`
 	Proactivity              ProactivityConfig              `toml:"proactivity"`
@@ -61,51 +61,52 @@ type AIConfig struct {
 
 // VADConfig holds settings for the Voice Activity Detector.
 type VADConfig struct {
-	SilenceThreshold    float64
-	HangoverDurationSec float64
-	WarmupDuration      string `toml:"WarmupDuration"`
+	SilenceThreshold    float64 `toml:"SilenceThreshold"`
+	HangoverDurationSec float64 `toml:"HangoverDurationSec"`
+	WarmupDuration      string  `toml:"WarmupDuration"`
+	DisableNativeVAD    bool    `toml:"DisableNativeVAD"`
 }
 
 // RecorderConfig holds settings for the audio recorder.
 type RecorderConfig struct {
-	MinFileSizeBytes int64
+	MinFileSizeBytes int64 `toml:"MinFileSizeBytes"`
 }
 
 // DisplayConfig holds settings for the terminal display.
 type DisplayConfig struct {
-	BarWidth         int
-	UpdateIntervalMs int
+	BarWidth         int `toml:"BarWidth"`
+	UpdateIntervalMs int `toml:"UpdateIntervalMs"`
 }
 
 // PipelineConfig holds settings for the GStreamer pipeline.
 type PipelineConfig struct {
-	BufferTimeUs int64
-	Device       string
+	BufferTimeUs int64  `toml:"BufferTimeUs"`
+	Device       string `toml:"Device"`
 }
 
 // RetryConfig holds settings for API call retries.
 type RetryConfig struct {
-	MaxRetries     int
-	InitialDelayMs int
-	MaxDelayMs     int
+	MaxRetries     int `toml:"MaxRetries"`
+	InitialDelayMs int `toml:"InitialDelayMs"`
+	MaxDelayMs     int `toml:"MaxDelayMs"`
 }
 
 // ContextWindowCompressionConfig holds settings for live session context window compression.
 type ContextWindowCompressionConfig struct {
-	Enabled       bool
-	TriggerTokens int64
-	TargetTokens  int64
+	Enabled       bool  `toml:"Enabled"`
+	TriggerTokens int64 `toml:"TriggerTokens"`
+	TargetTokens  int64 `toml:"TargetTokens"`
 }
 
 // SessionResumptionConfig holds settings for live session resumption.
 type SessionResumptionConfig struct {
-	Enabled bool
+	Enabled bool `toml:"Enabled"`
 }
 
 // ProactivityConfig holds settings for model proactivity.
 type ProactivityConfig struct {
-	Enabled        bool
-	ProactiveAudio bool `toml:"proactiveAudio"`
+	Enabled        bool `toml:"Enabled"`
+	ProactiveAudio bool `toml:"ProactiveAudio"`
 }
 
 // Load reads the configuration from the specified file path.
@@ -167,7 +168,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.EnableCache = false
 	defaultConfig.AI.VoiceHistory = true
 	defaultConfig.AI.VoiceEnabled = false
-	defaultConfig.AI.WorkspaceDir = "~/workspace" // The directory for file system tools in live mode. Supports tilde expansion.
+	defaultConfig.AI.WorkspaceDir = "~/Workspace" // The directory for file system tools in live mode. Supports tilde expansion.
 	defaultConfig.AI.Transcript = false
 	defaultConfig.AI.ContextWindowCompression.Enabled = true
 	defaultConfig.AI.ContextWindowCompression.TriggerTokens = 0
@@ -180,6 +181,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Retry.MaxDelayMs = 10000
 	defaultConfig.VAD.SilenceThreshold = 0.02
 	defaultConfig.VAD.HangoverDurationSec = 2.0
+	defaultConfig.VAD.DisableNativeVAD = true
 	defaultConfig.Recorder.MinFileSizeBytes = 600000
 	defaultConfig.Display.BarWidth = 100
 	defaultConfig.Display.UpdateIntervalMs = 50

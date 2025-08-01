@@ -57,6 +57,7 @@ type LiveAI struct {
 	sessionClosed    chan struct{}
 	resumptionHandle string
 	warmUpDone       bool
+	vadDisabled      bool
 	Online           bool
 	odRoadMap        [3]bool
 	// mu protects the internal state of the LiveAI struct (e.g., session, Online, resumptionHandle).
@@ -217,6 +218,7 @@ Describe important visual elements like images, charts, and the overall page str
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
 		resumptionHandle: "",
 		warmUpDone:       false,
+		vadDisabled:      config.C.VAD.DisableNativeVAD,
 		Online:           false,
 	}
 }
@@ -249,6 +251,16 @@ func (l *LiveAI) OpenSession() {
 
 	var modelName string
 	liveConfig := &genai.LiveConnectConfig{}
+	// We can use model native VAD or from application
+	liveConfig.RealtimeInputConfig = &genai.RealtimeInputConfig{
+		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
+			Disabled:                 l.vadDisabled,
+			StartOfSpeechSensitivity: genai.StartSensitivityLow,
+			EndOfSpeechSensitivity:   genai.EndSensitivityLow,
+			PrefixPaddingMs:          helpers.Ptr(int32(config.C.VAD.SilenceThreshold * 1000)),
+			SilenceDurationMs:        helpers.Ptr(int32(config.C.VAD.HangoverDurationSec * 1000)),
+		},
+	}
 	// Input audio transcript
 	liveConfig.InputAudioTranscription = &genai.AudioTranscriptionConfig{}
 	if config.C.AI.VoiceEnabled {
@@ -453,6 +465,9 @@ func (l *LiveAI) Run() {
 				// send the explicit start/end markers.
 				log.Println("VAD Start: beginning to stream audio to Live API.")
 				l.isStreaming = true
+				if l.vadDisabled {
+					l.notifyActivityStart()
+				}
 
 				if l.mode == inout.ImageMode {
 					l.mu.Lock()
@@ -480,6 +495,9 @@ func (l *LiveAI) Run() {
 				l.notifyStreamDone()
 				log.Println("VAD Stop: finishing turn.")
 				l.isStreaming = false
+				if l.vadDisabled {
+					l.notifyActivityEnd()
+				}
 				// The image buffer is now released upon GenerationComplete, not here.
 			default:
 				log.Printf("WARNING: received unknown control command: %s", cmd)
