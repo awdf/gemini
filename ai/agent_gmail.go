@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/mail"
 	"strings"
+	"time"
 
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
@@ -17,7 +18,8 @@ import (
 
 // GmailAgent handles interactions with the Gmail API.
 type GmailAgent struct {
-	service *gmail.Service
+	service   *gmail.Service
+	userEmail string // To store the user's email address for the 'From' header.
 }
 
 // agentGmail is the global instance of the GmailAgent.
@@ -32,6 +34,7 @@ func InitGmailAgent(ctx context.Context) error {
 
 	scopes := []string{
 		gmail.GmailReadonlyScope,
+		gmail.GmailSendScope,
 		// Add more scopes here if needed in the future, e.g., compose, send
 	}
 
@@ -45,8 +48,17 @@ func InitGmailAgent(ctx context.Context) error {
 		return fmt.Errorf("unable to retrieve Gmail client: %w", err)
 	}
 
-	agentGmail = &GmailAgent{service: gmailService}
-	log.Println("Gmail Agent initialized successfully.")
+	// Get user's email address to use in the 'From' header when sending.
+	profile, err := gmailService.Users.GetProfile("me").Do()
+	if err != nil {
+		return fmt.Errorf("unable to retrieve user's Gmail profile: %w", err)
+	}
+	if profile.EmailAddress == "" {
+		return fmt.Errorf("could not determine user's email address from profile")
+	}
+
+	agentGmail = &GmailAgent{service: gmailService, userEmail: profile.EmailAddress}
+	log.Printf("Gmail Agent initialized successfully for user: %s", agentGmail.userEmail)
 	return nil
 }
 
@@ -122,7 +134,18 @@ func (a *GmailAgent) ListEmails(query string, maxResults int64) ([]EmailSummary,
 					summary.To = h.Value // Fallback on parse error
 				}
 			case "Date":
-				summary.Date = h.Value
+				// Parse the date string from the email header.
+				parsedTime, err := mail.ParseDate(h.Value)
+				if err == nil {
+					// If successful, convert it to the user's configured local timezone.
+					loc, locErr := time.LoadLocation(config.C.AI.Timezone)
+					if locErr != nil {
+						loc = time.UTC // Fallback to UTC on error
+					}
+					summary.Date = parsedTime.In(loc).Format(config.TimeFormat)
+				} else {
+					summary.Date = h.Value // On parse error, use the raw date string.
+				}
 			}
 		}
 		summaries = append(summaries, summary)
@@ -194,4 +217,29 @@ func (a *GmailAgent) ReadEmail(messageID string) (string, error) {
 	}
 
 	return "[Could not decode email body]", nil
+}
+
+// SendEmail sends an email on behalf of the user.
+func (a *GmailAgent) SendEmail(to, subject, body string) (string, error) {
+	if a.service == nil {
+		return "", fmt.Errorf("gmail agent not initialized")
+	}
+
+	// Construct the email message headers in RFC 2822 format.
+	messageStr := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s",
+		a.userEmail, to, subject, body)
+
+	// Base64-encode the message for the Gmail API.
+	rawMessage := base64.URLEncoding.EncodeToString([]byte(messageStr))
+
+	message := &gmail.Message{
+		Raw: rawMessage,
+	}
+
+	sentMsg, err := a.service.Users.Messages.Send("me", message).Do()
+	if err != nil {
+		return "", fmt.Errorf("failed to send email: %w", err)
+	}
+
+	return fmt.Sprintf("Email sent successfully. Message ID: %s", sentMsg.Id), nil
 }

@@ -369,10 +369,12 @@ func (l *LiveAI) Run() {
 			case strings.HasPrefix(cmd, vad.MarkerStart):
 				// The native audio models perform their own VAD (automatic activity detection).
 				// Sending explicit ActivityStart/ActivityEnd signals conflicts with this,
-				// causing a websocket error. We still use our application's VAD to control
-				// when we *stream* audio to the API by toggling `isStreaming`, but we don't
-				// send the explicit start/end markers.
+				// causing a websocket error. We still use our application's VAD to control when we
+				// *stream* audio to the API, but we must provide fresh time context for each turn
+				// because the initial system prompt's time becomes stale.
 				log.Println("VAD Start: beginning to stream audio to Live API.")
+				currentTime := config.FormatTimeWithTimezone(config.C.AI.Timezone)
+				l.sendLiveMessage(fmt.Sprintf("The current time is %s.", currentTime))
 				l.isStreaming = true
 				if l.vadDisabled {
 					l.notifyActivityStart()
@@ -692,7 +694,6 @@ func (l *LiveAI) sendInitialFiles() {
 		part := genai.NewPartFromURI(document.URI, document.MIMEType)
 		parts = append(parts, part)
 	}
-	parts = append(parts, genai.NewPartFromText(CheckQuestion))
 
 	turn := genai.NewContentFromParts(parts, genai.RoleUser)
 	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
@@ -751,7 +752,13 @@ func (l *LiveAI) sendLiveImage() {
 // sendTextPrompt sends a text prompt (and potentially a screenshot) to the live session.
 // The response is handled by the separate handleResponses goroutine.
 func (l *LiveAI) sendTextPrompt(prompt string) error {
-	parts := []*genai.Part{genai.NewPartFromText(prompt)}
+	// To address the issue of a stale system prompt in a long-running live session,
+	// we prepend the current time to each text prompt. This ensures the model
+	// always has up-to-date time context, similar to how PostAI works.
+	currentTime := config.FormatTimeWithTimezone(config.C.AI.Timezone)
+	fullPrompt := fmt.Sprintf("The current time is %s. The user's request is: %s", currentTime, prompt)
+
+	parts := []*genai.Part{genai.NewPartFromText(fullPrompt)}
 
 	if l.mode == inout.ImageMode {
 		l.mu.Lock()
@@ -932,12 +939,60 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 			response = l.handleGmailListEmailsTool(call)
 		case "readEmail":
 			response = l.handleGmailReadEmailTool(call)
+		case "sendEmail":
+			response = l.handleGmailSendEmailTool(call)
 		default:
 			response = executeSingleToolCall(call)
 		}
 		responses = append(responses, response)
 	}
 	return responses
+}
+
+func (l *LiveAI) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	if agentGmail == nil {
+		err = fmt.Errorf("gmail agent not initialized or enabled")
+	} else {
+		to, toOK := call.Args["to"].(string)
+		subject, subjectOK := call.Args["subject"].(string)
+		body, bodyOK := call.Args["body"].(string)
+		if !toOK || !subjectOK || !bodyOK {
+			err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
+		} else {
+			status, sendErr := agentGmail.SendEmail(to, subject, body)
+			if sendErr != nil {
+				err = fmt.Errorf("failed to send email: %w", sendErr)
+			} else {
+				log.Printf("Successfully sent email to: '%s'", to)
+				result = map[string]any{"status": status}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
 }
 
 func (l *LiveAI) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.FunctionResponse {

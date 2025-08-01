@@ -254,6 +254,26 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 				}
 			}
 		}
+	case "sendEmail":
+		agent := agentGmail
+		if agent == nil {
+			err = fmt.Errorf("gmail agent not initialized or enabled")
+		} else {
+			to, toOK := call.Args["to"].(string)
+			subject, subjectOK := call.Args["subject"].(string)
+			body, bodyOK := call.Args["body"].(string)
+			if !toOK || !subjectOK || !bodyOK {
+				err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
+			} else {
+				status, sendErr := agent.SendEmail(to, subject, body)
+				if sendErr != nil {
+					err = fmt.Errorf("failed to send email: %w", sendErr)
+				} else {
+					log.Printf("Successfully sent email to: '%s'", to)
+					result = map[string]any{"status": status}
+				}
+			}
+		}
 	case "detectObjects":
 		// This tool is special and handled in LiveAI, as it requires access to the session's image buffer.
 		// This case is a fallback for non-live mode.
@@ -772,6 +792,29 @@ func getFunctionTools() *genai.Tool {
 						},
 					},
 					Required: []string{"message_id"},
+				},
+				Behavior: genai.BehaviorBlocking,
+			},
+			{
+				Name:        "sendEmail",
+				Description: "GMAIL: Sends an email from the user's Gmail account.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"to": {
+							Type:        genai.TypeString,
+							Description: "The recipient's email address.",
+						},
+						"subject": {
+							Type:        genai.TypeString,
+							Description: "The subject of the email.",
+						},
+						"body": {
+							Type:        genai.TypeString,
+							Description: "The plain text body of the email.",
+						},
+					},
+					Required: []string{"to", "subject", "body"},
 				},
 				Behavior: genai.BehaviorBlocking,
 			},

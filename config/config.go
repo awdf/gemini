@@ -13,6 +13,9 @@ import (
 // C holds the global application configuration.
 var C Config
 
+// TimeFormat defines the standard time format used across the application.
+const TimeFormat = time.RFC1123
+
 // Config defines the structure of the configuration file.
 type Config struct {
 	Debug    bool           `toml:"Debug"`
@@ -29,6 +32,7 @@ type Config struct {
 
 // AIConfig holds settings related to the AI model.
 type AIConfig struct {
+	Timezone                 string                         `toml:"Timezone"`
 	Model                    string                         `toml:"Model"`
 	ModelObjectDetection     string                         `toml:"ModelObjectDetection"`
 	ModelLive                string                         `toml:"ModelLive"`
@@ -150,6 +154,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.Debug = false
 	defaultConfig.Trace = false
 	defaultConfig.Mode = "mix"
+	defaultConfig.AI.Timezone = "UTC"
 	defaultConfig.LogFile = "app.log"
 	defaultConfig.AI.Model = "gemini-2.5-flash"
 	defaultConfig.AI.ModelObjectDetection = "gemini-2.5-flash"
@@ -211,11 +216,22 @@ func createDefaultConfig(path string) {
 	}
 }
 
+// FormatTimeWithTimezone formats the current time according to the provided timezone string.
+func FormatTimeWithTimezone(tz string) string {
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		log.Printf("WARNING: Invalid timezone '%s' in config, falling back to UTC. Error: %v", tz, err)
+		loc = time.UTC
+	}
+	return time.Now().In(loc).Format(TimeFormat)
+}
+
 // GetSystemInstruction combines the system prompt and directives into a single string.
 func (a *AIConfig) GetSystemInstruction() string {
 	var sb strings.Builder
 
-	currentTime := time.Now().Format(time.RFC1123)
+	currentTime := FormatTimeWithTimezone(a.Timezone)
+	log.Printf("Current date and time is %s", currentTime)
 	sb.WriteString(fmt.Sprintf("Current date and time is %s. ", currentTime))
 
 	if a.SystemPrompt != "" {

@@ -10,6 +10,8 @@ Mode = "mix"
 # The API Key for the AI service. Can be set directly or via an environment variable.
 # Example: APIKey = "${GOOGLE_API_KEY}"
 APIKey = "${GOOGLE_API_KEY}"
+# The timezone for the AI to use for context (e.g., "UTC", "America/New_York", "Europe/Kyiv").
+Timezone = "Europe/Kyiv"
 # Post AI models, default
 Model = "gemini-2.5-flash"
 ModelTTS = "gemini-2.5-flash-preview-tts"

@@ -35,6 +35,7 @@ func GetClient(ctx context.Context, scopes []string) (*http.Client, error) {
 
 	tok, err := tokenFromFile(tokenFile)
 	if err == nil {
+		log.Println("Using existing token from file.")
 		return config.Client(ctx, tok), nil
 	}
 

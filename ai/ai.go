@@ -637,8 +637,6 @@ func (a *AI) generateAndProcessContent(
 
 		systemPrompt := config.C.AI.GetSystemInstruction()
 		if systemPrompt != "" {
-			currentTime := time.Now().Format(time.RFC1123)
-			systemPrompt = fmt.Sprintf("Current date and time is %s. %s", currentTime, systemPrompt)
 			genConfig.SystemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(systemPrompt)}, "")
 		}
 
