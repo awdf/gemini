@@ -31,13 +31,6 @@ import (
 	"gemini/wayland"
 )
 
-const (
-	objectDetectionAgent = "objectDetection"
-	pdfAwareAgent        = "pdfAwareAgent"
-	youtubeAgent         = "youtubeAgent"
-	webScraperAgent      = "webScraperAgent"
-)
-
 type LiveAI struct {
 	ctx              context.Context
 	client           *genai.Client
@@ -104,110 +97,18 @@ func NewLiveSink(
 			}
 		}
 	}
-	agents := make(map[string]Callable)
+
 	// --- Agent Initialization ---
-	{
-		// Object Detection Agent
-		bounds := helpers.Check(images.DisplayBounds())
-		width := bounds.Dx()
-		height := bounds.Dy()
-		grid := ObjectDetectionNormalizationGrid
-		halfGrid := grid / 2
-		boundingBoxSystemInstructions := fmt.Sprintf(`You are an object detection specialist. 
-The user will provide a query describing an object to find in the provided image. 
-Your task is to locate that object and return its 2D bounding box.
-The image dimensions are %d x %d (width x height). The origin (0,0) is at the top-left corner.
-You MUST return the bounding box coordinates normalized to a %dx%d grid.
-For example, for a 200x400 image, a point at (x=100, y=200) should be returned as (x=%d, y=%d).
-Return the response as a JSON array with labels. Never return masks or code fencing. Limit to 25 objects.
-If an object is present multiple times, name them according to their unique characteristic (colors, size, position, unique characteristics, etc..).`,
-			width, height, grid, grid, halfGrid, halfGrid)
-		agentConfig := AgentConfig{
-			Name:              objectDetectionAgent,
-			Model:             config.C.AI.ModelObjectDetection,
-			SystemInstruction: boundingBoxSystemInstructions,
-			Temperature:       helpers.Ptr(float32(0.0)),
-			ResponseSchema:    GetObjectDetectionSchema(),
-		}
-		agent := NewAgent(ctx, client, agentConfig)
-		agents[objectDetectionAgent] = agent
-	}
-
-	{
-		// PDF reader agent
-		agentSystemInstructions := `You are an PDF document reader specialist. 
-The user will provide a query with pdf document, read document please and provide concise and accurate response.`
-		agentConfig := AgentConfig{
-			Name:              pdfAwareAgent,
-			Model:             config.C.AI.Model,
-			SystemInstruction: agentSystemInstructions,
-			Temperature:       helpers.Ptr(float32(0.0)),
-			ResponseSchema:    GetPdfReaderSchema(),
-		}
-		agent := NewAgent(ctx, client, agentConfig)
-		agents[pdfAwareAgent] = agent
-	}
-
-	{
-		// YouTube analysis agent
-		agentSystemInstructions := `You are a comprehensive YouTube video analysis expert. Your goal is to extract as much meaningful information as possible from the provided video. Analyze both the audio and visual components to generate a detailed report.
-
-Your response MUST be a single block of text and should be structured using Markdown headings for the following sections:
-
-### Summary
-Provide a concise, high-level summary of the video's main topic and purpose.
-
-### Key Topics
-Identify the main topics or chapters discussed in the video.
-
-### Detailed Transcript with Visual Context
-Provide a full and accurate transcript of the video's audio. Where relevant, interleave descriptions of important visual elements, 
-on-screen text, or actions that provide context to the speech. For example: "[Visual: A diagram of a neural network is shown on screen]".
-
-### Key Takeaways
-List the most important points, conclusions, or actionable advice presented in the video.
-
-Analyze the video thoroughly to provide a rich and informative response.`
-		agentConfig := AgentConfig{
-			Name:              youtubeAgent,
-			Model:             config.C.AI.Model,
-			SystemInstruction: agentSystemInstructions,
-			Temperature:       helpers.Ptr(float32(0.2)),
-			ResponseSchema:    GetYoutubeAgentSchema(),
-		}
-		agent := NewAgent(ctx, client, agentConfig)
-		agents[youtubeAgent] = agent
-	}
-
-	{
-		// Web Scraper agent
-		agentSystemInstructions := `You are a web page analysis expert with vision capabilities. 
-Your goal is to extract as much meaningful information as possible from the provided web page URL. 
-Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report. 
-Describe important visual elements like images, charts, and the overall page structure in your analysis.`
-		agentConfig := AgentConfig{
-			Name:              webScraperAgent,
-			Model:             config.C.AI.Model,
-			SystemInstruction: agentSystemInstructions,
-			Temperature:       helpers.Ptr(float32(0.2)),
-			EnableURLContext:  true,
-			ResponseSchema:    GetWebScraperSchema(),
-		}
-		agent := NewAgent(ctx, client, agentConfig)
-		agents[webScraperAgent] = agent
-	}
-
-	if config.C.AI.EnableFunctionCalling && config.C.AI.AgentWarmUp {
-		for _, agent := range agents {
-			agent.WarmUp()
-		}
-	}
+	Registerate(NewObjectDetectionAgent(ctx, client))
+	Registerate(NewPdfReaderAgent(ctx, client))
+	Registerate(NewYoutubeAgent(ctx, client))
+	Registerate(NewWebScraperAgent(ctx, client))
 
 	return &LiveAI{
 		wg:               wg,
 		ctx:              ctx,
 		client:           client,
-		agents:           agents,
+		agents:           agentRegistry,
 		formatter:        inout.NewFormatter(),
 		bus:              bus,
 		controlChan:      controlChan,
@@ -1052,7 +953,7 @@ func (l *LiveAI) handleReadPdfTool(call *genai.FunctionCall) *genai.FunctionResp
 				err = fmt.Errorf("failed to read PDF file '%s': %w", path, readErr)
 			} else {
 				// 3. Get and use the agent
-				agent, ok := l.agents[pdfAwareAgent]
+				agent, ok := l.agents[PdfReaderAgent]
 				if !ok {
 					err = fmt.Errorf("PDF reader agent not initialized")
 				} else {
@@ -1104,7 +1005,7 @@ func (l *LiveAI) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.Func
 		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
 	} else {
 		// 2. Get and use the agent
-		agent, ok := l.agents[youtubeAgent]
+		agent, ok := l.agents[YoutubeAgent]
 		if !ok {
 			err = fmt.Errorf("YouTube analysis agent not initialized")
 		} else {
@@ -1154,7 +1055,7 @@ func (l *LiveAI) handleWebScraperTool(call *genai.FunctionCall) *genai.FunctionR
 		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
 	} else {
 		// 2. Get and use the agent
-		agent, ok := l.agents[webScraperAgent]
+		agent, ok := l.agents[WebScraperAgent]
 		if !ok {
 			err = fmt.Errorf("web scraper agent not initialized")
 		} else {
@@ -1416,7 +1317,7 @@ func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.Functi
 				} else {
 					log.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
 					// Create the agent with a specific system prompt for object detection.
-					agent, ok := l.agents[objectDetectionAgent]
+					agent, ok := l.agents[ObjectDetectionAgent]
 					if !ok {
 						err = fmt.Errorf("object detection agent not initialized")
 					} else {
