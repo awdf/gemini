@@ -53,6 +53,7 @@ type AIConfig struct {
 	VoiceEnabled             bool                           `toml:"VoiceEnabled"`
 	WorkspaceDir             string                         `toml:"WorkspaceDir"`
 	Transcript               bool                           `toml:"Transcript"`
+	AgentWarmUp              bool                           `toml:"AgentWarmUp"`
 	Retry                    RetryConfig                    `toml:"retry"`
 	ContextWindowCompression ContextWindowCompressionConfig `toml:"context_window_compression"`
 	SessionResumption        SessionResumptionConfig        `toml:"session_resumption"`
@@ -170,6 +171,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.VoiceEnabled = false
 	defaultConfig.AI.WorkspaceDir = "~/Workspace" // The directory for file system tools in live mode. Supports tilde expansion.
 	defaultConfig.AI.Transcript = false
+	defaultConfig.AI.AgentWarmUp = false
 	defaultConfig.AI.ContextWindowCompression.Enabled = true
 	defaultConfig.AI.ContextWindowCompression.TriggerTokens = 0
 	defaultConfig.AI.ContextWindowCompression.TargetTokens = 0

@@ -54,6 +54,10 @@ WorkspaceDir = "~/Workspace"
 EnableCache = false # Set to true to enable caching. Note: Not all models or API tiers support caching.
 CacheDir = "cache" #All files from this path will be added to cache
 
+# Warm up specialized AI agents on startup to reduce first-use latency.
+# This sends a small, low-cost request to each agent's model.
+AgentWarmUp = false
+
 [ai.context_window_compression]
 # Configuration for live session context window compression.
 Enabled = true

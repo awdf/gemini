@@ -197,8 +197,10 @@ Describe important visual elements like images, charts, and the overall page str
 		agents[webScraperAgent] = agent
 	}
 
-	for _, agent := range agents {
-		agent.WarmUp()
+	if config.C.AI.EnableFunctionCalling && config.C.AI.AgentWarmUp {
+		for _, agent := range agents {
+			agent.WarmUp()
+		}
 	}
 
 	return &LiveAI{
@@ -251,7 +253,7 @@ func (l *LiveAI) OpenSession() {
 
 	var modelName string
 	liveConfig := &genai.LiveConnectConfig{}
-	// We can use model native VAD or from application
+	// We can use model native or application provided VAD control
 	liveConfig.RealtimeInputConfig = &genai.RealtimeInputConfig{
 		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
 			Disabled:                 l.vadDisabled,
