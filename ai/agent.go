@@ -15,16 +15,17 @@ import (
 
 // Agent names used as keys in the agent map.
 const (
-	ObjectDetectionAgent = "objectDetection"
-	PdfReaderAgent       = "pdfReaderAgent"
-	YoutubeAgent         = "youtubeAgent"
-	WebScraperAgent      = "webScraperAgent"
-	GmailClientAgent     = "gmailAgent"
+	ObjectDetectionAgentName = "objectDetection"
+	PdfReaderAgentName       = "pdfReaderAgent"
+	YoutubeAgentName         = "youtubeAgent"
+	WebScraperAgentName      = "webScraperAgent"
+	GmailAgentName           = "gmailAgent"
 )
 
 type Callable interface {
 	Process(prompt string, parts ...*genai.Part) (string, error)
 	WarmUp()
+	Handle(call *genai.FunctionCall) *genai.FunctionResponse
 }
 
 // Agent is a specialized, self-contained AI processor for specific tasks.
@@ -202,4 +203,8 @@ func (a *Agent) WarmUp() {
 			log.Printf("[%s] WARNING: Warm-up call failed: %v", a.name, err)
 		}
 	}()
+}
+
+func (a *Agent) Handle(function string, call *genai.FunctionCall) *genai.FunctionResponse {
+	return nil
 }

@@ -30,7 +30,7 @@ If an object is present multiple times, name them according to their unique char
 		bounds.Dx(), bounds.Dy(), grid, grid, halfGrid, halfGrid)
 
 	agentConfig := AgentConfig{
-		Name:              ObjectDetectionAgent,
+		Name:              ObjectDetectionAgentName,
 		Model:             config.C.AI.ModelObjectDetection,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.0)),

@@ -103,12 +103,7 @@ func NewLiveSink(
 	Registerate(NewPdfReaderAgent(ctx, client))
 	Registerate(NewYoutubeAgent(ctx, client))
 	Registerate(NewWebScraperAgent(ctx, client))
-	if config.C.Google.Enabled {
-		err := InitGmailAgent(ctx)
-		if err != nil {
-			log.Printf("WARNING: Could not create Gmail agent, Gmail tools will be disabled. Error: %v", err)
-		}
-	}
+	Registerate(NewGmailAgent(ctx))
 
 	return &LiveAI{
 		wg:               wg,
@@ -930,271 +925,19 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 		case "mouseClick":
 			response = l.handleMouseClickTool(call)
 		case "readPdf":
-			response = l.handleReadPdfTool(call)
+			response = l.agents[PdfReaderAgentName].Handle(call)
 		case "analyzeYoutubeVideo":
-			response = l.handleYoutubeAnalysisTool(call)
+			response = l.agents[YoutubeAgentName].Handle(call)
 		case "browseWebPage":
 			response = l.handleWebScraperTool(call)
-		case "listEmails":
-			response = l.handleGmailListEmailsTool(call)
-		case "readEmail":
-			response = l.handleGmailReadEmailTool(call)
-		case "sendEmail":
-			response = l.handleGmailSendEmailTool(call)
+		case "listEmails", "readEmail", "sendEmail":
+			response = l.agents[GmailAgentName].Handle(call)
 		default:
 			response = executeSingleToolCall(call)
 		}
 		responses = append(responses, response)
 	}
 	return responses
-}
-
-func (l *LiveAI) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	if agentGmail == nil {
-		err = fmt.Errorf("gmail agent not initialized or enabled")
-	} else {
-		to, toOK := call.Args["to"].(string)
-		subject, subjectOK := call.Args["subject"].(string)
-		body, bodyOK := call.Args["body"].(string)
-		if !toOK || !subjectOK || !bodyOK {
-			err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
-		} else {
-			status, sendErr := agentGmail.SendEmail(to, subject, body)
-			if sendErr != nil {
-				err = fmt.Errorf("failed to send email: %w", sendErr)
-			} else {
-				log.Printf("Successfully sent email to: '%s'", to)
-				result = map[string]any{"status": status}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
-}
-
-func (l *LiveAI) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	if agentGmail == nil {
-		err = fmt.Errorf("gmail agent not initialized or enabled")
-	} else {
-		query, _ := call.Args["query"].(string)
-		maxResultsFloat, _ := call.Args["max_results"].(float64)
-		maxResults := int64(maxResultsFloat)
-		if maxResults <= 0 {
-			maxResults = 10 // Default value
-		}
-
-		emails, listErr := agentGmail.ListEmails(query, maxResults)
-		if listErr != nil {
-			err = fmt.Errorf("failed to list emails: %w", listErr)
-		} else {
-			log.Printf("Successfully listed %d emails for query: '%s'", len(emails), query)
-			result = map[string]any{"emails": emails}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
-}
-
-func (l *LiveAI) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	if agentGmail == nil {
-		err = fmt.Errorf("gmail agent not initialized or enabled")
-	} else {
-		messageID, ok := call.Args["message_id"].(string)
-		if !ok || messageID == "" {
-			err = fmt.Errorf("'message_id' argument is required and must be a non-empty string")
-		} else {
-			content, readErr := agentGmail.ReadEmail(messageID)
-			if readErr != nil {
-				err = fmt.Errorf("failed to read email with ID '%s': %w", messageID, readErr)
-			} else {
-				log.Printf("Successfully read email with ID: '%s'", messageID)
-				result = map[string]any{"content": content}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
-}
-
-func (l *LiveAI) handleReadPdfTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	// 1. Parse arguments
-	path, pathOK := call.Args["path"].(string)
-	query, queryOK := call.Args["query"].(string)
-
-	if !pathOK || path == "" || !queryOK || query == "" {
-		err = fmt.Errorf("'path' and 'query' arguments are required and must be non-empty strings")
-	} else {
-		// 2. Get safe path and read file
-		safePath, pathErr := getSafePath(path)
-		if pathErr != nil {
-			err = pathErr
-		} else {
-			pdfBytes, readErr := os.ReadFile(safePath)
-			if readErr != nil {
-				err = fmt.Errorf("failed to read PDF file '%s': %w", path, readErr)
-			} else {
-				// 3. Get and use the agent
-				agent, ok := l.agents[PdfReaderAgent]
-				if !ok {
-					err = fmt.Errorf("PDF reader agent not initialized")
-				} else {
-					// 4. Process with the agent
-					summary, processErr := agent.Process(query, genai.NewPartFromBytes(pdfBytes, "application/pdf"))
-					if processErr != nil {
-						err = fmt.Errorf("PDF processing failed: %w", processErr)
-					} else {
-						log.Printf("PDF processing successful for query: '%s'", query)
-						result = map[string]any{"summary": summary}
-					}
-				}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
-}
-
-func (l *LiveAI) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	// 1. Parse arguments
-	url, urlOK := call.Args["url"].(string)
-	query := "Please analyze the provided video and generate a comprehensive report based on your instructions."
-
-	if !urlOK || url == "" {
-		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
-	} else {
-		// 2. Get and use the agent
-		agent, ok := l.agents[YoutubeAgent]
-		if !ok {
-			err = fmt.Errorf("YouTube analysis agent not initialized")
-		} else {
-			// 3. Process with the agent. The Gemini API accepts various video MIME types,
-			// but "video/mp4" is recommended in documentation for YouTube URLs.
-			resultText, processErr := agent.Process(query, genai.NewPartFromURI(url, "video/mp4"))
-			if processErr != nil {
-				err = fmt.Errorf("YouTube video processing failed: %w", processErr)
-			} else {
-				log.Printf("YouTube video analysis successful for url: '%s'", url)
-				result = map[string]any{"result": resultText}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
 }
 
 func (l *LiveAI) handleWebScraperTool(call *genai.FunctionCall) *genai.FunctionResponse {
@@ -1210,7 +953,7 @@ func (l *LiveAI) handleWebScraperTool(call *genai.FunctionCall) *genai.FunctionR
 		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
 	} else {
 		// 2. Get and use the agent
-		agent, ok := l.agents[WebScraperAgent]
+		agent, ok := l.agents[WebScraperAgentName]
 		if !ok {
 			err = fmt.Errorf("web scraper agent not initialized")
 		} else {
@@ -1472,7 +1215,7 @@ func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.Functi
 				} else {
 					log.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
 					// Create the agent with a specific system prompt for object detection.
-					agent, ok := l.agents[ObjectDetectionAgent]
+					agent, ok := l.agents[ObjectDetectionAgentName]
 					if !ok {
 						err = fmt.Errorf("object detection agent not initialized")
 					} else {

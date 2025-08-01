@@ -11,9 +11,11 @@ import (
 
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
+	"google.golang.org/genai"
 
 	"gemini/config"
 	"gemini/google"
+	"gemini/inout"
 )
 
 // GmailAgent handles interactions with the Gmail API.
@@ -25,11 +27,18 @@ type GmailAgent struct {
 // agentGmail is the global instance of the GmailAgent.
 var agentGmail *GmailAgent
 
-// InitGmailAgent creates and initializes the global Gmail agent.
+// NewGmailAgent creates and initializes the global Gmail agent.
 // It handles the OAuth2 flow to get an authenticated client.
-func InitGmailAgent(ctx context.Context) error {
+func NewGmailAgent(ctx context.Context) *Agent {
+	if !config.C.Google.Enabled {
+		log.Println("WARNING: Could not create Gmail agent, Gmail tools is disabled.")
+		return nil
+
+	}
+
 	if config.C.Google.CredentialsFile == "" || config.C.Google.TokenFile == "" {
-		return fmt.Errorf("google credentials file or token file path is not configured")
+		log.Printf("google credentials file or token file path is not configured")
+		return nil
 	}
 
 	scopes := []string{
@@ -40,21 +49,25 @@ func InitGmailAgent(ctx context.Context) error {
 
 	client, err := google.GetClient(ctx, scopes)
 	if err != nil {
-		return fmt.Errorf("unable to get Google OAuth2 client: %w", err)
+		log.Printf("unable to get Google OAuth2 client: %w", err)
+		return nil
 	}
 
 	gmailService, err := gmail.NewService(ctx, option.WithHTTPClient(client))
 	if err != nil {
-		return fmt.Errorf("unable to retrieve Gmail client: %w", err)
+		log.Printf("unable to retrieve Gmail client: %w", err)
+		return nil
 	}
 
 	// Get user's email address to use in the 'From' header when sending.
 	profile, err := gmailService.Users.GetProfile("me").Do()
 	if err != nil {
-		return fmt.Errorf("unable to retrieve user's Gmail profile: %w", err)
+		log.Printf("unable to retrieve user's Gmail profile: %w", err)
+		return nil
 	}
 	if profile.EmailAddress == "" {
-		return fmt.Errorf("could not determine user's email address from profile")
+		log.Printf("could not determine user's email address from profile")
+		return nil
 	}
 
 	agentGmail = &GmailAgent{service: gmailService, userEmail: profile.EmailAddress}
@@ -155,7 +168,7 @@ func (a *GmailAgent) ListEmails(query string, maxResults int64) ([]EmailSummary,
 }
 
 // findBodyPart recursively searches for a part with a specific MIME type.
-func findBodyPart(part *gmail.MessagePart, mimeType string) string {
+func (a *GmailAgent) findBodyPart(part *gmail.MessagePart, mimeType string) string {
 	if part == nil {
 		return ""
 	}
@@ -174,7 +187,7 @@ func findBodyPart(part *gmail.MessagePart, mimeType string) string {
 	if strings.HasPrefix(part.MimeType, "multipart/") {
 		for _, subPart := range part.Parts {
 			// Append the result of the recursive call.
-			bodyBuilder.WriteString(findBodyPart(subPart, mimeType))
+			bodyBuilder.WriteString(a.findBodyPart(subPart, mimeType))
 		}
 	}
 
@@ -197,13 +210,13 @@ func (a *GmailAgent) ReadEmail(messageID string) (string, error) {
 	}
 
 	// 1. Prioritize finding the 'text/plain' part.
-	body := findBodyPart(msg.Payload, "text/plain")
+	body := a.findBodyPart(msg.Payload, "text/plain")
 	if body != "" {
 		return body, nil
 	}
 
 	// 2. If no 'text/plain', fall back to 'text/html'. The AI can often parse this.
-	body = findBodyPart(msg.Payload, "text/html")
+	body = a.findBodyPart(msg.Payload, "text/html")
 	if body != "" {
 		return body, nil
 	}
@@ -242,4 +255,153 @@ func (a *GmailAgent) SendEmail(to, subject, body string) (string, error) {
 	}
 
 	return fmt.Sprintf("Email sent successfully. Message ID: %s", sentMsg.Id), nil
+}
+
+func (a *GmailAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
+	switch call.Name {
+	case "gmail_send_email":
+		return agentGmail.handleGmailSendEmailTool(call)
+	case "gmail_list_emails":
+		return agentGmail.handleGmailListEmailsTool(call)
+	case "gmail_read_email":
+		return agentGmail.handleGmailReadEmailTool(call)
+	default:
+		return nil
+	}
+}
+
+func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	if agentGmail == nil {
+		err = fmt.Errorf("gmail agent not initialized or enabled")
+	} else {
+		to, toOK := call.Args["to"].(string)
+		subject, subjectOK := call.Args["subject"].(string)
+		body, bodyOK := call.Args["body"].(string)
+		if !toOK || !subjectOK || !bodyOK {
+			err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
+		} else {
+			status, sendErr := agentGmail.SendEmail(to, subject, body)
+			if sendErr != nil {
+				err = fmt.Errorf("failed to send email: %w", sendErr)
+			} else {
+				log.Printf("Successfully sent email to: '%s'", to)
+				result = map[string]any{"status": status}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
+}
+
+func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	if agentGmail == nil {
+		err = fmt.Errorf("gmail agent not initialized or enabled")
+	} else {
+		query, _ := call.Args["query"].(string)
+		maxResultsFloat, _ := call.Args["max_results"].(float64)
+		maxResults := int64(maxResultsFloat)
+		if maxResults <= 0 {
+			maxResults = 10 // Default value
+		}
+
+		emails, listErr := agentGmail.ListEmails(query, maxResults)
+		if listErr != nil {
+			err = fmt.Errorf("failed to list emails: %w", listErr)
+		} else {
+			log.Printf("Successfully listed %d emails for query: '%s'", len(emails), query)
+			result = map[string]any{"emails": emails}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
+}
+
+func (a *GmailAgent) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	if agentGmail == nil {
+		err = fmt.Errorf("gmail agent not initialized or enabled")
+	} else {
+		messageID, ok := call.Args["message_id"].(string)
+		if !ok || messageID == "" {
+			err = fmt.Errorf("'message_id' argument is required and must be a non-empty string")
+		} else {
+			content, readErr := agentGmail.ReadEmail(messageID)
+			if readErr != nil {
+				err = fmt.Errorf("failed to read email with ID '%s': %w", messageID, readErr)
+			} else {
+				log.Printf("Successfully read email with ID: '%s'", messageID)
+				result = map[string]any{"content": content}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+	}
 }

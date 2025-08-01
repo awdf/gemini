@@ -2,15 +2,22 @@ package ai
 
 import (
 	"context"
+	"fmt"
+	"log"
 
 	"google.golang.org/genai"
 
 	"gemini/config"
 	"gemini/helpers"
+	"gemini/inout"
 )
 
+type YoutubeAgent struct {
+	*Agent
+}
+
 // NewYoutubeAgent creates a specialized agent for analyzing YouTube videos.
-func NewYoutubeAgent(ctx context.Context, client *genai.Client) *Agent {
+func NewYoutubeAgent(ctx context.Context, client *genai.Client) *YoutubeAgent {
 	systemInstruction := `You are a comprehensive YouTube video analysis expert. Your goal is to extract as much meaningful information as possible from the provided video. Analyze both the audio and visual components to generate a detailed report.
 
 Your response MUST be a single block of text and should be structured using Markdown headings for the following sections:
@@ -30,13 +37,22 @@ List the most important points, conclusions, or actionable advice presented in t
 
 Analyze the video thoroughly to provide a rich and informative response.`
 	agentConfig := AgentConfig{
-		Name:              YoutubeAgent,
+		Name:              YoutubeAgentName,
 		Model:             config.C.AI.Model,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
 		ResponseSchema:    GetYoutubeAgentSchema(),
 	}
-	return NewAgent(ctx, client, agentConfig)
+	// Create the base agent. NewAgent also registers it.
+	baseAgent := NewAgent(ctx, client, agentConfig)
+
+	// Create the specialized agent by embedding the base agent.
+	youtubeAgent := &YoutubeAgent{Agent: baseAgent}
+
+	// Overwrite the registration in the registry with the specialized agent.
+	// This ensures that when tool calls are dispatched, the correct Handle method is called.
+	agentRegistry[youtubeAgent.name] = youtubeAgent
+	return youtubeAgent
 }
 
 func GetYoutubeAgentSchema() *genai.Schema {
@@ -45,5 +61,63 @@ func GetYoutubeAgentSchema() *genai.Schema {
 		Description: "A comprehensive analysis of the YouTube video.",
 		Properties:  map[string]*genai.Schema{"result": {Type: genai.TypeString, Description: "A detailed report of the video, including a summary, key topics, takeaways, and a full transcript with visual context, formatted as a single Markdown string."}},
 		Required:    []string{"result"},
+	}
+}
+
+func (a *YoutubeAgent) WarmUp() {
+	a.Agent.WarmUp()
+}
+
+func (a *YoutubeAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
+	switch call.Name {
+	case "readPdf":
+		return a.handleYoutubeAnalysisTool(call)
+	default:
+		return a.Agent.Handle(call.Name, call)
+	}
+}
+
+func (a *YoutubeAgent) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+
+	var result any
+	var err error
+
+	// 1. Parse arguments
+	url, urlOK := call.Args["url"].(string)
+	query := "Please analyze the provided video and generate a comprehensive report based on your instructions."
+
+	if !urlOK || url == "" {
+		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
+	} else {
+		// 3. Process with the agent. The Gemini API accepts various video MIME types,
+		// but "video/mp4" is recommended in documentation for YouTube URLs.
+		resultText, processErr := a.Agent.Process(query, genai.NewPartFromURI(url, "video/mp4"))
+		if processErr != nil {
+			err = fmt.Errorf("YouTube video processing failed: %w", processErr)
+		} else {
+			log.Printf("YouTube video analysis successful for url: '%s'", url)
+			result = map[string]any{"result": resultText}
+		}
+	}
+
+	if err != nil {
+		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
+		result = map[string]any{"error": err.Error()}
+	}
+
+	inout.LogToolResult(call.Name, result)
+
+	responseMap, ok := result.(map[string]any)
+	if !ok {
+		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		responseMap = map[string]any{"output": result}
+	}
+
+	return &genai.FunctionResponse{
+		ID:         call.ID,
+		Name:       call.Name,
+		Response:   responseMap,
+		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
 	}
 }

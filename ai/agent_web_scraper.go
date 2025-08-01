@@ -16,7 +16,7 @@ Your goal is to extract as much meaningful information as possible from the prov
 Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report. 
 Describe important visual elements like images, charts, and the overall page structure in your analysis.`
 	agentConfig := AgentConfig{
-		Name:              WebScraperAgent,
+		Name:              WebScraperAgentName,
 		Model:             config.C.AI.Model,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
