@@ -70,7 +70,7 @@ func (a *YoutubeAgent) WarmUp() {
 
 func (a *YoutubeAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
-	case "readPdf":
+	case "analyzeYoutubeVideo":
 		return a.handleYoutubeAnalysisTool(call)
 	default:
 		return a.Agent.Handle(call.Name, call)
@@ -78,7 +78,7 @@ func (a *YoutubeAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse 
 }
 
 func (a *YoutubeAgent) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error

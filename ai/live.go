@@ -1,12 +1,8 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"io"
 	"log"
 	"mime"
@@ -28,7 +24,6 @@ import (
 	"gemini/images"
 	"gemini/inout"
 	"gemini/vad"
-	"gemini/wayland"
 )
 
 type LiveAI struct {
@@ -52,7 +47,6 @@ type LiveAI struct {
 	warmUpDone       bool
 	vadDisabled      bool
 	Online           bool
-	odRoadMap        [3]bool
 	// mu protects the internal state of the LiveAI struct (e.g., session, Online, resumptionHandle).
 	// It allows multiple concurrent readers but only one writer, which is ideal for state
 	// that is read often but changed infrequently (like during session setup/teardown).
@@ -103,7 +97,7 @@ func NewLiveSink(
 	Registerate(NewPdfReaderAgent(ctx, client))
 	Registerate(NewYoutubeAgent(ctx, client))
 	Registerate(NewWebScraperAgent(ctx, client))
-	Registerate(NewGmailAgent(ctx))
+	Registerate(NewGmailAgent(ctx, client))
 
 	return &LiveAI{
 		wg:               wg,
@@ -915,347 +909,51 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
 		var response *genai.FunctionResponse
+		isObjectDetectionTool := false
 		switch call.Name {
 		case "uploadImage":
 			response = l.handleUploadImageTool(call)
-		case "detectObjects":
-			response = l.handleDetectObjectsTool(call)
-		case "verifyObjectDetection":
-			response = l.handleVerifyObjectDetectionTool(call)
-		case "mouseClick":
-			response = l.handleMouseClickTool(call)
+		case "detectObjects", "verifyObjectDetection", "mouseClick":
+			isObjectDetectionTool = true
+			// For object detection tools, we need to pass the current image buffer.
+			l.mu.RLock()
+			if l.imageBuffer != nil {
+				call.Args["image_buffer"] = l.imageBuffer
+			}
+			l.mu.RUnlock()
+			response = l.agents[ObjectDetectionAgentName].Handle(call)
 		case "readPdf":
 			response = l.agents[PdfReaderAgentName].Handle(call)
 		case "analyzeYoutubeVideo":
 			response = l.agents[YoutubeAgentName].Handle(call)
 		case "browseWebPage":
-			response = l.handleWebScraperTool(call)
+			response = l.agents[WebScraperAgentName].Handle(call)
 		case "listEmails", "readEmail", "sendEmail":
 			response = l.agents[GmailAgentName].Handle(call)
 		default:
 			response = executeSingleToolCall(call)
 		}
 		responses = append(responses, response)
+
+		// Post-processing for special agents that need to interact with the session.
+		if isObjectDetectionTool && response.Response != nil {
+			if content, ok := response.Response["send_content"].(genai.LiveClientContentInput); ok {
+				l.mu.RLock()
+				session := l.session
+				l.mu.RUnlock()
+				if session != nil {
+					l.writeMu.Lock()
+					if err := session.SendClientContent(content); err != nil {
+						log.Printf("ERROR: failed to send agent content to session: %v", err)
+					}
+					l.writeMu.Unlock()
+				}
+				// Remove the special key from the response so it's not sent to the model.
+				delete(response.Response, "send_content")
+			}
+		}
 	}
 	return responses
-}
-
-func (l *LiveAI) handleWebScraperTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	// 1. Parse arguments
-	url, urlOK := call.Args["url"].(string)
-
-	if !urlOK || url == "" {
-		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
-	} else {
-		// 2. Get and use the agent
-		agent, ok := l.agents[WebScraperAgentName]
-		if !ok {
-			err = fmt.Errorf("web scraper agent not initialized")
-		} else {
-			// 3. Process with the agent. The agent is configured with URLContext,
-			// so we just pass the URL in the prompt. The model will use its tool.
-			prompt := fmt.Sprintf("Please analyze the provided web page and generate a comprehensive report based on your instructions. URL: %s", url)
-			resultText, processErr := agent.Process(prompt)
-			if processErr != nil {
-				err = fmt.Errorf("web page processing failed: %w", processErr)
-			} else {
-				log.Printf("Web page analysis successful for url: '%s'", url)
-				result = map[string]any{"result": resultText}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
-}
-
-func (l *LiveAI) handleMouseClickTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	// Enforce the correct tool-use sequence.
-	if !l.odRoadMap[0] || !l.odRoadMap[1] {
-		err = fmt.Errorf("you must get positive approve from 'verifyObjectDetection' tool before apply mouse actions")
-	} else {
-		// 1. Parse arguments
-		xNorm, xOK := call.Args["x"].(float64)
-		yNorm, yOK := call.Args["y"].(float64)
-		clicksFloat, _ := call.Args["clicks"].(float64)
-
-		if !xOK || !yOK {
-			err = fmt.Errorf("arguments 'x' and 'y' are required and must be numbers")
-		} else {
-			// 2. Get image dimensions from session buffer
-			l.mu.RLock()
-			imageBuf := l.imageBuffer
-			l.mu.RUnlock()
-
-			if imageBuf == nil || imageBuf.Len() == 0 {
-				err = fmt.Errorf("no image found in the current session context to calculate click coordinates")
-			} else {
-				// 3. Decode image config to get bounds efficiently
-				imgConfig, _, decodeErr := image.DecodeConfig(bytes.NewReader(imageBuf.Bytes()))
-				if decodeErr != nil {
-					err = fmt.Errorf("failed to decode screenshot config for click: %w", decodeErr)
-				} else {
-					// 4. Denormalize coordinates
-					imgWidth := float64(imgConfig.Width)
-					imgHeight := float64(imgConfig.Height)
-
-					absX := int((xNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
-					absY := int((yNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
-
-					clicks := int(clicksFloat)
-					if clicks < 1 {
-						clicks = 1
-					}
-
-					log.Printf("Performing %d mouse click(s) at absolute pixel coordinates (%d, %d)", clicks, absX, absY)
-
-					// 5. Execute the desktop automation.
-					wayland.MoveMouseToPosition(absX, absY)
-					time.Sleep(100 * time.Millisecond)
-					wayland.MouseLeftClick(clicks)
-
-					result = map[string]any{"status": fmt.Sprintf("%d mouse click(s) performed at (%d, %d)", clicks, absX, absY)}
-				}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	l.odRoadMap = [3]bool{false, false, false}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
-}
-
-func (l *LiveAI) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	// Enforce the correct tool-use sequence.
-	if !l.odRoadMap[0] {
-		err = fmt.Errorf("you must call 'detectObjects' successfully before you can verify the result")
-	} else {
-		// 1. Parse arguments from the tool call
-		xminNorm, xminOK := call.Args["xmin"].(float64)
-		yminNorm, yminOK := call.Args["ymin"].(float64)
-		xmaxNorm, xmaxOK := call.Args["xmax"].(float64)
-		ymaxNorm, ymaxOK := call.Args["ymax"].(float64)
-
-		if !xminOK || !yminOK || !xmaxOK || !ymaxOK {
-			err = fmt.Errorf("invalid or missing normalized bounding box arguments (xmin, ymin, xmax, ymax)")
-		} else {
-			// 2. Get the original screenshot from the session buffer
-			l.mu.RLock()
-			imageBuf := l.imageBuffer
-			l.mu.RUnlock()
-
-			if imageBuf == nil || imageBuf.Len() == 0 {
-				err = fmt.Errorf("no image found in the current session context to verify")
-			} else {
-				// 3. Decode the image
-				originalImg, decodeErr := png.Decode(bytes.NewReader(imageBuf.Bytes()))
-				if decodeErr != nil {
-					err = fmt.Errorf("failed to decode screenshot for verification: %w", decodeErr)
-				} else {
-					// 4. Get image dimensions and denormalize coordinates
-					bounds := originalImg.Bounds()
-					imgWidth := float64(bounds.Dx())
-					imgHeight := float64(bounds.Dy())
-
-					xmin := int((xminNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
-					ymin := int((yminNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
-					xmax := int((xmaxNorm / float64(ObjectDetectionNormalizationGrid)) * imgWidth)
-					ymax := int((ymaxNorm / float64(ObjectDetectionNormalizationGrid)) * imgHeight)
-
-					// 5. Draw the rectangle
-					rect := image.Rect(xmin, ymin, xmax, ymax)
-					imgWithBox := images.DrawRectangle(originalImg, rect, 3, color.RGBA{R: 255, A: 255}) // Red box, 3px thick
-
-					// 6. Encode the new image back to a PNG buffer
-					newImageBuf := new(bytes.Buffer)
-					if encodeErr := png.Encode(newImageBuf, imgWithBox); encodeErr != nil {
-						err = fmt.Errorf("failed to encode verification image: %w", encodeErr)
-					} else {
-						// TODO: remove after object detection live testing
-						go helpers.Verify(images.SaveImage("Detect.png", newImageBuf.Bytes()))
-						// 7. Send the new image and a verification prompt to the session
-						parts := []*genai.Part{
-							genai.NewPartFromText("Tool have drawn the red box according to provided coordinates. Is the user requested object to detect inside the red box correctly identified? If not, try resolve this issue without user confirmation"),
-							genai.NewPartFromBytes(newImageBuf.Bytes(), "image/png"),
-						}
-						turn := genai.NewContentFromParts(parts, genai.RoleUser)
-						content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
-
-						l.mu.RLock()
-						session := l.session
-						l.mu.RUnlock()
-
-						if session == nil {
-							err = fmt.Errorf("live session is not active, cannot send verification image")
-						} else {
-							l.writeMu.Lock()
-							sendErr := session.SendClientContent(content)
-							l.writeMu.Unlock()
-							if sendErr != nil {
-								err = fmt.Errorf("failed to send verification image to session: %w", sendErr)
-							} else {
-								log.Println("Successfully sent verification image to live session.")
-								result = map[string]any{"status": "Verification image sent. Awaiting confirmation."}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	} else {
-		// Mark this step as complete on the roadmap only on success.
-		l.odRoadMap[1] = true
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
-}
-
-// handleDetectObjectsTool processes the 'detectObjects' tool call.
-// It uses a specialized Agent to analyze an image from the current session's
-// image buffer and return the findings.
-// Cookbook: https://github.com/google-gemini/cookbook/blob/d1eed253584683b1a435783cf5f319bb235aea97/quickstarts/Spatial_understanding.ipynb
-func (l *LiveAI) handleDetectObjectsTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	// Get the query from the tool call arguments.
-	query, ok := call.Args["query"].(string)
-	if !ok || query == "" {
-		err = fmt.Errorf("'query' argument is required and must be a non-empty string")
-	} else {
-		// Add a guardrail to prevent the model from sending overly simplistic queries by
-		// checking for a minimum number of words. This is more robust than checking
-		// character length, as the model can't bypass it with extra spaces.
-		const minWordCount = 5
-		if len(strings.Fields(query)) < minWordCount {
-			err = fmt.Errorf("query '%s' is not descriptive enough (must be at least %d words). Please provide a more descriptive query, for example: 'the blue \"Submit\" button in the center of the form'", query, minWordCount)
-		} else {
-			// This tool uses the session's image buffer.
-			l.mu.RLock()
-			imageBuf := l.imageBuffer
-			l.mu.RUnlock()
-
-			if imageBuf == nil || imageBuf.Len() == 0 {
-				err = fmt.Errorf("no image found in the current session context to detect objects from")
-			} else {
-				// Get screen dimensions to provide context to the model.
-				bounds, boundsErr := images.DisplayBounds()
-				if boundsErr != nil {
-					err = fmt.Errorf("failed to get display bounds for object detection context: %w", boundsErr)
-				} else {
-					log.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
-					// Create the agent with a specific system prompt for object detection.
-					agent, ok := l.agents[ObjectDetectionAgentName]
-					if !ok {
-						err = fmt.Errorf("object detection agent not initialized")
-					} else {
-						// Process the image with the agent, using the query from the tool call as the prompt.
-						// The image buffer is PNG encoded.
-						detectionResult, processErr := agent.Process(query, genai.NewPartFromBytes(imageBuf.Bytes(), "image/png"))
-						if processErr != nil {
-							err = fmt.Errorf("object detection failed: %w", processErr)
-						} else {
-							log.Printf("Object detection successful for query: '%s'", query)
-							result = map[string]any{"detected_objects": detectionResult}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	} else {
-		// Mark this step as complete on the roadmap only on success.
-		l.odRoadMap[0] = true
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
 }
 
 // handleUploadImageTool processes the 'uploadImage' tool call, which is specific to LiveAI.

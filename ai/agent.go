@@ -59,7 +59,7 @@ type AgentConfig struct {
 var agentRegistry = make(map[string]Callable)
 
 // Agents post initialization
-func Registerate(agent *Agent) {
+func Registerate(agent Callable) {
 	if config.C.AI.EnableFunctionCalling && config.C.AI.AgentWarmUp {
 		agent.WarmUp()
 	}
@@ -123,8 +123,6 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 	if _, exists := agentRegistry[agent.name]; exists {
 		log.Printf("WARNING: Agent with name '%s' is being re-registered. This may indicate a configuration issue.", agent.name)
 	}
-	agentRegistry[agent.name] = &agent
-	log.Printf("Agent '%s' registered successfully.", agent.name)
 
 	return &agent
 }

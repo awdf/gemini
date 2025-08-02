@@ -20,20 +20,20 @@ import (
 
 // GmailAgent handles interactions with the Gmail API.
 type GmailAgent struct {
+	*Agent
 	service   *gmail.Service
 	userEmail string // To store the user's email address for the 'From' header.
 }
 
-// agentGmail is the global instance of the GmailAgent.
+// agentGmail is the global instance of the GmailAgent, used by the non-live tool dispatcher.
 var agentGmail *GmailAgent
 
-// NewGmailAgent creates and initializes the global Gmail agent.
+// NewGmailAgent creates and initializes the Gmail agent.
 // It handles the OAuth2 flow to get an authenticated client.
-func NewGmailAgent(ctx context.Context) *Agent {
+func NewGmailAgent(ctx context.Context, client *genai.Client) *GmailAgent {
 	if !config.C.Google.Enabled {
 		log.Println("WARNING: Could not create Gmail agent, Gmail tools is disabled.")
 		return nil
-
 	}
 
 	if config.C.Google.CredentialsFile == "" || config.C.Google.TokenFile == "" {
@@ -47,13 +47,13 @@ func NewGmailAgent(ctx context.Context) *Agent {
 		// Add more scopes here if needed in the future, e.g., compose, send
 	}
 
-	client, err := google.GetClient(ctx, scopes)
+	gClient, err := google.GetClient(ctx, scopes)
 	if err != nil {
 		log.Printf("unable to get Google OAuth2 client: %w", err)
 		return nil
 	}
 
-	gmailService, err := gmail.NewService(ctx, option.WithHTTPClient(client))
+	gmailService, err := gmail.NewService(ctx, option.WithHTTPClient(gClient))
 	if err != nil {
 		log.Printf("unable to retrieve Gmail client: %w", err)
 		return nil
@@ -70,9 +70,22 @@ func NewGmailAgent(ctx context.Context) *Agent {
 		return nil
 	}
 
-	agentGmail = &GmailAgent{service: gmailService, userEmail: profile.EmailAddress}
-	log.Printf("Gmail Agent initialized successfully for user: %s", agentGmail.userEmail)
-	return nil
+	// Create a base agent. It won't use the model directly, but embedding it makes it a valid Callable.
+	baseAgent := NewAgent(ctx, client, AgentConfig{
+		Name:  GmailAgentName,
+		Model: config.C.AI.Model, // Not used, but required by NewAgent
+	})
+
+	gmailAgent := &GmailAgent{
+		Agent:     baseAgent,
+		service:   gmailService,
+		userEmail: profile.EmailAddress,
+	}
+
+	agentRegistry[gmailAgent.name] = gmailAgent // Overwrite registration with the specialized agent
+	agentGmail = gmailAgent                     // Set the global instance for PostAI mode
+	log.Printf("Gmail Agent initialized successfully for user: %s", gmailAgent.userEmail)
+	return gmailAgent
 }
 
 // EmailSummary contains the essential details of an email.
@@ -259,24 +272,24 @@ func (a *GmailAgent) SendEmail(to, subject, body string) (string, error) {
 
 func (a *GmailAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
-	case "gmail_send_email":
-		return agentGmail.handleGmailSendEmailTool(call)
-	case "gmail_list_emails":
-		return agentGmail.handleGmailListEmailsTool(call)
-	case "gmail_read_email":
-		return agentGmail.handleGmailReadEmailTool(call)
+	case "sendEmail":
+		return a.handleGmailSendEmailTool(call)
+	case "listEmails":
+		return a.handleGmailListEmailsTool(call)
+	case "readEmail":
+		return a.handleGmailReadEmailTool(call)
 	default:
-		return nil
+		return a.Agent.Handle(call.Name, call)
 	}
 }
 
 func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
 
-	if agentGmail == nil {
+	if a == nil {
 		err = fmt.Errorf("gmail agent not initialized or enabled")
 	} else {
 		to, toOK := call.Args["to"].(string)
@@ -285,7 +298,7 @@ func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.F
 		if !toOK || !subjectOK || !bodyOK {
 			err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
 		} else {
-			status, sendErr := agentGmail.SendEmail(to, subject, body)
+			status, sendErr := a.SendEmail(to, subject, body)
 			if sendErr != nil {
 				err = fmt.Errorf("failed to send email: %w", sendErr)
 			} else {
@@ -317,12 +330,12 @@ func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.F
 }
 
 func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
 
-	if agentGmail == nil {
+	if a == nil {
 		err = fmt.Errorf("gmail agent not initialized or enabled")
 	} else {
 		query, _ := call.Args["query"].(string)
@@ -332,7 +345,7 @@ func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.
 			maxResults = 10 // Default value
 		}
 
-		emails, listErr := agentGmail.ListEmails(query, maxResults)
+		emails, listErr := a.ListEmails(query, maxResults)
 		if listErr != nil {
 			err = fmt.Errorf("failed to list emails: %w", listErr)
 		} else {
@@ -363,19 +376,19 @@ func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.
 }
 
 func (a *GmailAgent) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
+	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
 
-	if agentGmail == nil {
+	if a == nil {
 		err = fmt.Errorf("gmail agent not initialized or enabled")
 	} else {
 		messageID, ok := call.Args["message_id"].(string)
 		if !ok || messageID == "" {
 			err = fmt.Errorf("'message_id' argument is required and must be a non-empty string")
 		} else {
-			content, readErr := agentGmail.ReadEmail(messageID)
+			content, readErr := a.ReadEmail(messageID)
 			if readErr != nil {
 				err = fmt.Errorf("failed to read email with ID '%s': %w", messageID, readErr)
 			} else {

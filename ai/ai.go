@@ -106,9 +106,7 @@ func NewAI(
 	}
 
 	if config.C.Google.Enabled {
-		if err := NewGmailAgent(ctx); err != nil {
-			log.Printf("WARNING: Could not create Gmail agent, Gmail tools will be disabled. Error: %v", err)
-		}
+		NewGmailAgent(ctx, ai.client)
 	}
 
 	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
