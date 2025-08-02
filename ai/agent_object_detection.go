@@ -106,7 +106,7 @@ func (a *ObjectDetectionAgent) Handle(call *genai.FunctionCall) *genai.FunctionR
 	case "mouseClick":
 		return a.handleMouseClickTool(call)
 	default:
-		return a.Agent.Handle(call.Name, call)
+		return a.Agent.Handle(call)
 	}
 }
 

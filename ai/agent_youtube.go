@@ -73,7 +73,7 @@ func (a *YoutubeAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse 
 	case "analyzeYoutubeVideo":
 		return a.handleYoutubeAnalysisTool(call)
 	default:
-		return a.Agent.Handle(call.Name, call)
+		return a.Agent.Handle(call)
 	}
 }
 

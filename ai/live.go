@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"mime"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -424,6 +422,7 @@ func (l *LiveAI) Run() {
 }
 
 // handleResponses runs in a dedicated goroutine, processing all messages from the server.
+// Must be run only once to avoid double processing of responses
 func (l *LiveAI) handleResponses() {
 	var inModelTurn bool   // State to track if we are in the middle of a model's turn.
 	var inTranscript bool  // State to track if we are in the middle of a model's turn.
@@ -908,35 +907,37 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
-		var response *genai.FunctionResponse
-		isObjectDetectionTool := false
-		switch call.Name {
-		case "uploadImage":
-			response = l.handleUploadImageTool(call)
-		case "detectObjects", "verifyObjectDetection", "mouseClick":
-			isObjectDetectionTool = true
-			// For object detection tools, we need to pass the current image buffer.
-			l.mu.RLock()
-			if l.imageBuffer != nil {
-				call.Args["image_buffer"] = l.imageBuffer
+		// Add the current image buffer to any tool call that might need it.
+		// The tool itself is responsible for using or ignoring this argument.
+		l.mu.RLock()
+		if l.imageBuffer != nil {
+			if call.Args == nil {
+				call.Args = make(map[string]any)
 			}
-			l.mu.RUnlock()
-			response = l.agents[ObjectDetectionAgentName].Handle(call)
-		case "readPdf":
-			response = l.agents[PdfReaderAgentName].Handle(call)
-		case "analyzeYoutubeVideo":
-			response = l.agents[YoutubeAgentName].Handle(call)
-		case "browseWebPage":
-			response = l.agents[WebScraperAgentName].Handle(call)
-		case "listEmails", "readEmail", "sendEmail":
-			response = l.agents[GmailAgentName].Handle(call)
-		default:
+			call.Args["image_buffer"] = l.imageBuffer
+		}
+		l.mu.RUnlock()
+
+		var response *genai.FunctionResponse
+
+		// Iterate through all registered agents, following a chain of responsibility pattern.
+		// The first agent that recognizes the tool call will handle it.
+		for _, agent := range l.agents {
+			response = agent.Handle(call)
+			if response != nil {
+				break // An agent handled the call, so we can stop searching.
+			}
+		}
+
+		// If no agent handled the call (response is still nil), fall back to the general-purpose tool dispatcher.
+		if response == nil {
 			response = executeSingleToolCall(call)
 		}
+
 		responses = append(responses, response)
 
 		// Post-processing for special agents that need to interact with the session.
-		if isObjectDetectionTool && response.Response != nil {
+		if response.Response != nil {
 			if content, ok := response.Response["send_content"].(genai.LiveClientContentInput); ok {
 				l.mu.RLock()
 				session := l.session
@@ -954,81 +955,4 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 		}
 	}
 	return responses
-}
-
-// handleUploadImageTool processes the 'uploadImage' tool call, which is specific to LiveAI.
-// It reads an image from the workspace and sends it to the live session as media input.
-func (l *LiveAI) handleUploadImageTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing LiveAI tool call: %s with args: %v", call.Name, call.Args)
-
-	var result any
-	var err error
-
-	path, ok := call.Args["path"].(string)
-	if !ok || path == "" {
-		err = fmt.Errorf("'path' argument is required and must be a non-empty string")
-	} else {
-		// Use getSafePath to ensure the file is within the configured workspace.
-		safePath, pathErr := getSafePath(path)
-		if pathErr != nil {
-			err = pathErr
-		} else {
-			// Read the file content.
-			data, readErr := os.ReadFile(safePath)
-			if readErr != nil {
-				err = fmt.Errorf("failed to read image file '%s': %w", path, readErr)
-			} else {
-				// Determine MIME type from file extension.
-				mimeType := mime.TypeByExtension(filepath.Ext(safePath))
-				if !strings.HasPrefix(mimeType, "image/") {
-					err = fmt.Errorf("file '%s' is not a supported image type (MIME: %s)", path, mimeType)
-				} else {
-					// Send the image data to the live session.
-					l.mu.RLock()
-					session := l.session
-					l.mu.RUnlock()
-
-					if session == nil {
-						err = fmt.Errorf("live session is not active, cannot upload image")
-					} else {
-						// Use SendClientContent to send the image as a new user turn. This avoids
-						// concurrency issues with SendRealtimeInput used for audio streaming and
-						// correctly represents the image as a discrete piece of user-provided context.
-						parts := []*genai.Part{genai.NewPartFromBytes(data, mimeType)}
-						turn := genai.NewContentFromParts(parts, genai.RoleUser)
-						content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
-						l.writeMu.Lock()
-						sendErr := session.SendClientContent(content)
-						l.writeMu.Unlock()
-						if sendErr != nil {
-							err = fmt.Errorf("failed to send image to session: %w", sendErr)
-						} else {
-							log.Printf("Successfully sent image '%s' to live session.", path)
-							result = map[string]any{"status": fmt.Sprintf("image '%s' uploaded successfully", path)}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
 }

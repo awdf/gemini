@@ -23,8 +23,8 @@ const (
 )
 
 type Callable interface {
-	Process(prompt string, parts ...*genai.Part) (string, error)
 	WarmUp()
+	Process(prompt string, parts ...*genai.Part) (string, error)
 	Handle(call *genai.FunctionCall) *genai.FunctionResponse
 }
 
@@ -203,6 +203,8 @@ func (a *Agent) WarmUp() {
 	}()
 }
 
-func (a *Agent) Handle(function string, call *genai.FunctionCall) *genai.FunctionResponse {
+// Handle is the base implementation for the Callable interface. It returns nil,
+// indicating that the base agent does not handle any specific tool calls by itself.
+func (a *Agent) Handle(_ *genai.FunctionCall) *genai.FunctionResponse {
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -216,72 +217,23 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 		} else {
 			result, err = appendToFile(path, content)
 		}
-	case "listEmails":
-		agent := agentGmail
-		if agent == nil {
-			err = fmt.Errorf("gmail agent not initialized or enabled")
-		} else {
-			query, _ := call.Args["query"].(string)
-			maxResultsFloat, _ := call.Args["max_results"].(float64)
-			maxResults := int64(maxResultsFloat)
-			if maxResults <= 0 {
-				maxResults = 10 // Default value
-			}
-
-			emails, listErr := agent.ListEmails(query, maxResults)
-			if listErr != nil {
-				err = fmt.Errorf("failed to list emails: %w", listErr)
-			} else {
-				log.Printf("Successfully listed %d emails for query: '%s'", len(emails), query)
-				result = map[string]any{"emails": emails}
-			}
-		}
-	case "readEmail":
-		agent := agentGmail
-		if agent == nil {
-			err = fmt.Errorf("gmail agent not initialized or enabled")
-		} else {
-			messageID, ok := call.Args["message_id"].(string)
-			if !ok || messageID == "" {
-				err = fmt.Errorf("'message_id' argument is required and must be a non-empty string")
-			} else {
-				content, readErr := agent.ReadEmail(messageID)
-				if readErr != nil {
-					err = fmt.Errorf("failed to read email with ID '%s': %w", messageID, readErr)
-				} else {
-					log.Printf("Successfully read email with ID: '%s'", messageID)
-					result = map[string]any{"content": content}
-				}
-			}
-		}
-	case "sendEmail":
-		agent := agentGmail
-		if agent == nil {
-			err = fmt.Errorf("gmail agent not initialized or enabled")
-		} else {
-			to, toOK := call.Args["to"].(string)
-			subject, subjectOK := call.Args["subject"].(string)
-			body, bodyOK := call.Args["body"].(string)
-			if !toOK || !subjectOK || !bodyOK {
-				err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
-			} else {
-				status, sendErr := agent.SendEmail(to, subject, body)
-				if sendErr != nil {
-					err = fmt.Errorf("failed to send email: %w", sendErr)
-				} else {
-					log.Printf("Successfully sent email to: '%s'", to)
-					result = map[string]any{"status": status}
-				}
-			}
-		}
-	case "detectObjects":
-		// This tool is special and handled in LiveAI, as it requires access to the session's image buffer.
-		// This case is a fallback for non-live mode.
-		err = fmt.Errorf("the 'detectObjects' tool is only available in live mode")
 	case "uploadImage":
-		err = fmt.Errorf("the 'uploadImage' tool is only available in live mode")
-	case "mouseClick":
-		err = fmt.Errorf("the 'mouseClick' tool is only available in live mode")
+		path, ok := call.Args["path"].(string)
+		if !ok || path == "" {
+			err = fmt.Errorf("'path' argument is required and must be a non-empty string")
+		} else {
+			// This tool prepares an image to be sent to a live session via the 'send_content' mechanism.
+			// The logic is encapsulated in the uploadImage function to align with other file tools.
+			result, err = uploadImage(path)
+		}
+	case "listEmails", "readEmail", "sendEmail":
+		// These tools are special and handled by the GmailAgent, as they require an authenticated service.
+		// This case is a fallback for when the agent isn't used directly.
+		err = fmt.Errorf("the '%s' tool must be handled by the Gmail agent", call.Name)
+	case "detectObjects", "verifyObjectDetection", "mouseClick":
+		// These tools are special and handled in LiveAI, as they require access to the session's image buffer.
+		// This case is a fallback for non-live mode.
+		err = fmt.Errorf("the '%s' tool is only available in live mode", call.Name)
 	case "typeText":
 		text, ok := call.Args["text"].(string)
 		if !ok || text == "" {
@@ -629,6 +581,43 @@ func appendToFile(path, content string) (any, error) {
 	}
 
 	return map[string]any{"status": fmt.Sprintf("content appended to file '%s' successfully", path)}, nil
+}
+
+// uploadImage prepares an image file to be sent to a live session.
+func uploadImage(path string) (any, error) {
+	// Use getSafePath to ensure the file is within the configured workspace.
+	safePath, err := getSafePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read the file content.
+	data, err := os.ReadFile(safePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read image file '%s': %w", path, err)
+	}
+
+	// Determine MIME type from file extension.
+	mimeType := mime.TypeByExtension(filepath.Ext(safePath))
+	if !strings.HasPrefix(mimeType, "image/") {
+		return nil, fmt.Errorf("file '%s' is not a supported image type (MIME: %s)", path, mimeType)
+	}
+
+	// Prepare the image content to be sent by the caller (executeToolCalls).
+	// This follows the same pattern as verifyObjectDetection, promoting consistency.
+	parts := []*genai.Part{
+		genai.NewPartFromText(fmt.Sprintf("The user has uploaded the image '%s'. Please analyze it.", path)),
+		genai.NewPartFromBytes(data, mimeType),
+	}
+	turn := genai.NewContentFromParts(parts, genai.RoleUser)
+	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+
+	log.Printf("Successfully prepared image '%s' to be sent to live session.", path)
+	result := map[string]any{
+		"status":       fmt.Sprintf("Image '%s' prepared for analysis.", path),
+		"send_content": content, // Special key for LiveAI to handle
+	}
+	return result, nil
 }
 
 func typeText(text string) (any, error) {

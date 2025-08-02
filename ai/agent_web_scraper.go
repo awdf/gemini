@@ -60,7 +60,7 @@ func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespon
 	case "browseWebPage":
 		return a.handleWebScraperTool(call)
 	default:
-		return a.Agent.Handle(call.Name, call)
+		return a.Agent.Handle(call)
 	}
 }
 

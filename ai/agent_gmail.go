@@ -25,9 +25,6 @@ type GmailAgent struct {
 	userEmail string // To store the user's email address for the 'From' header.
 }
 
-// agentGmail is the global instance of the GmailAgent, used by the non-live tool dispatcher.
-var agentGmail *GmailAgent
-
 // NewGmailAgent creates and initializes the Gmail agent.
 // It handles the OAuth2 flow to get an authenticated client.
 func NewGmailAgent(ctx context.Context, client *genai.Client) *GmailAgent {
@@ -49,20 +46,20 @@ func NewGmailAgent(ctx context.Context, client *genai.Client) *GmailAgent {
 
 	gClient, err := google.GetClient(ctx, scopes)
 	if err != nil {
-		log.Printf("unable to get Google OAuth2 client: %w", err)
+		log.Printf("unable to get Google OAuth2 client: %v", err)
 		return nil
 	}
 
 	gmailService, err := gmail.NewService(ctx, option.WithHTTPClient(gClient))
 	if err != nil {
-		log.Printf("unable to retrieve Gmail client: %w", err)
+		log.Printf("unable to retrieve Gmail client: %v", err)
 		return nil
 	}
 
 	// Get user's email address to use in the 'From' header when sending.
 	profile, err := gmailService.Users.GetProfile("me").Do()
 	if err != nil {
-		log.Printf("unable to retrieve user's Gmail profile: %w", err)
+		log.Printf("unable to retrieve user's Gmail profile: %v", err)
 		return nil
 	}
 	if profile.EmailAddress == "" {
@@ -83,7 +80,6 @@ func NewGmailAgent(ctx context.Context, client *genai.Client) *GmailAgent {
 	}
 
 	agentRegistry[gmailAgent.name] = gmailAgent // Overwrite registration with the specialized agent
-	agentGmail = gmailAgent                     // Set the global instance for PostAI mode
 	log.Printf("Gmail Agent initialized successfully for user: %s", gmailAgent.userEmail)
 	return gmailAgent
 }
@@ -279,7 +275,7 @@ func (a *GmailAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	case "readEmail":
 		return a.handleGmailReadEmailTool(call)
 	default:
-		return a.Agent.Handle(call.Name, call)
+		return a.Agent.Handle(call)
 	}
 }
 

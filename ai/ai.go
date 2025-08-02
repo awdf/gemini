@@ -711,7 +711,14 @@ func (a *AI) generateAndProcessContent(
 func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResponseParts []*genai.Part) {
 	for _, fc := range calls {
 		modelParts = append(modelParts, &genai.Part{FunctionCall: fc})
-		fr := executeSingleToolCall(fc)
+		fr := executeSingleToolCall(fc) // This dispatcher is for non-live mode.
+
+		// Tools like 'uploadImage' can return a 'send_content' key intended for live mode.
+		// In non-live mode, this content cannot be sent, so we must remove it to avoid
+		// sending a complex, unhandled object back to the model.
+		if fr.Response != nil {
+			delete(fr.Response, "send_content")
+		}
 		toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(fr.Name, fr.Response))
 	}
 	return modelParts, toolResponseParts

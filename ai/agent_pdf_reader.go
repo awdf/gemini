@@ -60,7 +60,7 @@ func (a *PdfReaderAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespons
 	case "readPdf":
 		return a.handleReadPdfTool(call)
 	default:
-		return a.Agent.Handle(call.Name, call)
+		return a.Agent.Handle(call)
 	}
 }
 
