@@ -17,7 +17,7 @@ type YoutubeAgent struct {
 }
 
 // NewYoutubeAgent creates a specialized agent for analyzing YouTube videos.
-func NewYoutubeAgent(ctx context.Context, client *genai.Client) *YoutubeAgent {
+func NewYoutubeAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *YoutubeAgent {
 	systemInstruction := `You are a comprehensive YouTube video analysis expert. Your goal is to extract as much meaningful information as possible from the provided video. Analyze both the audio and visual components to generate a detailed report.
 
 Your response MUST be a single block of text and should be structured using Markdown headings for the following sections:
@@ -43,6 +43,24 @@ Analyze the video thoroughly to provide a rich and informative response.`
 		Properties:  map[string]*genai.Schema{"result": {Type: genai.TypeString, Description: "A detailed report of the video, including a summary, key topics, takeaways, and a full transcript with visual context, formatted as a single Markdown string."}},
 		Required:    []string{"result"},
 	}
+
+	functions := genai.FunctionDeclaration{
+		Name:        "analyzeYoutubeVideo",
+		Description: "YOUTUBE: Performs a comprehensive analysis of a YouTube video, providing a summary, key topics, takeaways, and a full transcript with visual context.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"url": {
+					Type:        genai.TypeString,
+					Description: "The full URL of the YouTube video to analyze.",
+				},
+			},
+			Required: []string{"url"},
+		},
+		Behavior: genai.BehaviorNonBlocking, // IMPORTANT: Works only in non blocking mode
+	}
+
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &functions)
 
 	agentConfig := AgentConfig{
 		Name:              YoutubeAgentName,

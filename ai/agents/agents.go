@@ -58,20 +58,20 @@ type AgentConfig struct {
 var AgentRegistry = make(map[string]Callable)
 
 // Agents post initialization
-func Registerate(ctx context.Context, client *genai.Client, agentName string) {
+func Registerate(ctx context.Context, client *genai.Client, toolset *genai.Tool, agentName string) {
 	var agent Callable
 
 	switch agentName {
 	case ObjectDetectionAgentName:
-		agent = NewObjectDetectionAgent(ctx, client)
+		agent = NewObjectDetectionAgent(ctx, client, toolset)
 	case PdfReaderAgentName:
-		agent = NewPdfReaderAgent(ctx, client)
+		agent = NewPdfReaderAgent(ctx, client, toolset)
 	case YoutubeAgentName:
-		agent = NewYoutubeAgent(ctx, client)
+		agent = NewYoutubeAgent(ctx, client, toolset)
 	case WebScraperAgentName:
-		agent = NewWebScraperAgent(ctx, client)
+		agent = NewWebScraperAgent(ctx, client, toolset)
 	case GmailAgentName:
-		agent = NewGmailAgent(ctx, client)
+		agent = NewGmailAgent(ctx, client, toolset)
 	default:
 		log.Printf("Unknown agent name: %s", agentName)
 	}

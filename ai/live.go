@@ -38,6 +38,7 @@ type LiveAI struct {
 	bus              *EventBus.Bus
 	session          *genai.Session
 	imageBuffer      *images.ScreenshotBuffer
+	toolset          *genai.Tool
 	isStreaming      bool
 	streamPlayer     *audio.PCMStreamPlayer
 	mode             string
@@ -92,11 +93,12 @@ func NewLiveSink(
 	}
 
 	// --- Agent Initialization ---
-	agents.Registerate(ctx, client, agents.ObjectDetectionAgentName)
-	agents.Registerate(ctx, client, agents.PdfReaderAgentName)
-	agents.Registerate(ctx, client, agents.YoutubeAgentName)
-	agents.Registerate(ctx, client, agents.WebScraperAgentName)
-	agents.Registerate(ctx, client, agents.GmailAgentName)
+	toolset := getFunctionTools()
+	agents.Registerate(ctx, client, toolset, agents.ObjectDetectionAgentName)
+	agents.Registerate(ctx, client, toolset, agents.PdfReaderAgentName)
+	agents.Registerate(ctx, client, toolset, agents.YoutubeAgentName)
+	agents.Registerate(ctx, client, toolset, agents.WebScraperAgentName)
+	agents.Registerate(ctx, client, toolset, agents.GmailAgentName)
 
 	return &LiveAI{
 		wg:               wg,
@@ -110,6 +112,7 @@ func NewLiveSink(
 		liveSink:         sink,
 		Element:          sink.Element,
 		streamPlayer:     streamPlayer,
+		toolset:          toolset,
 		isStreaming:      false,
 		mode:             config.C.Mode,
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
@@ -206,7 +209,7 @@ func (l *LiveAI) OpenSession() {
 
 		if config.C.AI.EnableFunctionCalling {
 			// Add file system tools
-			tools = append(tools, getFunctionTools())
+			tools = append(tools, l.toolset)
 			log.Println("File system tools enabled for live session.")
 		}
 

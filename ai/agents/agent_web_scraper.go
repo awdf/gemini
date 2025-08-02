@@ -17,7 +17,7 @@ type WebScraperAgent struct {
 }
 
 // NewWebScraperAgent creates a specialized agent for scraping and analyzing web pages.
-func NewWebScraperAgent(ctx context.Context, client *genai.Client) *WebScraperAgent {
+func NewWebScraperAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *WebScraperAgent {
 	systemInstruction := `You are a web page analysis expert with vision capabilities. 
 Your goal is to extract as much meaningful information as possible from the provided web page URL. 
 Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report. 
@@ -31,6 +31,23 @@ Describe important visual elements like images, charts, and the overall page str
 		},
 		Required: []string{"result"},
 	}
+
+	functions := genai.FunctionDeclaration{
+		Name:        "browseWebPage",
+		Description: "WEB BROWSER: Scrapes and provides a comprehensive analysis of the content of a web page URL.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"url": {
+					Type:        genai.TypeString,
+					Description: "The full URL of the web page to analyze.",
+				},
+			},
+			Required: []string{"url"},
+		},
+		Behavior: genai.BehaviorNonBlocking,
+	}
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &functions)
 
 	agentConfig := AgentConfig{
 		Name:              WebScraperAgentName,

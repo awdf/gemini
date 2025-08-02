@@ -29,7 +29,7 @@ type ObjectDetectionAgent struct {
 }
 
 // NewObjectDetectionAgent creates a specialized agent for detecting objects in an image.
-func NewObjectDetectionAgent(ctx context.Context, client *genai.Client) *ObjectDetectionAgent {
+func NewObjectDetectionAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *ObjectDetectionAgent {
 	bounds := helpers.Check(images.DisplayBounds())
 	grid := ObjectDetectionNormalizationGrid
 	halfGrid := grid / 2
@@ -71,6 +71,51 @@ If an object is present multiple times, name them according to their unique char
 		},
 		Required: []string{"objects"},
 	}
+
+	functions := []*genai.FunctionDeclaration{
+		{
+			Name:        "verifyObjectDetection",
+			Description: "DESKTOP AUTOMATION: After using 'detectObjects', use this helper tool to draw the returned bounding box on the image. The tool will upload image with red box to context. This helps model ensure the correct object is identified before clicking.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"xmin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the left edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+					"ymin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the top edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+					"xmax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the right edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+					"ymax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the bottom edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+				},
+				Required: []string{"xmin", "ymin", "xmax", "ymax"},
+			},
+			Behavior: genai.BehaviorBlocking,
+		},
+		{
+			Name:        "detectObjects",
+			Description: "DESKTOP AUTOMATION: Analyzes the current screen to find UI elements. Use this to get the coordinates of an object you want to interact with. You must follow up with 'verifyObjectDetection' before clicking.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"query": {Type: genai.TypeString, Description: "A detailed natural language query describing the object(s) to detect. Be specific. For example, instead of 'button', say 'the blue \"Submit\" button in the center of the form'."},
+				},
+				Required: []string{"query"},
+			},
+			Behavior: genai.BehaviorBlocking,
+		},
+		{
+			Name:        "mouseClick",
+			Description: fmt.Sprintf("DESKTOP AUTOMATION: Moves the mouse to a specified normalized coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object, normalized to a %dx%d grid. Can perform multiple clicks for actions like double-clicking.", ObjectDetectionNormalizationGrid, ObjectDetectionNormalizationGrid),
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"x":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the click target (0-%d).", ObjectDetectionNormalizationGrid)},
+					"y":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the click target (0-%d).", ObjectDetectionNormalizationGrid)},
+					"clicks": {Type: genai.TypeInteger, Description: "The number of times to click. Defaults to 1. Use 2 for a double-click."},
+				},
+				Required: []string{"x", "y"},
+			},
+			Behavior: genai.BehaviorBlocking,
+		},
+	}
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, functions...)
 
 	agentConfig := AgentConfig{
 		Name:              ObjectDetectionAgentName,

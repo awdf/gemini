@@ -19,7 +19,7 @@ type PdfReaderAgent struct {
 }
 
 // NewPdfReaderAgent creates a specialized agent for reading and summarizing PDF documents.
-func NewPdfReaderAgent(ctx context.Context, client *genai.Client) *PdfReaderAgent {
+func NewPdfReaderAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *PdfReaderAgent {
 	systemInstruction := `You are an PDF document reader specialist. 
 The user will provide a query with pdf document, read document please and provide concise and accurate response.`
 
@@ -29,6 +29,27 @@ The user will provide a query with pdf document, read document please and provid
 		Properties:  map[string]*genai.Schema{"summary": {Type: genai.TypeString, Description: "A concise summary of the key points from the PDF document, or a direct answer to the user's query."}},
 		Required:    []string{"summary"},
 	}
+
+	functions := genai.FunctionDeclaration{
+		Name:        "readPdf",
+		Description: "PDF Reader: Reads the content of a PDF file from the workspace and answers a question about it.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"path": {
+					Type:        genai.TypeString,
+					Description: "The path of the PDF file to read.",
+				},
+				"query": {
+					Type:        genai.TypeString,
+					Description: "The question to ask about the PDF document (e.g., 'Summarize this document').",
+				},
+			},
+			Required: []string{"path", "query"},
+		},
+		Behavior: genai.BehaviorBlocking,
+	}
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &functions)
 
 	agentConfig := AgentConfig{
 		Name:              PdfReaderAgentName,

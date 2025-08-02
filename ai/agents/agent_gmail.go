@@ -27,7 +27,7 @@ type GmailAgent struct {
 
 // NewGmailAgent creates and initializes the Gmail agent.
 // It handles the OAuth2 flow to get an authenticated client.
-func NewGmailAgent(ctx context.Context, client *genai.Client) *GmailAgent {
+func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *GmailAgent {
 	if !config.C.Google.Enabled {
 		log.Println("WARNING: Could not create Gmail agent, Gmail tools is disabled.")
 		return nil
@@ -72,6 +72,67 @@ func NewGmailAgent(ctx context.Context, client *genai.Client) *GmailAgent {
 		Name:  GmailAgentName,
 		Model: config.C.AI.Model, // Not used, but required by NewAgent
 	})
+
+	functions := []*genai.FunctionDeclaration{
+		{
+			Name:        "listEmails",
+			Description: "GMAIL: Lists emails from the user's Gmail account. Can be filtered with a query.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"query": {
+						Type:        genai.TypeString,
+						Description: "A standard Gmail search query (e.g., 'from:hello@example.com is:unread'). Optional.",
+					},
+					"max_results": {
+						Type:        genai.TypeInteger,
+						Description: "The maximum number of emails to return. Defaults to 10 if not specified.",
+					},
+				},
+			},
+			Behavior: genai.BehaviorBlocking,
+		},
+		{
+			Name:        "readEmail",
+			Description: "GMAIL: Reads the full content of a specific email using its message ID.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"message_id": {
+						Type:        genai.TypeString,
+						Description: "The ID of the message to read, obtained from 'listEmails'.",
+					},
+				},
+				Required: []string{"message_id"},
+			},
+			Behavior: genai.BehaviorBlocking,
+		},
+		{
+			Name:        "sendEmail",
+			Description: "GMAIL: Sends an email from the user's Gmail account.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"to": {
+						Type:        genai.TypeString,
+						Description: "The recipient's email address.",
+					},
+					"subject": {
+						Type:        genai.TypeString,
+						Description: "The subject of the email.",
+					},
+					"body": {
+						Type:        genai.TypeString,
+						Description: "The plain text body of the email.",
+					},
+				},
+				Required: []string{"to", "subject", "body"},
+			},
+			Behavior: genai.BehaviorBlocking,
+		},
+	}
+
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, functions...)
 
 	gmailAgent := &GmailAgent{
 		Agent:     baseAgent,

@@ -13,7 +13,6 @@ import (
 
 	"google.golang.org/genai"
 
-	"gemini/ai/agents"
 	"gemini/config"
 	"gemini/inout"
 	"gemini/wayland"
@@ -699,156 +698,10 @@ func getFunctionTools() *genai.Tool {
 				Behavior:    genai.BehaviorBlocking,
 			},
 			{
-				Name:        "listEmails",
-				Description: "GMAIL: Lists emails from the user's Gmail account. Can be filtered with a query.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"query": {
-							Type:        genai.TypeString,
-							Description: "A standard Gmail search query (e.g., 'from:hello@example.com is:unread'). Optional.",
-						},
-						"max_results": {
-							Type:        genai.TypeInteger,
-							Description: "The maximum number of emails to return. Defaults to 10 if not specified.",
-						},
-					},
-				},
-				Behavior: genai.BehaviorBlocking,
-			},
-			{
-				Name:        "readEmail",
-				Description: "GMAIL: Reads the full content of a specific email using its message ID.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"message_id": {
-							Type:        genai.TypeString,
-							Description: "The ID of the message to read, obtained from 'listEmails'.",
-						},
-					},
-					Required: []string{"message_id"},
-				},
-				Behavior: genai.BehaviorBlocking,
-			},
-			{
-				Name:        "sendEmail",
-				Description: "GMAIL: Sends an email from the user's Gmail account.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"to": {
-							Type:        genai.TypeString,
-							Description: "The recipient's email address.",
-						},
-						"subject": {
-							Type:        genai.TypeString,
-							Description: "The subject of the email.",
-						},
-						"body": {
-							Type:        genai.TypeString,
-							Description: "The plain text body of the email.",
-						},
-					},
-					Required: []string{"to", "subject", "body"},
-				},
-				Behavior: genai.BehaviorBlocking,
-			},
-			{
-				Name:        "readPdf",
-				Description: "PDF Reader: Reads the content of a PDF file from the workspace and answers a question about it.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"path": {
-							Type:        genai.TypeString,
-							Description: "The path of the PDF file to read.",
-						},
-						"query": {
-							Type:        genai.TypeString,
-							Description: "The question to ask about the PDF document (e.g., 'Summarize this document').",
-						},
-					},
-					Required: []string{"path", "query"},
-				},
-				Behavior: genai.BehaviorBlocking,
-			},
-			{
-				Name:        "analyzeYoutubeVideo",
-				Description: "YOUTUBE: Performs a comprehensive analysis of a YouTube video, providing a summary, key topics, takeaways, and a full transcript with visual context.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"url": {
-							Type:        genai.TypeString,
-							Description: "The full URL of the YouTube video to analyze.",
-						},
-					},
-					Required: []string{"url"},
-				},
-				Behavior: genai.BehaviorNonBlocking, // IMPORTANT: Works only in non blocking mode
-			},
-			{
-				Name:        "browseWebPage",
-				Description: "WEB BROWSER: Scrapes and provides a comprehensive analysis of the content of a web page URL.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"url": {
-							Type:        genai.TypeString,
-							Description: "The full URL of the web page to analyze.",
-						},
-					},
-					Required: []string{"url"},
-				},
-				Behavior: genai.BehaviorNonBlocking,
-			},
-			{
 				Name:        "uploadImage",
 				Description: "FILE SYSTEM: For analyzing a screenshot just taken, use the `detectObjects` tool directly. Upload an image file from the workspace to the session context. Use this tool when the user explicitly asks to analyze a specific file by its name.",
 				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the image file to upload."}}, Required: []string{"path"}},
 				Behavior:    genai.BehaviorBlocking,
-			},
-			{
-				Name:        "verifyObjectDetection",
-				Description: "DESKTOP AUTOMATION: After using 'detectObjects', use this helper tool to draw the returned bounding box on the image. The tool will upload image with red box to context. This helps model ensure the correct object is identified before clicking.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"xmin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the left edge of the box (0-%d).", agents.ObjectDetectionNormalizationGrid)},
-						"ymin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the top edge of the box (0-%d).", agents.ObjectDetectionNormalizationGrid)},
-						"xmax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the right edge of the box (0-%d).", agents.ObjectDetectionNormalizationGrid)},
-						"ymax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the bottom edge of the box (0-%d).", agents.ObjectDetectionNormalizationGrid)},
-					},
-					Required: []string{"xmin", "ymin", "xmax", "ymax"},
-				},
-				Behavior: genai.BehaviorBlocking,
-			},
-			{
-				Name:        "detectObjects",
-				Description: "DESKTOP AUTOMATION: Analyzes the current screen to find UI elements. Use this to get the coordinates of an object you want to interact with. You must follow up with 'verifyObjectDetection' before clicking.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"query": {Type: genai.TypeString, Description: "A detailed natural language query describing the object(s) to detect. Be specific. For example, instead of 'button', say 'the blue \"Submit\" button in the center of the form'."},
-					},
-					Required: []string{"query"},
-				},
-				Behavior: genai.BehaviorBlocking,
-			},
-			{
-				Name:        "mouseClick",
-				Description: fmt.Sprintf("DESKTOP AUTOMATION: Moves the mouse to a specified normalized coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object, normalized to a %dx%d grid. Can perform multiple clicks for actions like double-clicking.", agents.ObjectDetectionNormalizationGrid, agents.ObjectDetectionNormalizationGrid),
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"x":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the click target (0-%d).", agents.ObjectDetectionNormalizationGrid)},
-						"y":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the click target (0-%d).", agents.ObjectDetectionNormalizationGrid)},
-						"clicks": {Type: genai.TypeInteger, Description: "The number of times to click. Defaults to 1. Use 2 for a double-click."},
-					},
-					Required: []string{"x", "y"},
-				},
-				Behavior: genai.BehaviorBlocking,
 			},
 			{
 				Name:        "typeText",

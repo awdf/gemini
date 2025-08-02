@@ -50,6 +50,7 @@ type AI struct {
 	cache               *genai.CachedContent
 	formatter           *inout.Formatter
 	bus                 *EventBus.Bus
+	toolset             *genai.Tool
 	initialContextAdded bool
 	mode                string
 }
@@ -91,6 +92,14 @@ func NewAI(
 		Backend: genai.BackendGeminiAPI,
 	}))
 
+	// --- Agent Initialization ---
+	toolset := getFunctionTools()
+	agents.Registerate(ctx, client, toolset, agents.ObjectDetectionAgentName)
+	agents.Registerate(ctx, client, toolset, agents.PdfReaderAgentName)
+	agents.Registerate(ctx, client, toolset, agents.YoutubeAgentName)
+	agents.Registerate(ctx, client, toolset, agents.WebScraperAgentName)
+	agents.Registerate(ctx, client, toolset, agents.GmailAgentName)
+
 	ai := &AI{
 		ctx:                 ctx,
 		client:              client,
@@ -104,10 +113,7 @@ func NewAI(
 		bus:                 bus,
 		initialContextAdded: false,
 		mode:                config.C.Mode,
-	}
-
-	if config.C.Google.Enabled {
-		agents.NewGmailAgent(ctx, ai.client)
+		toolset:             toolset,
 	}
 
 	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
@@ -661,7 +667,7 @@ func (a *AI) generateAndProcessContent(
 
 			// Function calling tools, don't works togather with sandart tools.
 			if config.C.AI.EnableFunctionCalling {
-				tools = append(tools, getFunctionTools()) // Add file system tools
+				tools = append(tools, a.toolset) // Add file system tools
 			}
 
 			if len(tools) > 0 {
