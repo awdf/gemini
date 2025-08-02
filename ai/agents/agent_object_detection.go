@@ -1,4 +1,4 @@
-package ai
+package agents
 
 import (
 	"bytes"
@@ -43,31 +43,7 @@ Return the response as a JSON array with labels. Never return masks or code fenc
 If an object is present multiple times, name them according to their unique characteristic (colors, size, position, unique characteristics, etc..).`,
 		bounds.Dx(), bounds.Dy(), grid, grid, halfGrid, halfGrid)
 
-	agentConfig := AgentConfig{
-		Name:              ObjectDetectionAgentName,
-		Model:             config.C.AI.ModelObjectDetection,
-		SystemInstruction: systemInstruction,
-		Temperature:       helpers.Ptr(float32(0.0)),
-		ResponseSchema:    GetObjectDetectionSchema(),
-	}
-	baseAgent := NewAgent(ctx, client, agentConfig)
-
-	odAgent := &ObjectDetectionAgent{
-		Agent:   baseAgent,
-		roadMap: [3]bool{false, false, false},
-	}
-
-	// Overwrite the registration in the registry with the specialized agent.
-	agentRegistry[odAgent.name] = odAgent
-
-	return odAgent
-}
-
-// GetObjectDetectionSchema returns the schema for object detection responses.
-// It defines a structure for a list of predictions, where each prediction
-// has a label and a bounding box with named coordinates.
-func GetObjectDetectionSchema() *genai.Schema {
-	return &genai.Schema{
+	scheme := genai.Schema{
 		Type: genai.TypeObject,
 		Properties: map[string]*genai.Schema{
 			"objects": {
@@ -95,6 +71,25 @@ func GetObjectDetectionSchema() *genai.Schema {
 		},
 		Required: []string{"objects"},
 	}
+
+	agentConfig := AgentConfig{
+		Name:              ObjectDetectionAgentName,
+		Model:             config.C.AI.ModelObjectDetection,
+		SystemInstruction: systemInstruction,
+		Temperature:       helpers.Ptr(float32(0.0)),
+		ResponseSchema:    &scheme,
+	}
+	baseAgent := NewAgent(ctx, client, agentConfig)
+
+	odAgent := &ObjectDetectionAgent{
+		Agent:   baseAgent,
+		roadMap: [3]bool{false, false, false},
+	}
+
+	// Overwrite the registration in the registry with the specialized agent.
+	AgentRegistry[odAgent.name] = odAgent
+
+	return odAgent
 }
 
 func (a *ObjectDetectionAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {

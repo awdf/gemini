@@ -7,13 +7,13 @@ import (
 	"log"
 	"mime"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"google.golang.org/genai"
 
+	"gemini/ai/agents"
 	"gemini/config"
 	"gemini/inout"
 	"gemini/wayland"
@@ -290,61 +290,8 @@ func executeSingleToolCall(call *genai.FunctionCall) *genai.FunctionResponse {
 	}
 }
 
-// expandPath handles tilde expansion for file paths (e.g., "~/Documents").
-func expandPath(path string) (string, error) {
-	if !strings.HasPrefix(path, "~") {
-		return path, nil
-	}
-
-	usr, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	homeDir := usr.HomeDir
-
-	if path == "~" {
-		return homeDir, nil
-	}
-	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(homeDir, path[2:]), nil
-	}
-
-	return path, fmt.Errorf("unsupported tilde expansion: only '~' and '~/' are supported")
-}
-
-// getSafePath joins the base directory with a user-provided path and ensures
-// it doesn't escape the base directory.
-func getSafePath(userPath string) (string, error) {
-	baseDir := config.C.AI.WorkspaceDir
-	if baseDir == "" {
-		return "", fmt.Errorf("workspace directory is not configured")
-	}
-
-	expandedBaseDir, err := expandPath(baseDir)
-	if err != nil {
-		return "", fmt.Errorf("could not expand workspace directory path '%s': %w", baseDir, err)
-	}
-
-	if err := os.MkdirAll(expandedBaseDir, 0o755); err != nil {
-		return "", fmt.Errorf("could not create workspace directory: %w", err)
-	}
-
-	absBase, err := filepath.Abs(expandedBaseDir)
-	if err != nil {
-		return "", fmt.Errorf("could not get absolute path for workspace: %w", err)
-	}
-
-	finalPath := filepath.Join(absBase, userPath)
-
-	if !strings.HasPrefix(finalPath, absBase) {
-		return "", fmt.Errorf("path traversal detected: access to '%s' is not allowed as it is outside the workspace", userPath)
-	}
-
-	return finalPath, nil
-}
-
 func listFiles(path string) (any, error) {
-	safePath, err := getSafePath(path)
+	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +318,7 @@ func listFiles(path string) (any, error) {
 }
 
 func readFile(path string) (any, error) {
-	safePath, err := getSafePath(path)
+	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +340,7 @@ func readFile(path string) (any, error) {
 // file is created. This ensures a clean state and handles edge cases like
 // replacing symlinks. The function also creates any necessary parent directories.
 func createFile(path string, content string) (any, error) {
-	safePath, err := getSafePath(path)
+	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -430,7 +377,7 @@ func createFile(path string, content string) (any, error) {
 }
 
 func deleteFile(path string) (any, error) {
-	safePath, err := getSafePath(path)
+	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -442,7 +389,7 @@ func deleteFile(path string) (any, error) {
 }
 
 func makeDirectory(path string) (any, error) {
-	safePath, err := getSafePath(path)
+	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -457,11 +404,11 @@ func makeDirectory(path string) (any, error) {
 }
 
 func moveFile(sourcePath, destinationPath string) (any, error) {
-	safeSourcePath, err := getSafePath(sourcePath)
+	safeSourcePath, err := config.GetSafePath(sourcePath)
 	if err != nil {
 		return nil, err
 	}
-	safeDestinationPath, err := getSafePath(destinationPath)
+	safeDestinationPath, err := config.GetSafePath(destinationPath)
 	if err != nil {
 		return nil, err
 	}
@@ -473,11 +420,11 @@ func moveFile(sourcePath, destinationPath string) (any, error) {
 }
 
 func copyFile(sourcePath, destinationPath string) (any, error) {
-	safeSourcePath, err := getSafePath(sourcePath)
+	safeSourcePath, err := config.GetSafePath(sourcePath)
 	if err != nil {
 		return nil, err
 	}
-	safeDestinationPath, err := getSafePath(destinationPath)
+	safeDestinationPath, err := config.GetSafePath(destinationPath)
 	if err != nil {
 		return nil, err
 	}
@@ -505,7 +452,7 @@ func copyFile(sourcePath, destinationPath string) (any, error) {
 }
 
 func getFileInfo(path string) (any, error) {
-	safePath, err := getSafePath(path)
+	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -524,13 +471,13 @@ func getFileInfo(path string) (any, error) {
 
 func searchFiles(pattern, path string) (any, error) {
 	// get the absolute path of the workspace root
-	baseDir, err := getSafePath("")
+	baseDir, err := config.GetSafePath("")
 	if err != nil {
 		return nil, err
 	}
 
 	// get the absolute path of the search directory
-	searchRoot, err := getSafePath(path)
+	searchRoot, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -565,7 +512,7 @@ func searchFiles(pattern, path string) (any, error) {
 }
 
 func appendToFile(path, content string) (any, error) {
-	safePath, err := getSafePath(path)
+	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -585,8 +532,8 @@ func appendToFile(path, content string) (any, error) {
 
 // uploadImage prepares an image file to be sent to a live session.
 func uploadImage(path string) (any, error) {
-	// Use getSafePath to ensure the file is within the configured workspace.
-	safePath, err := getSafePath(path)
+	// Use config.GetSafePath to ensure the file is within the configured workspace.
+	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -868,10 +815,10 @@ func getFunctionTools() *genai.Tool {
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
-						"xmin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the left edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
-						"ymin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the top edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
-						"xmax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the right edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
-						"ymax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the bottom edge of the box (0-%d).", ObjectDetectionNormalizationGrid)},
+						"xmin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the left edge of the box (0-%d).", agents.ObjectDetectionNormalizationGrid)},
+						"ymin": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the top edge of the box (0-%d).", agents.ObjectDetectionNormalizationGrid)},
+						"xmax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the right edge of the box (0-%d).", agents.ObjectDetectionNormalizationGrid)},
+						"ymax": {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the bottom edge of the box (0-%d).", agents.ObjectDetectionNormalizationGrid)},
 					},
 					Required: []string{"xmin", "ymin", "xmax", "ymax"},
 				},
@@ -891,12 +838,12 @@ func getFunctionTools() *genai.Tool {
 			},
 			{
 				Name:        "mouseClick",
-				Description: fmt.Sprintf("DESKTOP AUTOMATION: Moves the mouse to a specified normalized coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object, normalized to a %dx%d grid. Can perform multiple clicks for actions like double-clicking.", ObjectDetectionNormalizationGrid, ObjectDetectionNormalizationGrid),
+				Description: fmt.Sprintf("DESKTOP AUTOMATION: Moves the mouse to a specified normalized coordinate and performs a left click. This is used to interact with UI elements identified by the 'detectObjects' tool. Detected objects and their bounding boxes must be verified with 'verifyObjectDetection' before 'mouseClick' use, otherwise make decision about error resolving with no user confirmation. The coordinates should be the center of the target object, normalized to a %dx%d grid. Can perform multiple clicks for actions like double-clicking.", agents.ObjectDetectionNormalizationGrid, agents.ObjectDetectionNormalizationGrid),
 				Parameters: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
-						"x":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the click target (0-%d).", ObjectDetectionNormalizationGrid)},
-						"y":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the click target (0-%d).", ObjectDetectionNormalizationGrid)},
+						"x":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized x-coordinate of the click target (0-%d).", agents.ObjectDetectionNormalizationGrid)},
+						"y":      {Type: genai.TypeInteger, Description: fmt.Sprintf("The normalized y-coordinate of the click target (0-%d).", agents.ObjectDetectionNormalizationGrid)},
 						"clicks": {Type: genai.TypeInteger, Description: "The number of times to click. Defaults to 1. Use 2 for a double-click."},
 					},
 					Required: []string{"x", "y"},

@@ -15,6 +15,7 @@ import (
 	"github.com/go-gst/go-gst/gst/app"
 	"google.golang.org/genai"
 
+	"gemini/ai/agents"
 	"gemini/audio"
 	"gemini/config"
 	"gemini/flow"
@@ -27,7 +28,7 @@ import (
 type LiveAI struct {
 	ctx              context.Context
 	client           *genai.Client
-	agents           map[string]Callable
+	agents           map[string]agents.Callable
 	formatter        *inout.Formatter
 	liveSink         *app.Sink
 	Element          *gst.Element
@@ -91,17 +92,17 @@ func NewLiveSink(
 	}
 
 	// --- Agent Initialization ---
-	Registerate(NewObjectDetectionAgent(ctx, client))
-	Registerate(NewPdfReaderAgent(ctx, client))
-	Registerate(NewYoutubeAgent(ctx, client))
-	Registerate(NewWebScraperAgent(ctx, client))
-	Registerate(NewGmailAgent(ctx, client))
+	agents.Registerate(ctx, client, agents.ObjectDetectionAgentName)
+	agents.Registerate(ctx, client, agents.PdfReaderAgentName)
+	agents.Registerate(ctx, client, agents.YoutubeAgentName)
+	agents.Registerate(ctx, client, agents.WebScraperAgentName)
+	agents.Registerate(ctx, client, agents.GmailAgentName)
 
 	return &LiveAI{
 		wg:               wg,
 		ctx:              ctx,
 		client:           client,
-		agents:           agentRegistry,
+		agents:           agents.AgentRegistry,
 		formatter:        inout.NewFormatter(),
 		bus:              bus,
 		controlChan:      controlChan,

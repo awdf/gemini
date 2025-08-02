@@ -1,4 +1,4 @@
-package ai
+package agents
 
 import (
 	"context"
@@ -79,7 +79,7 @@ func NewGmailAgent(ctx context.Context, client *genai.Client) *GmailAgent {
 		userEmail: profile.EmailAddress,
 	}
 
-	agentRegistry[gmailAgent.name] = gmailAgent // Overwrite registration with the specialized agent
+	AgentRegistry[gmailAgent.name] = gmailAgent // Overwrite registration with the specialized agent
 	log.Printf("Gmail Agent initialized successfully for user: %s", gmailAgent.userEmail)
 	return gmailAgent
 }

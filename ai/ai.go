@@ -22,6 +22,7 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/genai"
 
+	"gemini/ai/agents"
 	"gemini/audio"
 	"gemini/config"
 	"gemini/helpers"
@@ -106,7 +107,7 @@ func NewAI(
 	}
 
 	if config.C.Google.Enabled {
-		NewGmailAgent(ctx, ai.client)
+		agents.NewGmailAgent(ctx, ai.client)
 	}
 
 	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {

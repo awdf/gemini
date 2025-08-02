@@ -1,4 +1,4 @@
-package ai
+package agents
 
 import (
 	"context"
@@ -36,12 +36,20 @@ on-screen text, or actions that provide context to the speech. For example: "[Vi
 List the most important points, conclusions, or actionable advice presented in the video.
 
 Analyze the video thoroughly to provide a rich and informative response.`
+
+	scheme := genai.Schema{
+		Type:        genai.TypeObject,
+		Description: "A comprehensive analysis of the YouTube video.",
+		Properties:  map[string]*genai.Schema{"result": {Type: genai.TypeString, Description: "A detailed report of the video, including a summary, key topics, takeaways, and a full transcript with visual context, formatted as a single Markdown string."}},
+		Required:    []string{"result"},
+	}
+
 	agentConfig := AgentConfig{
 		Name:              YoutubeAgentName,
 		Model:             config.C.AI.Model,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
-		ResponseSchema:    GetYoutubeAgentSchema(),
+		ResponseSchema:    &scheme,
 	}
 	// Create the base agent. NewAgent also registers it.
 	baseAgent := NewAgent(ctx, client, agentConfig)
@@ -51,17 +59,8 @@ Analyze the video thoroughly to provide a rich and informative response.`
 
 	// Overwrite the registration in the registry with the specialized agent.
 	// This ensures that when tool calls are dispatched, the correct Handle method is called.
-	agentRegistry[youtubeAgent.name] = youtubeAgent
+	AgentRegistry[youtubeAgent.name] = youtubeAgent
 	return youtubeAgent
-}
-
-func GetYoutubeAgentSchema() *genai.Schema {
-	return &genai.Schema{
-		Type:        genai.TypeObject,
-		Description: "A comprehensive analysis of the YouTube video.",
-		Properties:  map[string]*genai.Schema{"result": {Type: genai.TypeString, Description: "A detailed report of the video, including a summary, key topics, takeaways, and a full transcript with visual context, formatted as a single Markdown string."}},
-		Required:    []string{"result"},
-	}
 }
 
 func (a *YoutubeAgent) WarmUp() {

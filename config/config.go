@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/user"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"gemini/helpers"
 
 	"github.com/BurntSushi/toml"
 )
@@ -251,12 +255,13 @@ func (a *AIConfig) GetSystemInstruction() string {
 	// This helps it generate correct, relative paths for file system tools.
 	if a.EnableFunctionCalling {
 		if a.WorkspaceDir != "" {
+			safePathToWorkspace := helpers.Check(GetSafePath(a.WorkspaceDir))
 			sb.WriteString(fmt.Sprintf(`
 Function calling:
 You have access to a file system toolset.
 All file operations are restricted to the "%s" directory. 
 All paths provided to tools like "listFiles","readFile", "createFile", etc., must be relative to this workspace.`,
-				a.WorkspaceDir))
+				safePathToWorkspace))
 		}
 		// Add explicit instructions for the desktop automation tool workflow.
 		sb.WriteString(`
@@ -309,4 +314,57 @@ func (v *VADConfig) WarmUpDuration() time.Duration {
 		return time.Second
 	}
 	return d
+}
+
+// expandPath handles tilde expansion for file paths (e.g., "~/Documents").
+func expandPath(path string) (string, error) {
+	if !strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+
+	usr, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	homeDir := usr.HomeDir
+
+	if path == "~" {
+		return homeDir, nil
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(homeDir, path[2:]), nil
+	}
+
+	return path, fmt.Errorf("unsupported tilde expansion: only '~' and '~/' are supported")
+}
+
+// config.GetSafePath joins the base directory with a user-provided path and ensures
+// it doesn't escape the base directory.
+func GetSafePath(userPath string) (string, error) {
+	baseDir := C.AI.WorkspaceDir
+	if baseDir == "" {
+		return "", fmt.Errorf("workspace directory is not configured")
+	}
+
+	expandedBaseDir, err := expandPath(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("could not expand workspace directory path '%s': %w", baseDir, err)
+	}
+
+	if err := os.MkdirAll(expandedBaseDir, 0o755); err != nil {
+		return "", fmt.Errorf("could not create workspace directory: %w", err)
+	}
+
+	absBase, err := filepath.Abs(expandedBaseDir)
+	if err != nil {
+		return "", fmt.Errorf("could not get absolute path for workspace: %w", err)
+	}
+
+	finalPath := filepath.Join(absBase, userPath)
+
+	if !strings.HasPrefix(finalPath, absBase) {
+		return "", fmt.Errorf("path traversal detected: access to '%s' is not allowed as it is outside the workspace", userPath)
+	}
+
+	return finalPath, nil
 }

@@ -1,4 +1,4 @@
-package ai
+package agents
 
 import (
 	"context"
@@ -22,12 +22,20 @@ type PdfReaderAgent struct {
 func NewPdfReaderAgent(ctx context.Context, client *genai.Client) *PdfReaderAgent {
 	systemInstruction := `You are an PDF document reader specialist. 
 The user will provide a query with pdf document, read document please and provide concise and accurate response.`
+
+	scheme := genai.Schema{
+		Type:        genai.TypeObject,
+		Description: "The summary or answer extracted from the PDF document.",
+		Properties:  map[string]*genai.Schema{"summary": {Type: genai.TypeString, Description: "A concise summary of the key points from the PDF document, or a direct answer to the user's query."}},
+		Required:    []string{"summary"},
+	}
+
 	agentConfig := AgentConfig{
 		Name:              PdfReaderAgentName,
 		Model:             config.C.AI.Model,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
-		ResponseSchema:    GetPdfReaderSchema(),
+		ResponseSchema:    &scheme,
 	}
 
 	// Create the base agent. NewAgent also registers it.
@@ -38,17 +46,8 @@ The user will provide a query with pdf document, read document please and provid
 
 	// Overwrite the registration in the registry with the specialized agent.
 	// This ensures that when tool calls are dispatched, the correct Handle method is called.
-	agentRegistry[pdfAgent.name] = pdfAgent
+	AgentRegistry[pdfAgent.name] = pdfAgent
 	return pdfAgent
-}
-
-func GetPdfReaderSchema() *genai.Schema {
-	return &genai.Schema{
-		Type:        genai.TypeObject,
-		Description: "The summary or answer extracted from the PDF document.",
-		Properties:  map[string]*genai.Schema{"summary": {Type: genai.TypeString, Description: "A concise summary of the key points from the PDF document, or a direct answer to the user's query."}},
-		Required:    []string{"summary"},
-	}
 }
 
 func (a *PdfReaderAgent) WarmUp() {
@@ -78,7 +77,7 @@ func (a *PdfReaderAgent) handleReadPdfTool(call *genai.FunctionCall) *genai.Func
 		err = fmt.Errorf("'path' and 'query' arguments are required and must be non-empty strings")
 	} else {
 		// 2. Get safe path and read file
-		safePath, pathErr := getSafePath(path)
+		safePath, pathErr := config.GetSafePath(path)
 		if pathErr != nil {
 			err = pathErr
 		} else {

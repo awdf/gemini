@@ -1,4 +1,4 @@
-package ai
+package agents
 
 import (
 	"context"
@@ -22,26 +22,8 @@ func NewWebScraperAgent(ctx context.Context, client *genai.Client) *WebScraperAg
 Your goal is to extract as much meaningful information as possible from the provided web page URL. 
 Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report. 
 Describe important visual elements like images, charts, and the overall page structure in your analysis.`
-	agentConfig := AgentConfig{
-		Name:              WebScraperAgentName,
-		Model:             config.C.AI.Model,
-		SystemInstruction: systemInstruction,
-		Temperature:       helpers.Ptr(float32(0.2)),
-		EnableURLContext:  true,
-		ResponseSchema:    GetWebScraperSchema(),
-	}
-	baseAgent := NewAgent(ctx, client, agentConfig)
 
-	webScraperAgent := &WebScraperAgent{Agent: baseAgent}
-
-	// Overwrite the registration in the registry with the specialized agent.
-	agentRegistry[webScraperAgent.name] = webScraperAgent
-
-	return webScraperAgent
-}
-
-func GetWebScraperSchema() *genai.Schema {
-	return &genai.Schema{
+	scheme := genai.Schema{
 		Type:        genai.TypeObject,
 		Description: "A comprehensive analysis or summary of the web page.",
 		Properties: map[string]*genai.Schema{
@@ -49,6 +31,23 @@ func GetWebScraperSchema() *genai.Schema {
 		},
 		Required: []string{"result"},
 	}
+
+	agentConfig := AgentConfig{
+		Name:              WebScraperAgentName,
+		Model:             config.C.AI.Model,
+		SystemInstruction: systemInstruction,
+		Temperature:       helpers.Ptr(float32(0.2)),
+		EnableURLContext:  true,
+		ResponseSchema:    &scheme,
+	}
+	baseAgent := NewAgent(ctx, client, agentConfig)
+
+	webScraperAgent := &WebScraperAgent{Agent: baseAgent}
+
+	// Overwrite the registration in the registry with the specialized agent.
+	AgentRegistry[webScraperAgent.name] = webScraperAgent
+
+	return webScraperAgent
 }
 
 func (a *WebScraperAgent) WarmUp() {

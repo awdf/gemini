@@ -1,4 +1,4 @@
-package ai
+package agents
 
 import (
 	"context"
@@ -44,22 +44,38 @@ type Agent struct {
 
 // AgentConfig defines the configuration for an Agent.
 type AgentConfig struct {
-	Name                  string
-	Model                 string
-	SystemInstruction     string
-	Temperature           *float32
-	EnableGoogleSearch    bool
-	EnableURLContext      bool
-	EnableCodeExecution   bool
-	EnableFunctionCalling bool
-	ResponseSchema        *genai.Schema
+	Name                string
+	Model               string
+	SystemInstruction   string
+	Temperature         *float32
+	EnableGoogleSearch  bool
+	EnableURLContext    bool
+	EnableCodeExecution bool
+	ResponseSchema      *genai.Schema
 }
 
-// agentRegistry holds all created agent instances, keyed by their name.
-var agentRegistry = make(map[string]Callable)
+// AgentRegistry holds all created agent instances, keyed by their name.
+var AgentRegistry = make(map[string]Callable)
 
 // Agents post initialization
-func Registerate(agent Callable) {
+func Registerate(ctx context.Context, client *genai.Client, agentName string) {
+	var agent Callable
+
+	switch agentName {
+	case ObjectDetectionAgentName:
+		agent = NewObjectDetectionAgent(ctx, client)
+	case PdfReaderAgentName:
+		agent = NewPdfReaderAgent(ctx, client)
+	case YoutubeAgentName:
+		agent = NewYoutubeAgent(ctx, client)
+	case WebScraperAgentName:
+		agent = NewWebScraperAgent(ctx, client)
+	case GmailAgentName:
+		agent = NewGmailAgent(ctx, client)
+	default:
+		log.Printf("Unknown agent name: %s", agentName)
+	}
+
 	if config.C.AI.EnableFunctionCalling && config.C.AI.AgentWarmUp {
 		agent.WarmUp()
 	}
@@ -83,7 +99,7 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 	}
 
 	// Determine if any tools are enabled by checking the specific configuration flags.
-	toolsEnabled := agentConfig.EnableGoogleSearch || agentConfig.EnableURLContext || agentConfig.EnableCodeExecution || agentConfig.EnableFunctionCalling
+	toolsEnabled := agentConfig.EnableGoogleSearch || agentConfig.EnableURLContext || agentConfig.EnableCodeExecution
 	if toolsEnabled {
 		log.Printf("[%s] Tool use is enabled.", agentConfig.Name)
 		var tools []*genai.Tool
@@ -108,19 +124,13 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 			log.Printf("[%s] Code execution tool enabled", agentConfig.Name)
 		}
 
-		// Function calling tools, don't works togather with sandart tools.
-		if agentConfig.EnableFunctionCalling {
-			tools = append(tools, getFunctionTools()) // Add file system tools
-			log.Printf("[%s] Function calling tool enabled", agentConfig.Name)
-		}
-
 		if len(tools) > 0 {
 			agent.tools = tools
 		}
 	}
 
 	// Register the newly created agent.
-	if _, exists := agentRegistry[agent.name]; exists {
+	if _, exists := AgentRegistry[agent.name]; exists {
 		log.Printf("WARNING: Agent with name '%s' is being re-registered. This may indicate a configuration issue.", agent.name)
 	}
 
