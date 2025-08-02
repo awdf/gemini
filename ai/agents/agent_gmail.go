@@ -18,6 +18,13 @@ import (
 	"gemini/inout"
 )
 
+func init() {
+	RegisterFactory(AgentGmailName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+		// NewGmailAgent can return nil, which is a valid nil interface value.
+		return NewGmailAgent(ctx, client, toolset)
+	})
+}
+
 // GmailAgent handles interactions with the Gmail API.
 type GmailAgent struct {
 	*Agent
@@ -69,7 +76,7 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 
 	// Create a base agent. It won't use the model directly, but embedding it makes it a valid Callable.
 	baseAgent := NewAgent(ctx, client, AgentConfig{
-		Name:  GmailAgentName,
+		Name:  AgentGmailName,
 		Model: config.C.AI.Model, // Not used, but required by NewAgent
 	})
 
@@ -140,7 +147,6 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 		userEmail: profile.EmailAddress,
 	}
 
-	AgentRegistry[gmailAgent.name] = gmailAgent // Overwrite registration with the specialized agent
 	log.Printf("Gmail Agent initialized successfully for user: %s", gmailAgent.userEmail)
 	return gmailAgent
 }

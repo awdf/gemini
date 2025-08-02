@@ -12,6 +12,12 @@ import (
 	"gemini/inout"
 )
 
+func init() {
+	RegisterFactory(AgentWebScraperName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+		return NewWebScraperAgent(ctx, client, toolset)
+	})
+}
+
 type WebScraperAgent struct {
 	*Agent
 }
@@ -50,7 +56,7 @@ Describe important visual elements like images, charts, and the overall page str
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &functions)
 
 	agentConfig := AgentConfig{
-		Name:              WebScraperAgentName,
+		Name:              AgentWebScraperName,
 		Model:             config.C.AI.Model,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
@@ -60,9 +66,6 @@ Describe important visual elements like images, charts, and the overall page str
 	baseAgent := NewAgent(ctx, client, agentConfig)
 
 	webScraperAgent := &WebScraperAgent{Agent: baseAgent}
-
-	// Overwrite the registration in the registry with the specialized agent.
-	AgentRegistry[webScraperAgent.name] = webScraperAgent
 
 	return webScraperAgent
 }

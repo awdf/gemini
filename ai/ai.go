@@ -93,12 +93,14 @@ func NewAI(
 	}))
 
 	// --- Agent Initialization ---
-	toolset := getFunctionTools()
-	agents.Registerate(ctx, client, toolset, agents.ObjectDetectionAgentName)
-	agents.Registerate(ctx, client, toolset, agents.PdfReaderAgentName)
-	agents.Registerate(ctx, client, toolset, agents.YoutubeAgentName)
-	agents.Registerate(ctx, client, toolset, agents.WebScraperAgentName)
-	agents.Registerate(ctx, client, toolset, agents.GmailAgentName)
+	toolset := agents.NewToolSet()
+	agents.Registerate(ctx, client, toolset, agents.AgentYoutubeName)
+	agents.Registerate(ctx, client, toolset, agents.AgentWebScraperName)
+	agents.Registerate(ctx, client, toolset, agents.FileAgentName)
+	agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
+	agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
+	agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
+	agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
 
 	ai := &AI{
 		ctx:                 ctx,

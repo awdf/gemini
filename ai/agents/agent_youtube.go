@@ -9,8 +9,13 @@ import (
 
 	"gemini/config"
 	"gemini/helpers"
-	"gemini/inout"
 )
+
+func init() {
+	RegisterFactory(AgentYoutubeName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+		return NewYoutubeAgent(ctx, client, toolset)
+	})
+}
 
 type YoutubeAgent struct {
 	*Agent
@@ -63,7 +68,7 @@ Analyze the video thoroughly to provide a rich and informative response.`
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &functions)
 
 	agentConfig := AgentConfig{
-		Name:              YoutubeAgentName,
+		Name:              AgentYoutubeName,
 		Model:             config.C.AI.Model,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
@@ -77,7 +82,6 @@ Analyze the video thoroughly to provide a rich and informative response.`
 
 	// Overwrite the registration in the registry with the specialized agent.
 	// This ensures that when tool calls are dispatched, the correct Handle method is called.
-	AgentRegistry[youtubeAgent.name] = youtubeAgent
 	return youtubeAgent
 }
 
@@ -95,8 +99,6 @@ func (a *YoutubeAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse 
 }
 
 func (a *YoutubeAgent) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
-
 	var result any
 	var err error
 
@@ -118,23 +120,5 @@ func (a *YoutubeAgent) handleYoutubeAnalysisTool(call *genai.FunctionCall) *gena
 		}
 	}
 
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
+	return a.CreateFunctionResponse(call, result, err)
 }

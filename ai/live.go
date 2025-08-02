@@ -93,16 +93,20 @@ func NewLiveSink(
 	}
 
 	// --- Agent Initialization ---
-	toolset := getFunctionTools()
-	agents.Registerate(ctx, client, toolset, agents.ObjectDetectionAgentName)
-	agents.Registerate(ctx, client, toolset, agents.PdfReaderAgentName)
-	agents.Registerate(ctx, client, toolset, agents.YoutubeAgentName)
-	agents.Registerate(ctx, client, toolset, agents.WebScraperAgentName)
-	agents.Registerate(ctx, client, toolset, agents.GmailAgentName)
+	// Create an empty toolset that will be populated by the agents.
+	toolset := agents.NewToolSet()
 
-	return &LiveAI{
-		wg:               wg,
-		ctx:              ctx,
+	// Initialize each agent, passing the toolset to them.
+	// Each agent's constructor will add its functions to the toolset and
+	// register its handler in the AgentRegistry via the Registerate function.
+	agents.Registerate(ctx, client, toolset, agents.AgentYoutubeName)
+	agents.Registerate(ctx, client, toolset, agents.AgentWebScraperName)
+	agents.Registerate(ctx, client, toolset, agents.FileAgentName)
+	agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
+	agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
+	agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
+	agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
+
 		client:           client,
 		agents:           agents.AgentRegistry,
 		formatter:        inout.NewFormatter(),

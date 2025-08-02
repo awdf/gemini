@@ -16,9 +16,14 @@ import (
 	"gemini/config"
 	"gemini/helpers"
 	"gemini/images"
-	"gemini/inout"
 	"gemini/wayland"
 )
+
+func init() {
+	RegisterFactory(AgentObjectDetectionName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+		return NewObjectDetectionAgent(ctx, client, toolset)
+	})
+}
 
 // ObjectDetectionNormalizationGrid defines the grid size for normalized bounding box coordinates.
 const ObjectDetectionNormalizationGrid = 1000
@@ -118,7 +123,7 @@ If an object is present multiple times, name them according to their unique char
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, functions...)
 
 	agentConfig := AgentConfig{
-		Name:              ObjectDetectionAgentName,
+		Name:              AgentObjectDetectionName,
 		Model:             config.C.AI.ModelObjectDetection,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.0)),
@@ -130,9 +135,6 @@ If an object is present multiple times, name them according to their unique char
 		Agent:   baseAgent,
 		roadMap: [3]bool{false, false, false},
 	}
-
-	// Overwrite the registration in the registry with the specialized agent.
-	AgentRegistry[odAgent.name] = odAgent
 
 	return odAgent
 }
@@ -152,8 +154,6 @@ func (a *ObjectDetectionAgent) Handle(call *genai.FunctionCall) *genai.FunctionR
 
 // handleDetectObjectsTool processes the 'detectObjects' tool call.
 func (a *ObjectDetectionAgent) handleDetectObjectsTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
-
 	var result any
 	var err error
 
@@ -194,28 +194,12 @@ func (a *ObjectDetectionAgent) handleDetectObjectsTool(call *genai.FunctionCall)
 		}
 	}
 
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	} else {
+	if err == nil {
 		// Mark this step as complete on the roadmap only on success.
 		a.roadMap[0] = true
 	}
 
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
+	return a.CreateFunctionResponse(call, result, err)
 }
 
 func (a *ObjectDetectionAgent) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *genai.FunctionResponse {
@@ -287,28 +271,12 @@ func (a *ObjectDetectionAgent) handleVerifyObjectDetectionTool(call *genai.Funct
 		}
 	}
 
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	} else {
+	if err == nil {
 		// Mark this step as complete on the roadmap only on success.
 		a.roadMap[1] = true
 	}
 
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
+	return a.CreateFunctionResponse(call, result, err)
 }
 
 func (a *ObjectDetectionAgent) handleMouseClickTool(call *genai.FunctionCall) *genai.FunctionResponse {
@@ -364,25 +332,7 @@ func (a *ObjectDetectionAgent) handleMouseClickTool(call *genai.FunctionCall) *g
 		}
 	}
 
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
 	a.roadMap = [3]bool{false, false, false}
 
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
+	return a.CreateFunctionResponse(call, result, err)
 }
