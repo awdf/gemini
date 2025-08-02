@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"google.golang.org/genai"
 
@@ -70,6 +71,7 @@ Analyze the video thoroughly to provide a rich and informative response.`
 	agentConfig := AgentConfig{
 		Name:              AgentYoutubeName,
 		Model:             config.C.AI.Model,
+		RPM:               config.C.AI.ModelRPM,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
 		ResponseSchema:    &scheme,
@@ -85,8 +87,8 @@ Analyze the video thoroughly to provide a rich and informative response.`
 	return youtubeAgent
 }
 
-func (a *YoutubeAgent) WarmUp() {
-	a.Agent.WarmUp()
+func (a *YoutubeAgent) WarmUp() time.Duration {
+	return a.Agent.WarmUp()
 }
 
 func (a *YoutubeAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {

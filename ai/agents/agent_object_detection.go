@@ -125,6 +125,7 @@ If an object is present multiple times, name them according to their unique char
 	agentConfig := AgentConfig{
 		Name:              AgentObjectDetectionName,
 		Model:             config.C.AI.ModelObjectDetection,
+		RPM:               config.C.AI.ModelObjectDetectionRPM,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.0)),
 		ResponseSchema:    &scheme,
@@ -137,6 +138,10 @@ If an object is present multiple times, name them according to their unique char
 	}
 
 	return odAgent
+}
+
+func (a *ObjectDetectionAgent) WarmUp() time.Duration {
+	return a.Agent.WarmUp()
 }
 
 func (a *ObjectDetectionAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {

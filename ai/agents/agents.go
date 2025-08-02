@@ -27,7 +27,9 @@ const (
 )
 
 type Callable interface {
-	WarmUp()
+	ModelName() string
+	RPM() int
+	WarmUp() time.Duration
 	Process(prompt string, parts ...*genai.Part) (string, error)
 	Handle(call *genai.FunctionCall) *genai.FunctionResponse
 }
@@ -43,6 +45,7 @@ type Agent struct {
 	ctx               context.Context
 	client            *genai.Client
 	modelName         string
+	rpm               int
 	systemInstruction *genai.Content
 	responseSchema    *genai.Schema
 	temperature       *float32
@@ -53,6 +56,7 @@ type Agent struct {
 type AgentConfig struct {
 	Name                string
 	Model               string
+	RPM                 int
 	SystemInstruction   string
 	Temperature         *float32
 	EnableGoogleSearch  bool
@@ -66,6 +70,12 @@ var AgentRegistry = make(map[string]Callable)
 
 // agentFactories holds the constructor functions for all available agents.
 var agentFactories = make(map[string]AgentFactory)
+
+var (
+	// modelRequestTimestamps tracks the timestamps of recent warm-up calls for rate limiting.
+	modelRequestTimestamps = make(map[string][]time.Time)
+	rateLimitMu            sync.Mutex
+)
 
 var (
 	warmedUpModels = make(map[string]bool)
@@ -104,8 +114,45 @@ func Registerate(ctx context.Context, client *genai.Client, toolset *genai.Tool,
 		return
 	}
 
+	// --- Rate Limiting Logic ---
+	// This logic is executed before the warm-up call to ensure we respect API limits.
+	rpm := agent.RPM()
+
+	if rpm > 0 {
+		rateLimitMu.Lock()
+		modelName := agent.ModelName()
+		now := time.Now()
+		// Clean up timestamps older than one minute.
+		timestamps := modelRequestTimestamps[modelName]
+		validTimestamps := []time.Time{}
+		for _, ts := range timestamps {
+			if now.Sub(ts) < time.Minute {
+				validTimestamps = append(validTimestamps, ts)
+			}
+		}
+		modelRequestTimestamps[modelName] = validTimestamps
+
+		// If we've hit the limit, wait until the oldest request is more than a minute old.
+		if len(validTimestamps) >= rpm {
+			oldestTimestamp := validTimestamps[0]
+			timeToWait := time.Minute - now.Sub(oldestTimestamp) + (1 * time.Second) // Add a 1s buffer.
+			log.Printf("RPM limit of %d for model '%s' reached. Waiting for %v...", rpm, modelName, timeToWait)
+			rateLimitMu.Unlock() // Unlock while sleeping to not block other agents.
+			time.Sleep(timeToWait)
+			rateLimitMu.Lock() // Re-lock before proceeding.
+		}
+		rateLimitMu.Unlock()
+	}
+
+	// --- Warm-up and Registration ---
+	duration := agent.WarmUp()
+	if duration > 0 {
+		// If the warm-up actually made an API call, record its timestamp for rate limiting.
+		rateLimitMu.Lock()
+		modelRequestTimestamps[agent.ModelName()] = append(modelRequestTimestamps[agent.ModelName()], time.Now())
+		rateLimitMu.Unlock()
+	}
 	AgentRegistry[agentName] = agent
-	agent.WarmUp()
 }
 
 // NewAgent creates a new AI agent with a specific configuration.
@@ -117,6 +164,7 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 		ctx:            ctx,
 		client:         client,
 		modelName:      agentConfig.Model,
+		rpm:            agentConfig.RPM,
 		responseSchema: agentConfig.ResponseSchema,
 		temperature:    agentConfig.Temperature,
 	}
@@ -157,6 +205,16 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 	}
 
 	return &agent
+}
+
+// ModelName returns the name of the model this agent is configured to use.
+func (a *Agent) ModelName() string {
+	return a.modelName
+}
+
+// RPM returns the configured requests per minute for the agent's model.
+func (a *Agent) RPM() int {
+	return a.rpm
 }
 
 // Process sends a prompt (with optional other parts like images or URIs) to the agent's model and returns the text response.
@@ -221,30 +279,32 @@ func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error
 
 // WarmUp sends a simple, low-cost prompt to the agent's model to reduce
 // the "cold start" latency on the first real request. It runs in a goroutine
-// to avoid blocking the application's startup sequence.
-func (a *Agent) WarmUp() {
-	if config.C.AI.EnableFunctionCalling && config.C.AI.AgentWarmUp {
-		warmUpMu.Lock()
-		// Check if this specific model has already been warmed up.
-		if warmedUpModels[a.modelName] {
-			// If so, we don't need to do it again.
-			log.Printf("Model '%s' already warmed up, skipping for agent '%s'.", a.modelName, a.name)
-			warmUpMu.Unlock()
-			return
-		}
-		// Mark this model as being warmed up to prevent other agents from doing the same.
-		warmedUpModels[a.modelName] = true
-		warmUpMu.Unlock()
-
-		log.Printf("[%s] Warming up model...", a.name)
-		// Use a simple prompt. The goal is just to make the model endpoint "hot".
-		// We don't care about the response, only that the call is made.
-		_, err := a.Process("ping")
-		if err != nil {
-			// This is not a fatal error, but we should log it for debugging.
-			log.Printf("[%s] WARNING: Warm-up call failed: %v", a.name, err)
-		}
+// to avoid blocking the application's startup sequence. It returns the duration
+// of the API call, or 0 if no call was made.
+func (a *Agent) WarmUp() time.Duration {
+	if !(config.C.AI.EnableFunctionCalling && config.C.AI.AgentWarmUp) {
+		return 0
 	}
+
+	warmUpMu.Lock()
+	if warmedUpModels[a.modelName] {
+		log.Printf("Model '%s' already warmed up, skipping for agent '%s'.", a.modelName, a.name)
+		warmUpMu.Unlock()
+		return 0
+	}
+	warmedUpModels[a.modelName] = true
+	warmUpMu.Unlock()
+
+	log.Printf("[%s] Warming up model '%s'...", a.name, a.modelName)
+	startTime := time.Now()
+	_, err := a.Process("ping")
+	duration := time.Since(startTime)
+
+	if err != nil {
+		log.Printf("[%s] WARNING: Warm-up call failed: %v", a.name, err)
+		return 0 // Return 0 on failure so it doesn't count against rate limits.
+	}
+	return duration
 }
 
 // Handle is the base implementation for the Callable interface. It returns nil,

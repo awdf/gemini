@@ -14,8 +14,10 @@ APIKey = "${GOOGLE_API_KEY}"
 Timezone = "Europe/Kyiv"
 # Post AI models, default
 Model = "gemini-2.5-flash"
+ModelRPM = 10
 ModelTTS = "gemini-2.5-flash-preview-tts"
 ModelObjectDetection = "gemini-2.5-flash-preview-05-20"
+ModelObjectDetectionRPM = 10
 # Live AI models, CLI option -live
 ModelLive = "gemini-live-2.5-flash-preview"
 ModelLiveTTS = "gemini-live-2.5-flash-preview"

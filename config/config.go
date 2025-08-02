@@ -38,11 +38,16 @@ type Config struct {
 type AIConfig struct {
 	Timezone                 string                         `toml:"Timezone"`
 	Model                    string                         `toml:"Model"`
-	ModelObjectDetection     string                         `toml:"ModelObjectDetection"`
-	ModelLive                string                         `toml:"ModelLive"`
-	ModelLiveTTS             string                         `toml:"ModelLiveTTS"`
-	TranscriptionPrompt      string                         `toml:"TranscriptionPrompt"`
+	ModelRPM                 int                            `toml:"ModelRPM"`
 	ModelTTS                 string                         `toml:"ModelTTS"`
+	ModelTTSRPM              int                            `toml:"ModelTTSRPM"`
+	ModelLive                string                         `toml:"ModelLive"`
+	ModelLiveRPM             int                            `toml:"ModelLiveRPM"`
+	ModelLiveTTS             string                         `toml:"ModelLiveTTS"`
+	ModelLiveTTSRPM          int                            `toml:"ModelLiveTTSRPM"`
+	ModelObjectDetection     string                         `toml:"ModelObjectDetection"`
+	ModelObjectDetectionRPM  int                            `toml:"ModelObjectDetectionRPM"`
+	TranscriptionPrompt      string                         `toml:"TranscriptionPrompt"`
 	Voice                    string                         `toml:"Voice"`
 	APIKey                   string                         `toml:"APIKey"`
 	VoicePrompt              string                         `toml:"VoicePrompt"`
@@ -161,10 +166,15 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.Timezone = "UTC"
 	defaultConfig.LogFile = "app.log"
 	defaultConfig.AI.Model = "gemini-2.5-flash"
+	defaultConfig.AI.ModelRPM = 10
 	defaultConfig.AI.ModelObjectDetection = "gemini-2.5-flash"
+	defaultConfig.AI.ModelObjectDetectionRPM = 10
 	defaultConfig.AI.ModelTTS = "gemini-2.5-flash-preview-tts"
+	defaultConfig.AI.ModelTTSRPM = 15
 	defaultConfig.AI.ModelLive = "gemini-live-2.5-flash-preview"
+	defaultConfig.AI.ModelLiveRPM = 250
 	defaultConfig.AI.ModelLiveTTS = "gemini-live-2.5-flash-preview"
+	defaultConfig.AI.ModelLiveTTSRPM = 5
 	defaultConfig.AI.Voice = "Kore"
 	defaultConfig.AI.TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
 	defaultConfig.AI.APIKey = "${GOOGLE_API_KEY}"

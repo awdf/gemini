@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"google.golang.org/genai"
 
@@ -126,7 +127,6 @@ func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 
 	agentConfig := AgentConfig{
 		Name:              FileAgentName,
-		Model:             config.C.AI.Model,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.1)),
 		// This agent only executes tools, it does not generate creative responses,
@@ -142,8 +142,9 @@ func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 	return fileAgent
 }
 
-func (a *FileAgent) WarmUp() {
-	a.Agent.WarmUp()
+// WarmUp for FileAgent does nothing as it only executes local tools.
+func (a *FileAgent) WarmUp() time.Duration {
+	return 0
 }
 
 func (a *FileAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {

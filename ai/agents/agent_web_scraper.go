@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"google.golang.org/genai"
 
@@ -58,6 +59,7 @@ Describe important visual elements like images, charts, and the overall page str
 	agentConfig := AgentConfig{
 		Name:              AgentWebScraperName,
 		Model:             config.C.AI.Model,
+		RPM:               config.C.AI.ModelRPM,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
 		EnableURLContext:  true,
@@ -70,8 +72,8 @@ Describe important visual elements like images, charts, and the overall page str
 	return webScraperAgent
 }
 
-func (a *WebScraperAgent) WarmUp() {
-	a.Agent.WarmUp()
+func (a *WebScraperAgent) WarmUp() time.Duration {
+	return a.Agent.WarmUp()
 }
 
 func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {

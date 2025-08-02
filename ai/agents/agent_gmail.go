@@ -76,8 +76,7 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 
 	// Create a base agent. It won't use the model directly, but embedding it makes it a valid Callable.
 	baseAgent := NewAgent(ctx, client, AgentConfig{
-		Name:  AgentGmailName,
-		Model: config.C.AI.Model, // Not used, but required by NewAgent
+		Name: AgentGmailName,
 	})
 
 	functions := []*genai.FunctionDeclaration{
@@ -149,6 +148,12 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 
 	log.Printf("Gmail Agent initialized successfully for user: %s", gmailAgent.userEmail)
 	return gmailAgent
+}
+
+// WarmUp for GmailAgent does nothing as it doesn't make direct model calls.
+// It exists to satisfy the Callable interface.
+func (a *GmailAgent) WarmUp() time.Duration {
+	return 0
 }
 
 // EmailSummary contains the essential details of an email.

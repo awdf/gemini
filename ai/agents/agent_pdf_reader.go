@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"google.golang.org/genai"
 
@@ -59,6 +60,7 @@ The user will provide a query with pdf document, read document please and provid
 	agentConfig := AgentConfig{
 		Name:              AgentPdfReaderName,
 		Model:             config.C.AI.Model,
+		RPM:               config.C.AI.ModelRPM,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.2)),
 		ResponseSchema:    &scheme,
@@ -71,8 +73,8 @@ The user will provide a query with pdf document, read document please and provid
 	return pdfAgent
 }
 
-func (a *PdfReaderAgent) WarmUp() {
-	a.Agent.WarmUp()
+func (a *PdfReaderAgent) WarmUp() time.Duration {
+	return a.Agent.WarmUp()
 }
 
 func (a *PdfReaderAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {

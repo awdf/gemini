@@ -107,6 +107,9 @@ func NewLiveSink(
 	agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
 	agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
 
+	return &LiveAI{
+		wg:               wg,
+		ctx:              ctx,
 		client:           client,
 		agents:           agents.AgentRegistry,
 		formatter:        inout.NewFormatter(),

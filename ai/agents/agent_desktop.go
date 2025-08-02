@@ -9,7 +9,6 @@ import (
 
 	"google.golang.org/genai"
 
-	"gemini/config"
 	"gemini/helpers"
 	"gemini/wayland"
 )
@@ -173,7 +172,6 @@ func NewDesktopAgent(ctx context.Context, client *genai.Client, toolset *genai.T
 
 	agentConfig := AgentConfig{
 		Name:              AgentDesktopName,
-		Model:             config.C.AI.Model,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.0)),
 	}
@@ -183,8 +181,9 @@ func NewDesktopAgent(ctx context.Context, client *genai.Client, toolset *genai.T
 	return desktopAgent
 }
 
-func (a *DesktopAgent) WarmUp() {
-	a.Agent.WarmUp()
+// WarmUp for DesktopAgent does nothing as it doesn't make model calls, only executes local tools.
+func (a *DesktopAgent) WarmUp() time.Duration {
+	return 0
 }
 
 func (a *DesktopAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
