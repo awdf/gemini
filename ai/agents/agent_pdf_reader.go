@@ -38,7 +38,7 @@ The user will provide a query with pdf document, read document please and provid
 
 	functions := genai.FunctionDeclaration{
 		Name:        "readPdf",
-		Description: "PDF Reader: Reads the content of a PDF file from the workspace and answers a question about it.",
+		Description: "PDF Reader: Extracts the text content from a PDF file. You MUST use this tool to read the content of any PDF file before you can analyze or summarize it.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
