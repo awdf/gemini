@@ -18,8 +18,9 @@ import (
 // Agent names used as keys in the agent map.
 const (
 	AgentObjectDetectionName = "objectDetection"
-	FileAgentName            = "FileAgent"
+	AgentFileName            = "FileAgent"
 	AgentPdfReaderName       = "pdfReaderAgent"
+	AgentRtfReaderName       = "rtfReaderAgent"
 	AgentYoutubeName         = "youtubeAgent"
 	AgentWebScraperName      = "webScraperAgent"
 	AgentDesktopName         = "desktopAgent"

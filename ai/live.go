@@ -101,10 +101,11 @@ func NewLiveSink(
 	// register its handler in the AgentRegistry via the Registerate function.
 	agents.Registerate(ctx, client, toolset, agents.AgentYoutubeName)
 	agents.Registerate(ctx, client, toolset, agents.AgentWebScraperName)
-	agents.Registerate(ctx, client, toolset, agents.FileAgentName)
+	agents.Registerate(ctx, client, toolset, agents.AgentFileName)
 	agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
 	agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
 	agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
+	agents.Registerate(ctx, client, toolset, agents.AgentRtfReaderName)
 	agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
 
 	return &LiveAI{

@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/BurntSushi/toml v1.5.0
+	github.com/aiq/go-rtf v0.0.0-20250119212555-f57508a7d581
 	github.com/go-gst/go-glib v1.4.0
 	github.com/go-gst/go-gst v1.4.0
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
@@ -59,3 +60,6 @@ require (
 	google.golang.org/grpc v1.73.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 )
+
+// Replace the remote go-rtf module with your local, fixed version.
+replace github.com/aiq/go-rtf => ./internal/libs/go-rtf

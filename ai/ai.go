@@ -96,9 +96,11 @@ func NewAI(
 	// --- Agent Initialization ---
 	toolset := agents.NewToolSet()
 	if config.C.AI.EnableTools && config.C.AI.EnableFunctionCalling {
-		agents.Registerate(ctx, client, toolset, agents.FileAgentName)
+		agents.Registerate(ctx, client, toolset, agents.AgentFileName)
 		agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
 		agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
+		agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
+		agents.Registerate(ctx, client, toolset, agents.AgentRtfReaderName)
 		agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
 	}
 

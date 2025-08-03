@@ -18,7 +18,7 @@ import (
 )
 
 func init() {
-	RegisterFactory(FileAgentName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentFileName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
 		return NewFileAgent(ctx, client, toolset)
 	})
 }
@@ -126,7 +126,7 @@ func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, functions...)
 
 	agentConfig := AgentConfig{
-		Name:              FileAgentName,
+		Name:              AgentFileName,
 		SystemInstruction: systemInstruction,
 		Temperature:       helpers.Ptr(float32(0.1)),
 		// This agent only executes tools, it does not generate creative responses,
