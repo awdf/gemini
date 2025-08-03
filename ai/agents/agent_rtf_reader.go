@@ -23,6 +23,13 @@ func init() {
 	})
 }
 
+// isParagraphOpen is a package-level variable to track paragraph state across
+// the extendedHTMLRules and the finalizer function. It's reset for each conversion.
+var (
+	isParagraphOpen  bool
+	bodyStyleApplied bool
+)
+
 // rtfIgnoreList creates a custom ignore list that allows processing of field results.
 // By default, the library ignores `field`, `fldinst`, and `fldrslt`. We remove them
 // so our custom rules can process them.
@@ -45,14 +52,66 @@ func rtfIgnoreList() []string {
 func extendedHTMLRules() rtf.RuleSet {
 	// Start with the library's default HTML rules.
 	// RTF format doc: https://www.biblioscape.com/rtf15_spec.htm
-	rules := rtf.HTMLRules()
 
-	// The default rules handle bold (\b) and underline (\ul) using the Toggle helper,
-	// which correctly manages on/off states like \b and \b0.
-	// We will add more common formatting tags using the same pattern.
+	// Reset paragraph state for this conversion run.
+	isParagraphOpen = false
+	bodyStyleApplied = false
+	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
+
+	// getStyle generates the CSS for paragraph indentation.
+	getStyle := func() string {
+		style := ""
+		// RTF indents are in "twips". 1 point = 20 twips.
+		if leftIndent > 0 {
+			style += fmt.Sprintf("padding-left: %.2fpt;", float64(leftIndent)/20.0)
+		}
+		if rightIndent > 0 {
+			style += fmt.Sprintf("padding-right: %.2fpt;", float64(rightIndent)/20.0)
+		}
+		return style
+	}
+
+	// openParagraph closes any existing paragraph and opens a new one with the current style.
+	openParagraph := func(stack rtf.StackType) {
+		if isParagraphOpen {
+			stack.Actions().AppendString("</p>\n")
+		}
+		if !bodyStyleApplied && paperWidth > 0 {
+			// 1 point = 20 twips.
+			contentWidthPt := float64(paperWidth-marginLeft-marginRight) / 20.0
+			stack.Actions().AppendString(fmt.Sprintf(`<div style="width: %.2fpt; margin: auto;">`, contentWidthPt))
+			bodyStyleApplied = true
+		}
+		if isParagraphOpen {
+			stack.Actions().AppendString("</p>\n")
+		}
+		if !bodyStyleApplied && paperWidth > 0 {
+			// 1 point = 20 twips.
+			contentWidthPt := float64(paperWidth-marginLeft-marginRight) / 20.0
+			stack.Actions().AppendString(fmt.Sprintf(`<div style="width: %.2fpt; margin: auto;">`, contentWidthPt))
+			bodyStyleApplied = true
+		}
+		if isParagraphOpen {
+			stack.Actions().AppendString("</p>\n")
+		}
+		style := getStyle()
+		if style != "" {
+			stack.Actions().AppendString(fmt.Sprintf(`<p style="%s">`, style))
+		} else {
+			stack.Actions().AppendString("<p>")
+		}
+		isParagraphOpen = true
+	}
+
+	// Start with a clean ruleset for full control over paragraph structure.
+	rules := rtf.RuleSet{
+		"line": rtf.As("<br>\n"),
+		"b":    rtf.Toggle("<b>", "</b>"),
+		"ul":   rtf.Toggle("<u>", "</u>"),
+		"i":    rtf.Toggle("<i>", "</i>"),
+	}
 
 	// Add a rule for italics (\i and \i0).
-	rules["i"] = rtf.Toggle("<i>", "</i>")
 
 	// Add a rule for strikethrough (\strike and \strike0).
 	rules["strike"] = rtf.Toggle("<s>", "</s>")
@@ -77,13 +136,56 @@ func extendedHTMLRules() rtf.RuleSet {
 
 	// Add a rule for the \plain tag, which resets formatting to default.
 	// This rule will close any open toggle tags like bold, italics, etc.
-	rules["plain"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+	rules["plain"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 		// HACK: Do not reset formatting if we are inside a \listtext group,
 		// as it's likely being used for layout, not style reset.
 		if stack.IsInGroup("listtext") {
 			return nil
 		}
 		stack.CloseAllStackToggles()
+		return nil
+	}
+
+	// Add rules for page dimensions and margins.
+	rules["paperw"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			paperWidth = *act.Para
+		}
+		return nil
+	}
+	rules["margl"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			marginLeft = *act.Para
+		}
+		return nil
+	}
+	rules["margr"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			marginRight = *act.Para
+		}
+		return nil
+	}
+
+	// Add rules for left and right indents.
+	rules["li"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			leftIndent = *act.Para
+		}
+		return nil
+	}
+	rules["ri"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			rightIndent = *act.Para
+		}
+		return nil
+	}
+
+	// Overwrite the default 'par' rule to handle paragraph closing.
+	rules["par"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		if isParagraphOpen {
+			stack.Actions().AppendString("</p>\n")
+			isParagraphOpen = false
+		}
 		return nil
 	}
 
@@ -95,6 +197,11 @@ func extendedHTMLRules() rtf.RuleSet {
 		if stack.IsInGroup("listtext") {
 			return nil
 		}
+		// Reset indents to default and start a new paragraph.
+		leftIndent = 0
+		rightIndent = 0
+		// paperWidth, marginLeft, and marginRight are document-level and should not be reset here.
+		openParagraph(stack)
 		stack.CloseAllStackToggles()
 		return nil
 	}
@@ -217,8 +324,17 @@ func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *g
 			if readErr != nil {
 				err = fmt.Errorf("failed to read RTF file '%s': %w", path, readErr)
 			} else {
+				// Define a finalizer function to close the last paragraph tag if it's still open.
+				finalizer := func(actions *rtf.Actions) {
+					if isParagraphOpen {
+						actions.AppendString("</p>\n")
+					}
+					if bodyStyleApplied {
+						actions.AppendString("</div>\n")
+					}
+				}
 				// Use our extended rules, custom ignore list, and new post-rules.
-				html, convertErr := rtf.Convert(string(rtfBytes), extendedHTMLRules(), rtfIgnoreList(), hyperlinkPostRules())
+				html, convertErr := rtf.Convert(string(rtfBytes), extendedHTMLRules(), rtfIgnoreList(), hyperlinkPostRules(), finalizer)
 				if convertErr != nil {
 					err = fmt.Errorf("RTF to HTML conversion failed: %w", convertErr)
 				} else {
