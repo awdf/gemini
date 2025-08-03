@@ -435,6 +435,7 @@ func (l *LiveAI) Run() {
 // handleResponses runs in a dedicated goroutine, processing all messages from the server.
 // Must be run only once to avoid double processing of responses
 func (l *LiveAI) handleResponses() {
+	var needToGo bool
 	var inModelTurn bool   // State to track if we are in the middle of a model's turn.
 	var inTranscript bool  // State to track if we are in the middle of a model's turn.
 	var outTranscript bool // State to track if we are in the middle of a model's turn.
@@ -554,14 +555,20 @@ func (l *LiveAI) handleResponses() {
 		case msg.GoAway != nil:
 			// The loop will terminate in the next iteration due to the connection closing.
 			log.Printf("Live stream session GoAway received: %+v", msg.GoAway.TimeLeft)
-			fireClose()
+			needToGo = true
 		case msg.SessionResumptionUpdate != nil:
-			l.mu.Lock()
 			if msg.SessionResumptionUpdate.Resumable {
 				log.Printf("Live session resumption handle updated. New handle received.")
 				l.resumptionHandle = msg.SessionResumptionUpdate.NewHandle
+				// After GoAway message we have 1 minute to exit.
+				// We wait for last generated handle and close
+				if needToGo {
+					needToGo = false
+					fireClose()
+				}
+			} else {
+				log.Printf("Live session resumption handle generates. Wait please.")
 			}
-			l.mu.Unlock()
 		default:
 			config.DebugPrintf("Live AI received unhandled message: %+v", msg)
 		}

@@ -51,6 +51,7 @@ type AI struct {
 	formatter           *inout.Formatter
 	bus                 *EventBus.Bus
 	toolset             *genai.Tool
+	agents              map[string]agents.Callable
 	initialContextAdded bool
 	mode                string
 }
@@ -94,13 +95,12 @@ func NewAI(
 
 	// --- Agent Initialization ---
 	toolset := agents.NewToolSet()
-	agents.Registerate(ctx, client, toolset, agents.AgentYoutubeName)
-	agents.Registerate(ctx, client, toolset, agents.AgentWebScraperName)
-	agents.Registerate(ctx, client, toolset, agents.FileAgentName)
-	agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
-	agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
-	agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
-	agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
+	if config.C.AI.EnableTools && config.C.AI.EnableFunctionCalling {
+		agents.Registerate(ctx, client, toolset, agents.FileAgentName)
+		agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
+		agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
+		agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
+	}
 
 	ai := &AI{
 		ctx:                 ctx,
@@ -116,6 +116,7 @@ func NewAI(
 		initialContextAdded: false,
 		mode:                config.C.Mode,
 		toolset:             toolset,
+		agents:              agents.AgentRegistry,
 	}
 
 	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
@@ -654,7 +655,7 @@ func (a *AI) generateAndProcessContent(
 			// Standart tools for chat requests
 			if config.C.AI.EnableStandardTools {
 				searchTool := &genai.Tool{GoogleSearch: &genai.GoogleSearch{}}
-				if !urlContextDisabled {
+				if !(config.C.AI.URLContextDisabled || urlContextDisabled) {
 					log.Println("URLContext tool in use")
 					searchTool.URLContext = &genai.URLContext{}
 				}
@@ -669,7 +670,19 @@ func (a *AI) generateAndProcessContent(
 
 			// Function calling tools, don't works togather with sandart tools.
 			if config.C.AI.EnableFunctionCalling {
-				tools = append(tools, a.toolset) // Add file system tools
+				// The GenerateContentStream method used by PostAI does not support the 'Behavior'
+				// field in FunctionDeclarations, which is used by LiveAI. We must create a
+				// "clean" copy of the toolset with the Behavior field unset to avoid an API error.
+				cleanToolset := &genai.Tool{
+					FunctionDeclarations: make([]*genai.FunctionDeclaration, len(a.toolset.FunctionDeclarations)),
+				}
+				for i, fd := range a.toolset.FunctionDeclarations {
+					cleanFd := *fd                               // Make a shallow copy of the declaration.
+					cleanFd.Behavior = genai.BehaviorUnspecified // Unset the behavior.
+					cleanToolset.FunctionDeclarations[i] = &cleanFd
+				}
+				tools = append(tools, cleanToolset)
+				log.Println("Function calling tool enabled for this request (PostAI mode).")
 			}
 
 			if len(tools) > 0 {
@@ -718,17 +731,31 @@ func (a *AI) generateAndProcessContent(
 
 // executeToolCalls handles a request from the model to execute one or more tool calls.
 func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResponseParts []*genai.Part) {
-	for _, fc := range calls {
-		modelParts = append(modelParts, &genai.Part{FunctionCall: fc})
-		fr := executeSingleToolCall(fc) // This dispatcher is for non-live mode.
+	for _, call := range calls {
+		modelParts = append(modelParts, &genai.Part{FunctionCall: call})
+		var response *genai.FunctionResponse
+
+		// Iterate through all registered agents, following a chain of responsibility pattern.
+		// The first agent that recognizes the tool call will handle it.
+		for _, agent := range a.agents {
+			response = agent.Handle(call)
+			if response != nil {
+				break // An agent handled the call, so we can stop searching.
+			}
+		}
+
+		// If no agent handled the call (response is still nil), fall back to the general-purpose tool dispatcher.
+		if response == nil {
+			response = executeSingleToolCall(call)
+		}
 
 		// Tools like 'uploadImage' can return a 'send_content' key intended for live mode.
 		// In non-live mode, this content cannot be sent, so we must remove it to avoid
 		// sending a complex, unhandled object back to the model.
-		if fr.Response != nil {
-			delete(fr.Response, "send_content")
+		if response.Response != nil {
+			delete(response.Response, "send_content")
 		}
-		toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(fr.Name, fr.Response))
+		toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(response.Name, response.Response))
 	}
 	return modelParts, toolResponseParts
 }
