@@ -44,6 +44,7 @@ func rtfIgnoreList() []string {
 // extendedHTMLRules enhances the default HTML rules with additional formatting.
 func extendedHTMLRules() rtf.RuleSet {
 	// Start with the library's default HTML rules.
+	// RTF format doc: https://www.biblioscape.com/rtf15_spec.htm
 	rules := rtf.HTMLRules()
 
 	// The default rules handle bold (\b) and underline (\ul) using the Toggle helper,
@@ -64,6 +65,23 @@ func extendedHTMLRules() rtf.RuleSet {
 	// Some RTF writers use \ulnone to disable underlining. The default Toggle for 'ul'
 	// only handles \ul0. We can add an explicit rule for \ulnone.
 	rules["ulnone"] = rtf.As("</u>")
+
+	// Add a rule for small caps text (\scaps), which is toggled off by \scaps0 or \plain.
+	rules["scaps"] = rtf.Toggle(`<span style="font-variant: small-caps;">`, "</span>")
+
+	// Add a rule for hidden text (\v), which is toggled off by \v0 or \plain.
+	rules["v"] = rtf.Toggle(`<span style="display:none;">`, "</span>")
+
+	// Add a rule for the tab character. We use an em-space for a good visual representation in HTML.
+	rules["tab"] = rtf.As("&emsp;")
+
+	// Add a rule for the \plain tag, which resets formatting to default.
+	// This rule will close any open toggle tags like bold, italics, etc.
+	rules["plain"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		stack.CloseAllStackToggles()
+		// The \plain tag itself doesn't render any output, it just resets state.
+		return nil
+	}
 
 	return rules
 }
