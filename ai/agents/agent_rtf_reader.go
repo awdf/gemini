@@ -77,9 +77,25 @@ func extendedHTMLRules() rtf.RuleSet {
 
 	// Add a rule for the \plain tag, which resets formatting to default.
 	// This rule will close any open toggle tags like bold, italics, etc.
-	rules["plain"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+	rules["plain"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		// HACK: Do not reset formatting if we are inside a \listtext group,
+		// as it's likely being used for layout, not style reset.
+		if stack.IsInGroup("listtext") {
+			return nil
+		}
 		stack.CloseAllStackToggles()
-		// The \plain tag itself doesn't render any output, it just resets state.
+		return nil
+	}
+
+	// Add a rule for \pard, which resets to default paragraph properties.
+	// In many RTF documents, this implicitly resets all character formatting,
+	// so we close all open toggles to prevent styles from leaking between paragraphs.
+	rules["pard"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		// HACK: Same as the \plain rule, ignore \pard inside \listtext.
+		if stack.IsInGroup("listtext") {
+			return nil
+		}
+		stack.CloseAllStackToggles()
 		return nil
 	}
 
