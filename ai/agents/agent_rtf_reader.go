@@ -53,13 +53,18 @@ func rtfIgnoreList() []string {
 func extendedHTMLRules() rtf.RuleSet {
 	// Start with the library's default HTML rules.
 	// RTF format doc: https://www.biblioscape.com/rtf15_spec.htm
+	// Summarize please ~/Workspace/portfolio/CV_ENG.rtf
 
 	// Reset paragraph state for this conversion run.
 	isParagraphOpen = false
 	bodyStyleApplied = false
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
-	var fontSize int // in half-points
+	fontSize := 24 // RTF default font size is 12pt (24 half-points). Initialize it here.
 	var fontFamily string
+	var lastAppliedStyle string // Track the last style applied to avoid redundant spans.
+	var colorTable []string     // stores hex colors like "#RRGGBB"
+	var currentR, currentG, currentB int
+	var currentColorIndex int
 	isStyleSpanOpen = false
 	var textAlign string // Can be "left", "right", "center", "justify"
 
@@ -89,6 +94,9 @@ func extendedHTMLRules() rtf.RuleSet {
 		if fontFamily != "" {
 			styles = append(styles, fmt.Sprintf("font-family:'%s'", fontFamily))
 		}
+		if currentColorIndex >= 0 && currentColorIndex < len(colorTable) {
+			styles = append(styles, fmt.Sprintf("color:%s", colorTable[currentColorIndex]))
+		}
 		return strings.Join(styles, "; ")
 	}
 
@@ -102,11 +110,15 @@ func extendedHTMLRules() rtf.RuleSet {
 
 	// openStyleSpan closes any existing style span and opens a new one if needed.
 	openStyleSpan := func(stack rtf.StackType) {
-		closeStyleSpan(stack)
-		style := getInlineStyle()
-		if style != "" {
-			stack.Actions().AppendString(fmt.Sprintf(`<span style="%s">`, style))
-			isStyleSpanOpen = true
+		currentStyle := getInlineStyle()
+		// Only change the span if the style has actually changed.
+		if currentStyle != lastAppliedStyle {
+			closeStyleSpan(stack) // Close the old span first.
+			if currentStyle != "" {
+				stack.Actions().AppendString(fmt.Sprintf(`<span style="%s">`, currentStyle))
+				isStyleSpanOpen = true
+			}
+			lastAppliedStyle = currentStyle
 		}
 	}
 
@@ -130,18 +142,27 @@ func extendedHTMLRules() rtf.RuleSet {
 			stack.Actions().AppendString("<p>")
 		}
 		isParagraphOpen = true
+		openStyleSpan(stack) // Ensure every paragraph starts with a style span.
 	}
 
 	// Start with a clean ruleset for full control over paragraph structure.
 	rules := rtf.RuleSet{
 		"line": rtf.As("<br>\n"),
 		"par": func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+			// A paragraph break also resets any inline styles and closes open toggles.
 			closeStyleSpan(stack)
 			fontSize = 24
 			fontFamily = ""
+			lastAppliedStyle = ""
+			currentColorIndex = 0
+			stack.CloseAllStackToggles()
+
 			if isParagraphOpen {
 				stack.Actions().AppendString("</p>\n")
 				isParagraphOpen = false
+			} else {
+				// If no paragraph is open, a \par likely indicates a blank line.
+				stack.Actions().AppendString("<p>&nbsp;</p>\n")
 			}
 			return nil
 		},
@@ -173,8 +194,53 @@ func extendedHTMLRules() rtf.RuleSet {
 	// Add a rule for the tab character. We use an em-space for a good visual representation in HTML.
 	rules["tab"] = rtf.As("&emsp;")
 
+	// Add rules for parsing the color table.
+	rules["colortbl"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// Set this group to be ignorable for rendering, but our custom rules will still fire.
+		stack.SetIgnorable(true)
+		// We re-initialize the color table here to handle multiple tables in a doc.
+		colorTable = nil // Start with an empty table.
+		currentR, currentG, currentB = 0, 0, 0
+		return nil
+	}
+	rules[";"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// If we are inside a color table, this is a delimiter.
+		if stack.IsInGroup("colortbl") {
+			// A semicolon terminates a color definition. Add the color defined by the preceding \red, \green, \blue tags.
+			hexColor := fmt.Sprintf("#%02x%02x%02x", currentR, currentG, currentB)
+			colorTable = append(colorTable, hexColor)
+			// Reset for the next color definition.
+			currentR, currentG, currentB = 0, 0, 0
+		} else if !stack.Ignorable() {
+			// If not in a color table, treat it as a literal character.
+			stack.Actions().AppendString(";")
+		}
+		return nil
+	}
+	rules["red"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		if stack.IsInGroup("colortbl") && act.Para != nil {
+			currentR = *act.Para
+		}
+		return nil
+	}
+	rules["green"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		if stack.IsInGroup("colortbl") && act.Para != nil {
+			currentG = *act.Para
+		}
+		return nil
+	}
+	rules["blue"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		if stack.IsInGroup("colortbl") && act.Para != nil {
+			currentB = *act.Para
+		}
+		return nil
+	}
+
 	// Add rules for font size and font family.
 	rules["fs"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		if stack.IsInGroup("colortbl") {
+			return nil
+		}
 		if act.Para != nil {
 			fontSize = *act.Para
 			openStyleSpan(stack)
@@ -182,6 +248,9 @@ func extendedHTMLRules() rtf.RuleSet {
 		return nil
 	}
 	rules["f"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		if stack.IsInGroup("colortbl") {
+			return nil
+		}
 		if act.Para != nil {
 			// HACK: The library doesn't parse the font table, so we use a hardcoded map.
 			fontMap := map[int]string{
@@ -190,6 +259,18 @@ func extendedHTMLRules() rtf.RuleSet {
 				10: "Arial", // Common fallback for \f10
 			}
 			fontFamily = fontMap[*act.Para] // Returns "" if not found, which is fine.
+			openStyleSpan(stack)
+		}
+		return nil
+	}
+
+	// Add rule for setting the foreground color.
+	rules["cf"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		if stack.IsInGroup("colortbl") {
+			return nil
+		}
+		if act.Para != nil {
+			currentColorIndex = *act.Para
 			openStyleSpan(stack)
 		}
 		return nil
@@ -206,6 +287,8 @@ func extendedHTMLRules() rtf.RuleSet {
 		closeStyleSpan(stack)
 		fontSize = 24
 		fontFamily = ""
+		lastAppliedStyle = ""
+		currentColorIndex = 0
 		stack.CloseAllStackToggles()
 		return nil
 	}
@@ -281,6 +364,8 @@ func extendedHTMLRules() rtf.RuleSet {
 		closeStyleSpan(stack)
 		fontSize = 24
 		fontFamily = ""
+		lastAppliedStyle = ""
+		currentColorIndex = 0
 		// paperWidth, marginLeft, and marginRight are document-level and should not be reset here.
 		openParagraph(stack)
 		stack.CloseAllStackToggles()
@@ -345,7 +430,7 @@ func NewRtfReaderAgent(ctx context.Context, client *genai.Client, toolset *genai
 
 	functions := genai.FunctionDeclaration{
 		Name:        "convertRtfToHtml",
-		Description: "RTF Reader: Converts the content of an RTF file from the workspace into HTML format for analysis.",
+		Description: "RTF Reader: Read the content of an RTF file from the workspace and convert to HTML format for analysis.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
@@ -424,6 +509,12 @@ func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *g
 				} else {
 					log.Printf("RTF conversion successful for file: '%s'", path)
 					result = map[string]any{"html_content": html}
+
+					// --- For testing purposes only: save the generated HTML to a file ---
+					if err := os.WriteFile("convert.html", []byte(html), 0o644); err != nil {
+						// Log as a warning so it doesn't fail the whole operation.
+						log.Printf("WARNING: failed to save convert.html for debugging: %v", err)
+					}
 				}
 			}
 		}
