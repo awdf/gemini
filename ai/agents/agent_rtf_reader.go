@@ -28,6 +28,7 @@ func init() {
 var (
 	isParagraphOpen  bool
 	bodyStyleApplied bool
+	isStyleSpanOpen  bool
 )
 
 // rtfIgnoreList creates a custom ignore list that allows processing of field results.
@@ -57,6 +58,9 @@ func extendedHTMLRules() rtf.RuleSet {
 	isParagraphOpen = false
 	bodyStyleApplied = false
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
+	var fontSize int // in half-points
+	var fontFamily string
+	isStyleSpanOpen = false
 	var textAlign string // Can be "left", "right", "center", "justify"
 
 	// getStyle generates the CSS for paragraph indentation.
@@ -73,6 +77,37 @@ func extendedHTMLRules() rtf.RuleSet {
 			style += fmt.Sprintf("text-align: %s;", textAlign)
 		}
 		return style
+	}
+
+	// getInlineStyle generates the CSS for inline elements like <span>.
+	getInlineStyle := func() string {
+		var styles []string
+		// RTF default font size is 12pt (24 half-points).
+		if fontSize != 24 {
+			styles = append(styles, fmt.Sprintf("font-size:%.0fpt", float64(fontSize)/2.0))
+		}
+		if fontFamily != "" {
+			styles = append(styles, fmt.Sprintf("font-family:'%s'", fontFamily))
+		}
+		return strings.Join(styles, "; ")
+	}
+
+	// closeStyleSpan closes the generic style span if it's open.
+	closeStyleSpan := func(stack rtf.StackType) {
+		if isStyleSpanOpen {
+			stack.Actions().AppendString("</span>")
+			isStyleSpanOpen = false
+		}
+	}
+
+	// openStyleSpan closes any existing style span and opens a new one if needed.
+	openStyleSpan := func(stack rtf.StackType) {
+		closeStyleSpan(stack)
+		style := getInlineStyle()
+		if style != "" {
+			stack.Actions().AppendString(fmt.Sprintf(`<span style="%s">`, style))
+			isStyleSpanOpen = true
+		}
 	}
 
 	// openParagraph closes any existing paragraph and opens a new one with the current style.
@@ -100,9 +135,19 @@ func extendedHTMLRules() rtf.RuleSet {
 	// Start with a clean ruleset for full control over paragraph structure.
 	rules := rtf.RuleSet{
 		"line": rtf.As("<br>\n"),
-		"b":    rtf.Toggle("<b>", "</b>"),
-		"ul":   rtf.Toggle("<u>", "</u>"),
-		"i":    rtf.Toggle("<i>", "</i>"),
+		"par": func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+			closeStyleSpan(stack)
+			fontSize = 24
+			fontFamily = ""
+			if isParagraphOpen {
+				stack.Actions().AppendString("</p>\n")
+				isParagraphOpen = false
+			}
+			return nil
+		},
+		"b":  rtf.Toggle("<b>", "</b>"),
+		"ul": rtf.Toggle("<u>", "</u>"),
+		"i":  rtf.Toggle("<i>", "</i>"),
 	}
 
 	// Add a rule for italics (\i and \i0).
@@ -128,6 +173,28 @@ func extendedHTMLRules() rtf.RuleSet {
 	// Add a rule for the tab character. We use an em-space for a good visual representation in HTML.
 	rules["tab"] = rtf.As("&emsp;")
 
+	// Add rules for font size and font family.
+	rules["fs"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			fontSize = *act.Para
+			openStyleSpan(stack)
+		}
+		return nil
+	}
+	rules["f"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			// HACK: The library doesn't parse the font table, so we use a hardcoded map.
+			fontMap := map[int]string{
+				0:  "Times New Roman",
+				8:  "Arial", // Common fallback for \f8
+				10: "Arial", // Common fallback for \f10
+			}
+			fontFamily = fontMap[*act.Para] // Returns "" if not found, which is fine.
+			openStyleSpan(stack)
+		}
+		return nil
+	}
+
 	// Add a rule for the \plain tag, which resets formatting to default.
 	// This rule will close any open toggle tags like bold, italics, etc.
 	rules["plain"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
@@ -136,6 +203,9 @@ func extendedHTMLRules() rtf.RuleSet {
 		if stack.IsInGroup("listtext") {
 			return nil
 		}
+		closeStyleSpan(stack)
+		fontSize = 24
+		fontFamily = ""
 		stack.CloseAllStackToggles()
 		return nil
 	}
@@ -174,15 +244,6 @@ func extendedHTMLRules() rtf.RuleSet {
 		return nil
 	}
 
-	// Overwrite the default 'par' rule to handle paragraph closing.
-	rules["par"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
-		if isParagraphOpen {
-			stack.Actions().AppendString("</p>\n")
-			isParagraphOpen = false
-		}
-		return nil
-	}
-
 	// Add rules for text alignment.
 	rules["ql"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 		textAlign = "left" // Set state and re-open the paragraph with the new style.
@@ -217,6 +278,9 @@ func extendedHTMLRules() rtf.RuleSet {
 		leftIndent = 0
 		rightIndent = 0
 		textAlign = "" // Reset alignment to default (left)
+		closeStyleSpan(stack)
+		fontSize = 24
+		fontFamily = ""
 		// paperWidth, marginLeft, and marginRight are document-level and should not be reset here.
 		openParagraph(stack)
 		stack.CloseAllStackToggles()
@@ -343,6 +407,9 @@ func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *g
 			} else {
 				// Define a finalizer function to close the last paragraph tag if it's still open.
 				finalizer := func(actions *rtf.Actions) {
+					if isStyleSpanOpen {
+						actions.AppendString("</span>")
+					}
 					if isParagraphOpen {
 						actions.AppendString("</p>\n")
 					}
