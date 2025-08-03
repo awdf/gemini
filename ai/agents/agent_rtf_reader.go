@@ -57,6 +57,7 @@ func extendedHTMLRules() rtf.RuleSet {
 	isParagraphOpen = false
 	bodyStyleApplied = false
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
+	var textAlign string // Can be "left", "right", "center", "justify"
 
 	// getStyle generates the CSS for paragraph indentation.
 	getStyle := func() string {
@@ -68,6 +69,9 @@ func extendedHTMLRules() rtf.RuleSet {
 		if rightIndent > 0 {
 			style += fmt.Sprintf("padding-right: %.2fpt;", float64(rightIndent)/20.0)
 		}
+		if textAlign != "" {
+			style += fmt.Sprintf("text-align: %s;", textAlign)
+		}
 		return style
 	}
 
@@ -76,24 +80,14 @@ func extendedHTMLRules() rtf.RuleSet {
 		if isParagraphOpen {
 			stack.Actions().AppendString("</p>\n")
 		}
+
 		if !bodyStyleApplied && paperWidth > 0 {
 			// 1 point = 20 twips.
 			contentWidthPt := float64(paperWidth-marginLeft-marginRight) / 20.0
 			stack.Actions().AppendString(fmt.Sprintf(`<div style="width: %.2fpt; margin: auto;">`, contentWidthPt))
 			bodyStyleApplied = true
 		}
-		if isParagraphOpen {
-			stack.Actions().AppendString("</p>\n")
-		}
-		if !bodyStyleApplied && paperWidth > 0 {
-			// 1 point = 20 twips.
-			contentWidthPt := float64(paperWidth-marginLeft-marginRight) / 20.0
-			stack.Actions().AppendString(fmt.Sprintf(`<div style="width: %.2fpt; margin: auto;">`, contentWidthPt))
-			bodyStyleApplied = true
-		}
-		if isParagraphOpen {
-			stack.Actions().AppendString("</p>\n")
-		}
+
 		style := getStyle()
 		if style != "" {
 			stack.Actions().AppendString(fmt.Sprintf(`<p style="%s">`, style))
@@ -189,6 +183,28 @@ func extendedHTMLRules() rtf.RuleSet {
 		return nil
 	}
 
+	// Add rules for text alignment.
+	rules["ql"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		textAlign = "left" // Set state and re-open the paragraph with the new style.
+		openParagraph(stack)
+		return nil
+	}
+	rules["qr"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		textAlign = "right" // Set state and re-open the paragraph with the new style.
+		openParagraph(stack)
+		return nil
+	}
+	rules["qc"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		textAlign = "center" // Set state and re-open the paragraph with the new style.
+		openParagraph(stack)
+		return nil
+	}
+	rules["qj"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		textAlign = "justify" // Set state and re-open the paragraph with the new style.
+		openParagraph(stack)
+		return nil
+	}
+
 	// Add a rule for \pard, which resets to default paragraph properties.
 	// In many RTF documents, this implicitly resets all character formatting,
 	// so we close all open toggles to prevent styles from leaking between paragraphs.
@@ -200,6 +216,7 @@ func extendedHTMLRules() rtf.RuleSet {
 		// Reset indents to default and start a new paragraph.
 		leftIndent = 0
 		rightIndent = 0
+		textAlign = "" // Reset alignment to default (left)
 		// paperWidth, marginLeft, and marginRight are document-level and should not be reset here.
 		openParagraph(stack)
 		stack.CloseAllStackToggles()
