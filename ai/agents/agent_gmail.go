@@ -15,7 +15,6 @@ import (
 
 	"gemini/config"
 	"gemini/google"
-	"gemini/inout"
 )
 
 func init() {
@@ -376,25 +375,7 @@ func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.F
 		}
 	}
 
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
+	return a.CreateFunctionResponse(call, result, err)
 }
 
 func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.FunctionResponse {
@@ -422,25 +403,7 @@ func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.
 		}
 	}
 
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
+	return a.CreateFunctionResponse(call, result, err)
 }
 
 func (a *GmailAgent) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
@@ -466,23 +429,5 @@ func (a *GmailAgent) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.F
 		}
 	}
 
-	if err != nil {
-		log.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
-	}
-
-	inout.LogToolResult(call.Name, result)
-
-	responseMap, ok := result.(map[string]any)
-	if !ok {
-		log.Printf("ERROR: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
-		responseMap = map[string]any{"output": result}
-	}
-
-	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
-	}
+	return a.CreateFunctionResponse(call, result, err)
 }

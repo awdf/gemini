@@ -44,6 +44,7 @@ func rtfIgnoreList() []string {
 // extendedHTMLRules creates a new, stateful ruleset and a finalizer for a single RTF conversion.
 // It returns both so they can share the same state via a closure, ensuring that each
 // conversion is independent and does not suffer from stale state.
+// Specification: https://www.biblioscape.com/rtf15_spec.htm
 func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 	// --- State variables for a single conversion run ---
 	var (
@@ -558,12 +559,6 @@ func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *g
 					// The new state-based styling should prevent empty/invalid tags.
 					log.Printf("RTF conversion successful for file: '%s'", path)
 					result = map[string]any{"html_content": html}
-
-					// --- For testing purposes only: save the generated HTML to a file ---
-					if err := os.WriteFile("convert.html", []byte(html), 0o644); err != nil {
-						// Log as a warning so it doesn't fail the whole operation.
-						log.Printf("WARNING: failed to save convert.html for debugging: %v", err)
-					}
 				}
 			}
 		}

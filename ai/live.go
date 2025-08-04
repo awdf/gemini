@@ -918,7 +918,6 @@ func (l *LiveAI) notifyActivityEnd() {
 }
 
 // executeToolCalls handles a request from the model to execute one or more tool calls.
-// It executes them concurrently and returns a slice of their responses.
 // It executes them sequentially, in the order they are received, and returns a slice of their responses.
 func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.FunctionResponse {
 	var responses []*genai.FunctionResponse
