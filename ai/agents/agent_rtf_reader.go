@@ -44,6 +44,8 @@ func rtfIgnoreList() []string {
 		"pict":     true,
 		"pngblip":  true,
 		"jpegblip": true,
+		"header":   true, // To handle header groups
+		"footer":   true, // To handle footer groups
 		// Common picture metadata words that must not be ignored.
 		"picw":          true,
 		"pich":          true,
@@ -97,14 +99,22 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		// Table border properties
 		tableBorderWidth      int
 		isInPicture           bool
+		pictureWidthPixels    int
+		pictureHeightPixels   int
+		pictureWidthTwips     int
+		pictureHeightTwips    int
 		pictureType           string
 		tableBorderStyle      string
 		tableBorderColorIndex int
 		firstLineIndent       int
+		footerActions         *rtf.Actions
 	)
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
 	fontSize := 24 // RTF default font size is 12pt (24 half-points). Initialize it here.
 	var fontFamily string
+
+	// hexRegex is used to extract the hexadecimal image data from a pict block.
+	hexRegex := regexp.MustCompile(`(?i)([0-9a-f][0-9a-f\s]*)$`)
 	var lastAppliedStyle string // Track the last style applied to avoid redundant spans.
 	var colorTable []string     // stores hex colors like "#RRGGBB"
 	var currentR, currentG, currentB int
@@ -281,23 +291,72 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			// The paragraph was already closed by the `\pict` rule.
 			var finalTag string
 			if pictureType != "" {
-				var buf bytes.Buffer
-				actions.Execute(&buf)
-				// The buffer contains all text from the group. It's just hex digits.
-				// We need to remove any whitespace or newlines.
-				hexData := strings.Join(strings.Fields(buf.String()), "")
+				// The actions can contain a mix of injected HTML (like a <td> tag from
+				// ensureTableCell) and the raw hex data for the image. We need to
+				// separate them before decoding the hex.
+				var contentBuf bytes.Buffer
+				actions.Execute(&contentBuf)
+				content := contentBuf.String()
 
-				binData, err := hex.DecodeString(hexData)
+				// The hex data is a long string of hex characters, possibly with whitespace,
+				// at the end of the content buffer. We use a regex to reliably extract it,
+				// even if the prefix (e.g., a <td> tag) contains hex-like characters.
+				match := hexRegex.FindStringSubmatch(content)
+
+				var prefix, hexContent string
+				if len(match) > 1 {
+					hexContent = match[1]
+					// The prefix is everything before the hex content.
+					prefix = content[:len(content)-len(hexContent)]
+				} else {
+					// No hex data found, just keep whatever was there.
+					hexContent = ""
+					prefix = content
+				}
+
+				cleanedHex := strings.Join(strings.Fields(hexContent), "")
+				binData, err := hex.DecodeString(cleanedHex)
 				if err != nil {
 					log.Printf("RTF: failed to decode image hex data: %v", err)
-					finalTag = `<p>[Error: Could not decode image]</p>`
+					// Keep the prefix but show an error for the image part.
+					finalTag = prefix + `<p>[Error: Could not decode image]</p>`
 				} else {
 					log.Printf("RTF: decoded %s image data, size: %d bytes", pictureType, len(binData))
 					b64Data := base64.StdEncoding.EncodeToString(binData)
-					// Adding some basic styling to the image.
-					imgTag := fmt.Sprintf(`<img src="data:%s;base64,%s" alt="embedded image" style="max-width:100%%; height:auto;" />`, pictureType, b64Data)
-					// Wrap in a paragraph for block layout.
-					finalTag = fmt.Sprintf("<p>%s</p>\n", imgTag)
+
+					widthTwips := pictureWidthTwips
+					heightTwips := pictureHeightTwips
+					// If goal size (in twips) is not set, fall back to pixel size.
+					// This is a heuristic, as we must assume a DPI to convert pixels to points.
+					// A common assumption is that the pixel dimensions are for a 96 DPI screen,
+					// and we want to convert to 72 DPI points for CSS.
+					// width_pt = width_px * (72/96) => width_pt = width_px * 0.75
+					// width_twips = width_pt * 20 => width_twips = (width_px * 0.75) * 20 = width_px * 15.
+					if widthTwips == 0 && pictureWidthPixels > 0 {
+						widthTwips = pictureWidthPixels * 15
+					}
+					if heightTwips == 0 && pictureHeightPixels > 0 {
+						heightTwips = pictureHeightPixels * 15
+					}
+
+					var styleAttr string
+					if widthTwips > 0 && heightTwips > 0 {
+						// Convert twips to points (20 twips = 1 point) for CSS.
+						widthPt := float64(widthTwips) / 20.0
+						heightPt := float64(heightTwips) / 20.0
+						styleAttr = fmt.Sprintf(`style="width:%.2fpt; height:%.2fpt;"`, widthPt, heightPt)
+					} else {
+						// Fallback style if dimensions are not specified.
+						styleAttr = `style="max-width:100%; height:auto;"`
+					}
+					imgTag := fmt.Sprintf(`<img src="data:%s;base64,%s" alt="embedded image" %s />`, pictureType, b64Data, styleAttr)
+					// Wrap in a paragraph for block layout, applying paragraph styles.
+					pStyle := getStyle()
+					if pStyle != "" {
+						finalTag = prefix + fmt.Sprintf(`<p style="%s">%s</p>\n`, pStyle, imgTag)
+					} else {
+						finalTag = prefix + fmt.Sprintf("<p>%s</p>\n", imgTag)
+					}
 				}
 			} else {
 				// Not a known picture type, render nothing or a placeholder.
@@ -311,6 +370,19 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			// Reset picture state after processing is complete.
 			isInPicture = false
 			pictureType = ""
+			pictureWidthTwips = 0
+			pictureHeightTwips = 0
+			pictureWidthPixels = 0
+			pictureHeightPixels = 0
+			return nil
+		}
+
+		postRulesMap["footer"] = func(actions *rtf.Actions) error {
+			// The footer group has been parsed. Store its actions to be appended
+			// at the very end of the document by the finalizer.
+			footerActions = actions.Clone()
+			// Clear the original actions so the footer isn't rendered in place.
+			*actions = rtf.Actions{}
 			return nil
 		}
 
@@ -320,6 +392,17 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// Start with a clean ruleset for full control over paragraph structure.
 	rules := rtf.RuleSet{
 		"line": rtf.As("<br>\n"),
+	}
+
+	rules["header"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// Ignore the content of headers.
+		stack.SetIgnorable(true)
+		return nil
+	}
+	rules["footer"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// This rule ensures the \footer group is not ignored, allowing the post-rule
+		// to capture its content.
+		return nil
 	}
 
 	rules["fldinst"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
@@ -491,6 +574,14 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	rules["pict"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 		// When a \pict group starts, we need to make sure any open paragraph is closed,
 		// as a picture is a block-level element in HTML.
+		// If we are inside a header, we should ignore the picture
+		// to prevent it from being rendered at the top of the document.
+		if stack.IsInGroup("header") {
+			stack.SetIgnorable(true)
+			return nil
+		}
+		ensureTableCell(stack) // Ensure we are in a <td> if needed.
+
 		// Crucially, we must ensure this group is not ignorable, even if it's inside
 		// a `\*` destination, so we can capture the hex data. This is the same
 		// logic used for the `fldinst` rule.
@@ -507,6 +598,10 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 
 		isInPicture = true
 		pictureType = "" // Reset at the start of each picture
+		pictureWidthTwips = 0
+		pictureHeightTwips = 0
+		pictureWidthPixels = 0
+		pictureHeightPixels = 0
 		// Don't set ignorable, we want to capture the hex data as text.
 		return nil
 	}
@@ -524,6 +619,36 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		return nil
 	}
 
+	// Rules to capture the source width and height of a picture in pixels.
+	// This is used as a fallback if the goal dimensions are not specified.
+	rules["picw"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if isInPicture && act.Para != nil {
+			pictureWidthPixels = *act.Para
+		}
+		return nil
+	}
+	rules["pich"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if isInPicture && act.Para != nil {
+			pictureHeightPixels = *act.Para
+		}
+		return nil
+	}
+
+	// Rules to capture the desired width and height of a picture.
+	// \picwgoal and \pichgoal are specified in twips (1/20th of a point).
+	rules["picwgoal"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if isInPicture && act.Para != nil {
+			pictureWidthTwips = *act.Para
+		}
+		return nil
+	}
+	rules["pichgoal"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if isInPicture && act.Para != nil {
+			pictureHeightTwips = *act.Para
+		}
+		return nil
+	}
+
 	// __textHook__ is a special rule triggered just before any text is written.
 	// This is our chance to ensure a block-level element (p or li) is open.
 	rules["__textHook__"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
@@ -534,8 +659,10 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		}
 
 		// On the first text element, check if we need to apply the overall page layout.
-		if !bodyStyleCheckDone {
-			bodyStyleCheckDone = true // Ensure this check only runs once.
+		// Do not apply this layout if we are inside a header or footer, as they are
+		// handled separately at the end of the document.
+		if !bodyStyleCheckDone && !stack.IsInGroup("header") && !stack.IsInGroup("footer") {
+			bodyStyleCheckDone = true // Ensure this check only runs once for the main body.
 			// Calculate the effective content width.
 			// RTF units are in "twips". 1 point = 20 twips.
 			contentWidth := float64(paperWidth-marginLeft-marginRight) / 20.0
@@ -821,6 +948,15 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		}
 		if bodyStyleApplied {
 			actions.AppendString("</div>\n")
+		}
+		// Now, append the footer content if it exists.
+		if footerActions != nil {
+			// Create a semantic footer element with a separator line for better visual structure.
+			// The individual paragraphs and images within the footer actions already have their
+			// own alignment styles, so we don't need an extra centering div.
+			actions.AppendString(`<footer style="padding-top: 20px; border-top: 1px solid #cccccc; margin-top: 20px;">` + "\n")
+			actions.Append(footerActions.Action())
+			actions.AppendString("</footer>\n") // Close the main footer container.
 		}
 	}
 
