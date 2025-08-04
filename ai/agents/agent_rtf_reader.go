@@ -3,6 +3,8 @@ package agents
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -29,12 +31,47 @@ func init() {
 func rtfIgnoreList() []string {
 	defaultList := rtf.IgnoreList()
 	var newList []string
+	// wordsToKeep is a set of control words that are often on the default ignore
+	// list but are crucial for our conversion. By removing them from the final
+	// ignore list, we ensure the parser doesn't set the "ignorable" flag
+	// when it encounters them, which would cause subsequent data (like image
+	// hex data) to be skipped.
+	wordsToKeep := map[string]bool{
+		"field":    true,
+		"fldinst":  true,
+		"fldrslt":  true,
+		"listtext": true,
+		"pict":     true,
+		"pngblip":  true,
+		"jpegblip": true,
+		// Common picture metadata words that must not be ignored.
+		"picw":          true,
+		"pich":          true,
+		"picwgoal":      true,
+		"pichgoal":      true,
+		"picscalex":     true,
+		"picscaley":     true,
+		"picscaled":     true,
+		"piccropt":      true,
+		"piccropb":      true,
+		"piccropl":      true,
+		"piccropr":      true,
+		"wmetafile":     true,
+		"emfblip":       true,
+		"macpict":       true,
+		"pmmetafile":    true,
+		"dibitmap":      true,
+		"wbitmap":       true,
+		"wbmbitspixel":  true,
+		"wbmplanes":     true,
+		"wbmwidthbytes": true,
+		"blipuid":       true,
+		"bliptag":       true,
+		"bin":           true, // For binary data length, often precedes image data.
+	}
+
 	for _, item := range defaultList {
-		switch item {
-		case "field", "fldinst", "fldrslt", "listtext":
-			// Skip these so they are not ignored by the parser.
-			continue
-		default:
+		if !wordsToKeep[item] {
 			newList = append(newList, item)
 		}
 	}
@@ -59,6 +96,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		isParagraphInTable            bool // Flag to mark a paragraph as part of a table.
 		// Table border properties
 		tableBorderWidth      int
+		isInPicture           bool
+		pictureType           string
 		tableBorderStyle      string
 		tableBorderColorIndex int
 		firstLineIndent       int
@@ -201,7 +240,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	postRules := func() rtf.PostRuleSet {
 		var url string
 
-		return rtf.PostRuleSet{
+		postRulesMap := rtf.PostRuleSet{
 			"fldinst": func(actions *rtf.Actions) error {
 				// This rule runs after the \fldinst group is parsed.
 				// We execute its actions to get the raw text content (e.g., "HYPERLINK ...").
@@ -221,20 +260,11 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			"fldrslt": func(actions *rtf.Actions) error {
 				// This rule runs after the \fldrslt group is parsed. We have the URL from
 				// fldinst and the display text is in 'actions'. We replace the display
-				// text actions with the full <a> tag, followed by a style reset.
+				// text actions with the full <a> tag.
 				linkTextActions := actions.Clone()
 
-				// The linkAction will now handle closing the span if it was open.
-				linkAction := createHyperlinkAction(url, linkTextActions, isStyleSpanOpen)
-
-				// Replace the group's actions with the complete link.
-				*actions = *linkAction
-
-				// Now, reset the state for whatever comes next in the parent (\field) group.
-				isStyleSpanOpen = false // The span was closed inside the link.
-				isUnderline = false
-				currentColorIndex = 0
-				lastAppliedStyle = "reset_by_fldrslt"
+				// Replace the group's actions with a new action that creates the hyperlink.
+				*actions = *createHyperlinkAction(url, linkTextActions)
 
 				url = "" // Reset url for the next link
 				return nil
@@ -245,11 +275,59 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 				return nil
 			},
 		}
+
+		postRulesMap["pict"] = func(actions *rtf.Actions) error {
+			// The picture itself is a block-level element. We'll wrap it in a paragraph.
+			// The paragraph was already closed by the `\pict` rule.
+			var finalTag string
+			if pictureType != "" {
+				var buf bytes.Buffer
+				actions.Execute(&buf)
+				// The buffer contains all text from the group. It's just hex digits.
+				// We need to remove any whitespace or newlines.
+				hexData := strings.Join(strings.Fields(buf.String()), "")
+
+				binData, err := hex.DecodeString(hexData)
+				if err != nil {
+					log.Printf("RTF: failed to decode image hex data: %v", err)
+					finalTag = `<p>[Error: Could not decode image]</p>`
+				} else {
+					log.Printf("RTF: decoded %s image data, size: %d bytes", pictureType, len(binData))
+					b64Data := base64.StdEncoding.EncodeToString(binData)
+					// Adding some basic styling to the image.
+					imgTag := fmt.Sprintf(`<img src="data:%s;base64,%s" alt="embedded image" style="max-width:100%%; height:auto;" />`, pictureType, b64Data)
+					// Wrap in a paragraph for block layout.
+					finalTag = fmt.Sprintf("<p>%s</p>\n", imgTag)
+				}
+			} else {
+				// Not a known picture type, render nothing or a placeholder.
+				finalTag = ""
+			}
+
+			// Clear the original actions and add the img tag.
+			*actions = rtf.Actions{}
+			actions.AppendString(finalTag)
+
+			// Reset picture state after processing is complete.
+			isInPicture = false
+			pictureType = ""
+			return nil
+		}
+
+		return postRulesMap
 	}
 
 	// Start with a clean ruleset for full control over paragraph structure.
 	rules := rtf.RuleSet{
 		"line": rtf.As("<br>\n"),
+	}
+
+	rules["fldinst"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// The \fldinst group can be inside a `\*` destination, which would normally
+		// make its contents ignorable. We must explicitly set ignorable to false
+		// for this specific group so we can capture its text content (the hyperlink URL).
+		stack.SetIgnorable(false)
+		return nil
 	}
 
 	// The 'par' rule is defined outside the literal to break the initialization loop,
@@ -410,9 +488,51 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		return nil
 	}
 
+	rules["pict"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// When a \pict group starts, we need to make sure any open paragraph is closed,
+		// as a picture is a block-level element in HTML.
+		// Crucially, we must ensure this group is not ignorable, even if it's inside
+		// a `\*` destination, so we can capture the hex data. This is the same
+		// logic used for the `fldinst` rule.
+		stack.SetIgnorable(false)
+
+		if isParagraphOpen {
+			stack.Actions().AppendString("</p>\n")
+			isParagraphOpen = false
+		}
+		if isItemActive {
+			stack.Actions().AppendString("</li>\n")
+			isItemActive = false
+		}
+
+		isInPicture = true
+		pictureType = "" // Reset at the start of each picture
+		// Don't set ignorable, we want to capture the hex data as text.
+		return nil
+	}
+
+	rules["pngblip"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		if isInPicture {
+			pictureType = "image/png"
+		}
+		return nil
+	}
+	rules["jpegblip"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		if isInPicture {
+			pictureType = "image/jpeg"
+		}
+		return nil
+	}
+
 	// __textHook__ is a special rule triggered just before any text is written.
 	// This is our chance to ensure a block-level element (p or li) is open.
 	rules["__textHook__"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// If we are inside a picture group, the "text" is actually hex data.
+		// We must not inject any HTML tags here. The post-rule for 'pict' will handle it.
+		if isInPicture {
+			return nil
+		}
+
 		// On the first text element, check if we need to apply the overall page layout.
 		if !bodyStyleCheckDone {
 			bodyStyleCheckDone = true // Ensure this check only runs once.
@@ -798,19 +918,15 @@ func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *g
 }
 
 // createHyperlinkAction is a helper to construct the final action for an <a> tag.
-func createHyperlinkAction(url string, result *rtf.Actions, spanWasOpen bool) *rtf.Actions {
+func createHyperlinkAction(url string, result *rtf.Actions) *rtf.Actions {
 	var newActions rtf.Actions
 	if url != "" && result != nil {
 		// If we have both a URL and display text, create the full <a> tag.
 		newActions.Append(rtf.Action{
 			Write: func(b *bytes.Buffer) {
 				b.WriteString(`<a href="` + url + `">`)
+				// The result actions will correctly handle their own spans.
 				result.Execute(b)
-				// If a style span was opened for the link text, we must close it here,
-				// inside the <a> tag, to prevent the style from leaking.
-				if spanWasOpen {
-					b.WriteString(`</span>`)
-				}
 				b.WriteString(`</a>`)
 			},
 		})
@@ -819,22 +935,4 @@ func createHyperlinkAction(url string, result *rtf.Actions, spanWasOpen bool) *r
 		newActions.Append(result.Action())
 	}
 	return &newActions
-}
-
-func createStyleResetAction(
-	isStyleSpanOpen, isUnderline *bool,
-	currentColorIndex *int,
-	lastAppliedStyle *string,
-) rtf.Action {
-	return rtf.Action{
-		Write: func(b *bytes.Buffer) {
-			if *isStyleSpanOpen {
-				b.WriteString("</span>")
-				*isStyleSpanOpen = false
-			}
-			*isUnderline = false
-			*currentColorIndex = 0 // Reset to default color
-			*lastAppliedStyle = "reset_by_hyperlink_field"
-		},
-	}
 }
