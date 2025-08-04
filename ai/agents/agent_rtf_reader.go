@@ -149,6 +149,52 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		isParagraphOpen = true
 	}
 
+	// ensureTableCell lazily creates table structure (table, row, cell) if needed.
+	// It's called before writing any content that belongs inside a cell.
+	ensureTableCell := func(stack rtf.StackType) {
+		if !isParagraphInTable {
+			return // Not in a table context, do nothing.
+		}
+
+		// This is the "lazy" part. Create table structure only when content is imminent.
+		if !isInTable {
+			style := ""
+			if tableBorderWidth > 0 {
+				// Use border-collapse for a cleaner look when cells have borders.
+				style = ` style="border-collapse: collapse;"`
+			}
+			stack.Actions().AppendString(fmt.Sprintf("<table%s>\n<tbody>\n", style))
+			isInTable = true
+		}
+		if !isInRow {
+			stack.Actions().AppendString("<tr>\n")
+			isInRow = true
+		}
+		if !isInCell {
+			style := ""
+			if tableBorderWidth > 0 {
+				widthPt := float64(tableBorderWidth) / 20.0
+				bStyle := "solid" // Default
+				if tableBorderStyle != "" {
+					bStyle = tableBorderStyle
+				}
+				bColor := "#000000" // Default
+				if tableBorderColorIndex > 0 && tableBorderColorIndex < len(colorTable) {
+					bColor = colorTable[tableBorderColorIndex]
+				}
+				// HACK: If the border color is white, it's likely for layout.
+				// Override it to a visible color for better HTML rendering.
+				if bColor == "#ffffff" {
+					bColor = "#cccccc" // A light gray is less intrusive than black.
+				}
+				styleStr := fmt.Sprintf("border: %.2fpt %s %s; padding: 5px;", widthPt, bStyle, bColor)
+				style = fmt.Sprintf(` style="%s"`, styleStr)
+			}
+			stack.Actions().AppendString(fmt.Sprintf("<td%s>", style))
+			isInCell = true
+		}
+	}
+
 	// postRules defines the post-processing rules for handling `\field` groups
 	// that contain hyperlinks. It's defined as a closure to get access to the state
 	// variables of extendedHTMLRules, which is necessary for resetting style state.
@@ -289,6 +335,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 
 	// Rule for list text, which indicates the start of a list item.
 	rules["listtext"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		ensureTableCell(stack) // Ensure we are in a <td> if needed.
+
 		if isParagraphOpen {
 			stack.Actions().AppendString("</p>\n")
 			isParagraphOpen = false
@@ -378,43 +426,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		}
 
 		if isParagraphInTable {
-			// This is the "lazy" part. Create table structure only when text is imminent.
-			if !isInTable {
-				style := ""
-				if tableBorderWidth > 0 {
-					// Use border-collapse for a cleaner look when cells have borders.
-					style = ` style="border-collapse: collapse;"`
-				}
-				stack.Actions().AppendString(fmt.Sprintf("<table%s>\n<tbody>\n", style))
-				isInTable = true
-			}
-			if !isInRow {
-				stack.Actions().AppendString("<tr>\n")
-				isInRow = true
-			}
-			if !isInCell {
-				style := ""
-				if tableBorderWidth > 0 {
-					widthPt := float64(tableBorderWidth) / 20.0
-					bStyle := "solid" // Default
-					if tableBorderStyle != "" {
-						bStyle = tableBorderStyle
-					}
-					bColor := "#000000" // Default
-					if tableBorderColorIndex > 0 && tableBorderColorIndex < len(colorTable) {
-						bColor = colorTable[tableBorderColorIndex]
-					}
-					// HACK: If the border color is white, it's likely for layout.
-					// Override it to a visible color for better HTML rendering.
-					if bColor == "#ffffff" {
-						bColor = "#cccccc" // A light gray is less intrusive than black.
-					}
-					styleStr := fmt.Sprintf("border: %.2fpt %s %s; padding: 5px;", widthPt, bStyle, bColor)
-					style = fmt.Sprintf(` style="%s"`, styleStr)
-				}
-				stack.Actions().AppendString(fmt.Sprintf("<td%s>", style))
-				isInCell = true
-			}
+			ensureTableCell(stack)
 		} else if isInTable {
 			// We are about to write text that is NOT in a table. Close the active table.
 			if isInCell {
