@@ -351,6 +351,8 @@ func expandPath(path string) (string, error) {
 // config.GetSafePath joins the base directory with a user-provided path and ensures
 // it doesn't escape the base directory.
 func GetSafePath(userPath string) (string, error) {
+	var finalPath string
+
 	baseDir := C.AI.WorkspaceDir
 	if baseDir == "" {
 		return "", fmt.Errorf("workspace directory is not configured")
@@ -370,7 +372,13 @@ func GetSafePath(userPath string) (string, error) {
 		return "", fmt.Errorf("could not get absolute path for workspace: %w", err)
 	}
 
-	finalPath := filepath.Join(absBase, userPath)
+	userPath = filepath.Clean(userPath)
+
+	if strings.HasPrefix(userPath, absBase) {
+		finalPath = userPath
+	} else {
+		finalPath = filepath.Join(absBase, userPath)
+	}
 
 	if !strings.HasPrefix(finalPath, absBase) {
 		return "", fmt.Errorf("path traversal detected: access to '%s' is not allowed as it is outside the workspace", userPath)

@@ -6,6 +6,7 @@ package main
 // DIRECTIVE: Inside module can be only one constructor and name must start from New prefix
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -16,7 +17,10 @@ import (
 	"github.com/asaskevich/EventBus"
 	"github.com/go-gst/go-gst/gst"
 
+	"google.golang.org/genai"
+
 	"gemini/ai"
+	"gemini/ai/agents"
 	"gemini/audio"
 	"gemini/config"
 	"gemini/flow"
@@ -137,6 +141,70 @@ func parseFlags() *CliFlags {
 	return flags
 }
 
+// testRtfAgent is a temporary function for development to test the RTF agent independently.
+func testRtfAgent(testFilePath string) {
+	log.Println("--- RUNNING RTF AGENT TEST ---")
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  config.C.AI.APIKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create genai client for test: %v", err)
+	}
+
+	// The agent factory needs a toolset to register its functions with.
+	toolset := agents.NewToolSet()
+
+	// Manually register the agent for this test run.
+	// This mimics the application's startup process for a single agent.
+	agents.Registerate(ctx, client, toolset, agents.AgentRtfReaderName)
+
+	agentCallable, ok := agents.AgentRegistry[agents.AgentRtfReaderName]
+	if !ok {
+		log.Fatalf("Failed to register or find RTF reader agent in registry.")
+	}
+
+	rtfAgent, ok := agentCallable.(interface {
+		Handle(*genai.FunctionCall) *genai.FunctionResponse
+	})
+	if !ok {
+		log.Fatalf("Agent does not implement the required Handle method.")
+	}
+
+	testCall := &genai.FunctionCall{
+		Name: "convertRtfToHtml",
+		Args: map[string]any{
+			"path": testFilePath,
+		},
+	}
+
+	response := rtfAgent.Handle(testCall)
+	if response == nil {
+		log.Fatalf("RTF agent did not handle the call.")
+	}
+
+	if response.Response != nil {
+		if errVal, ok := response.Response["error"]; ok {
+			log.Fatalf("RTF agent returned an error: %v", errVal)
+		}
+		if htmlContent, ok := response.Response["html_content"].(string); ok {
+			log.Println("--- RTF Conversion Successful ---")
+			outputFile := "convert.html"
+			err := os.WriteFile(outputFile, []byte(htmlContent), 0o644)
+			if err != nil {
+				log.Fatalf("Failed to write test output to %s: %v", outputFile, err)
+			}
+			log.Printf("HTML output saved to %s", outputFile)
+		} else {
+			log.Printf("RTF agent response did not contain html_content: %+v", response.Response)
+		}
+	} else {
+		log.Fatalf("RTF agent returned a nil response map.")
+	}
+	log.Println("--- FINISHED RTF AGENT TEST ---")
+}
+
 func main() {
 	flags := parseFlags()
 	flow.EnableControl()
@@ -144,6 +212,24 @@ func main() {
 	config.Load(flags.ConfigPath)
 
 	// Command-line flags override config file settings for convenience.
+	// --- START OF USER REQUESTED TEST BLOCK ---
+	// This block is for development purposes to test the RTF agent.
+	// It can be removed once testing is complete.
+
+	// testFilePath := "/home/awdf/Workspace/portfolio/Dmytro Tarielkin Profile.rtf"
+	testFilePath := "/home/awdf/Workspace/portfolio/CV_ENG.rtf"
+
+	if _, err := os.Stat(testFilePath); err == nil {
+		// Only run the test if the file exists to avoid crashing on other machines.
+		testRtfAgent(testFilePath)
+		// Exit after test to prevent running the full application.
+		os.Exit(0)
+	} else {
+		log.Printf("Skipping RTF agent test: test file not found at %s.", testFilePath)
+	}
+	return
+	// --- END OF USER REQUESTED TEST BLOCK ---
+
 	if flags.Voice {
 		config.C.AI.VoiceEnabled = true
 	}

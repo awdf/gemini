@@ -31,7 +31,7 @@ func rtfIgnoreList() []string {
 	var newList []string
 	for _, item := range defaultList {
 		switch item {
-		case "field", "fldinst", "fldrslt":
+		case "field", "fldinst", "fldrslt", "listtext":
 			// Skip these so they are not ignored by the parser.
 			continue
 		default:
@@ -52,6 +52,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 		bodyStyleApplied              bool
 		isStyleSpanOpen               bool
 		isBold, isItalic, isUnderline bool
+		isListActive, isItemActive    bool
+		firstLineIndent               int
 	)
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
 	fontSize := 24 // RTF default font size is 12pt (24 half-points). Initialize it here.
@@ -64,18 +66,21 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 
 	// getStyle generates the CSS for paragraph indentation.
 	getStyle := func() string {
-		style := ""
+		var styles []string
 		// RTF indents are in "twips". 1 point = 20 twips.
 		if leftIndent > 0 {
-			style += fmt.Sprintf("padding-left: %.2fpt;", float64(leftIndent)/20.0)
+			styles = append(styles, fmt.Sprintf("padding-left: %.2fpt", float64(leftIndent)/20.0))
 		}
 		if rightIndent > 0 {
-			style += fmt.Sprintf("padding-right: %.2fpt;", float64(rightIndent)/20.0)
+			styles = append(styles, fmt.Sprintf("padding-right: %.2fpt", float64(rightIndent)/20.0))
+		}
+		if firstLineIndent != 0 {
+			styles = append(styles, fmt.Sprintf("text-indent: %.2fpt", float64(firstLineIndent)/20.0))
 		}
 		if textAlign != "" {
-			style += fmt.Sprintf("text-align: %s;", textAlign)
+			styles = append(styles, fmt.Sprintf("text-align: %s", textAlign))
 		}
-		return style
+		return strings.Join(styles, "; ")
 	}
 
 	// getInlineStyle generates the CSS for inline elements like <span>.
@@ -127,6 +132,13 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 
 	// openParagraph closes any existing paragraph and opens a new one with the current style.
 	openParagraph := func(stack rtf.StackType) {
+		// If we are about to open a standalone paragraph (i.e., not inside a list item),
+		// then any previously active list must be closed. This is the key to preventing
+		// headings from being wrapped in <ul> tags.
+		if !isItemActive && isListActive {
+			stack.Actions().AppendString("</ul>\n")
+			isListActive = false
+		}
 		if isParagraphOpen {
 			stack.Actions().AppendString("</p>\n")
 		}
@@ -140,7 +152,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 
 		style := getStyle()
 		if style != "" {
-			stack.Actions().AppendString(fmt.Sprintf(`<p style="%s">`, style))
+			stack.Actions().AppendString(fmt.Sprintf(`<p style="%s;">`, style))
 		} else {
 			stack.Actions().AppendString("<p>")
 		}
@@ -152,22 +164,33 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 		"line": rtf.As("<br>\n"),
 		"par": func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 			// A paragraph break also resets any inline styles and closes open toggles.
+			closeStyleSpan(stack)
+			stack.CloseAllStackToggles()
+
 			if isParagraphOpen {
-				closeStyleSpan(stack)
-				stack.CloseAllStackToggles()
 				stack.Actions().AppendString("</p>\n")
 				isParagraphOpen = false
 			} else {
-				// If no paragraph is open, a \par likely indicates a blank line.
+				// A \par when no paragraph is open means a blank line.
+				// We need to wrap it in a <p> tag.
+				// We don't need to check isItemActive, because if it is,
+				// the blank paragraph will correctly be inside the <li>.
 				stack.Actions().AppendString("<p>&nbsp;</p>\n")
 			}
 
-			// Reset styles for the *next* paragraph.
-			fontSize = 24
-			fontFamily = ""
-			lastAppliedStyle = ""
-			currentColorIndex = 0
-			isBold, isItalic, isUnderline = false, false, false
+			// A paragraph end also ends the list item it was in.
+			if isItemActive {
+				stack.Actions().AppendString("</li>\n")
+				isItemActive = false
+			}
+
+			// Reset paragraph-specific styles for the next paragraph.
+			// This is a pragmatic choice to handle documents where styles
+			// are not explicitly reset with \pard, which is common.
+			leftIndent = 0
+			rightIndent = 0
+			textAlign = ""
+			firstLineIndent = 0
 			return nil
 		},
 	}
@@ -222,10 +245,51 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 	// Add a rule for the tab character. We use an em-space for a good visual representation in HTML.
 	rules["tab"] = rtf.As("&emsp;")
 
-	// __textHook__ is a special rule triggered by the parser just before any text is written.
-	// This is our chance to ensure a paragraph and style span are open.
+	// Rule for list text, which indicates the start of a list item.
+	rules["listtext"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// If we are starting a list item, but we were in a plain paragraph,
+		// that paragraph must be closed.
+		if isParagraphOpen {
+			stack.Actions().AppendString("</p>\n")
+			isParagraphOpen = false
+		}
+
+		if !isListActive {
+			stack.Actions().AppendString("<ul>\n")
+			isListActive = true
+		}
+
+		// A new list item always closes the previous one.
+		if isItemActive {
+			stack.Actions().AppendString("</li>\n")
+		}
+
+		// Open the new list item.
+		stack.Actions().AppendString("<li>")
+		isItemActive = true
+
+		// The content of \listtext (the bullet and tab) should be ignored for rendering.
+		stack.SetIgnorable(true)
+		return nil
+	}
+
+	// Add rule for first-line indent.
+	rules["fi"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			firstLineIndent = *act.Para
+		}
+		return nil
+	}
+
+	// __textHook__ is a special rule triggered just before any text is written.
+	// This is our chance to ensure a block-level element (p or li) is open.
 	rules["__textHook__"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// If we are about to write text and no block is open, it's a new paragraph.
 		if !isParagraphOpen {
+			// Whether it's a standalone paragraph or content within a list item,
+			// it needs to be wrapped in a <p> tag. The openParagraph function
+			// now correctly handles closing the <ul> if necessary, so we can
+			// simplify this hook to just call it.
 			openParagraph(stack)
 		}
 		if !isStyleSpanOpen {
@@ -234,7 +298,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 		return nil
 	}
 
-	// Add rules for parsing the color table.
 	rules["colortbl"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 		// Set this group to be ignorable for rendering, but our custom rules will still fire.
 		stack.SetIgnorable(true)
@@ -257,6 +320,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 		}
 		return nil
 	}
+
 	rules["red"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
 		if stack.IsInGroup("colortbl") && act.Para != nil {
 			currentR = *act.Para
@@ -319,8 +383,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 	// Add a rule for the \plain tag, which resets formatting to default.
 	// This rule will close any open toggle tags like bold, italics, etc.
 	rules["plain"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
-		// HACK: Do not reset formatting if we are inside a \listtext group,
-		// as it's likely being used for layout, not style reset.
+		// HACK: Do not reset formatting if we are inside a \listtext group, as it's
+		// likely being used for the bullet point's formatting, not the main text.
 		if stack.IsInGroup("listtext") {
 			return nil
 		}
@@ -390,23 +454,21 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 	// In many RTF documents, this implicitly resets all character formatting,
 	// so we close all open toggles to prevent styles from leaking between paragraphs.
 	rules["pard"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
-		// HACK: Same as the \plain rule, ignore \pard inside \listtext.
+		// HACK: Same as the \plain rule, ignore \pard inside \listtext to avoid
+		// resetting the style of the list item text that follows the bullet.
 		if stack.IsInGroup("listtext") {
 			return nil
 		}
-		// A \pard resets all paragraph and character formatting.
-		// Close any open tags from the previous paragraph.
-		if isParagraphOpen {
-			closeStyleSpan(stack)
-			stack.CloseAllStackToggles()
-			stack.Actions().AppendString("</p>\n")
-			isParagraphOpen = false
-		}
-
-		// Reset indents to default and start a new paragraph.
+		// The \pard command resets all paragraph properties to their defaults for
+		// the current scope. It does not end the current paragraph, but rather
+		// affects the formatting of the paragraph currently being defined or the
+		// one that immediately follows.
 		leftIndent = 0
 		rightIndent = 0
 		textAlign = "" // Reset alignment to default (left)
+		firstLineIndent = 0
+
+		// Reset character properties as well, since \pard implies this.
 		fontSize = 24
 		fontFamily = ""
 		lastAppliedStyle = ""
@@ -420,6 +482,12 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 		// Close any open tags at the very end of the document to ensure valid HTML.
 		if isStyleSpanOpen {
 			actions.AppendString("</span>")
+		}
+		if isItemActive {
+			actions.AppendString("</li>\n")
+		}
+		if isListActive {
+			actions.AppendString("</ul>\n")
 		}
 		if isParagraphOpen {
 			actions.AppendString("</p>\n")
