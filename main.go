@@ -216,8 +216,8 @@ func main() {
 	// This block is for development purposes to test the RTF agent.
 	// It can be removed once testing is complete.
 
-	// testFilePath := "/home/awdf/Workspace/portfolio/Dmytro Tarielkin Profile.rtf"
-	testFilePath := "/home/awdf/Workspace/portfolio/CV_ENG.rtf"
+	testFilePath := "/home/awdf/Workspace/portfolio/Dmytro Tarielkin Profile.rtf"
+	// testFilePath := "/home/awdf/Workspace/portfolio/CV_ENG.rtf"
 
 	if _, err := os.Stat(testFilePath); err == nil {
 		// Only run the test if the file exists to avoid crashing on other machines.
@@ -227,7 +227,6 @@ func main() {
 	} else {
 		log.Printf("Skipping RTF agent test: test file not found at %s.", testFilePath)
 	}
-	return
 	// --- END OF USER REQUESTED TEST BLOCK ---
 
 	if flags.Voice {

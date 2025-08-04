@@ -51,10 +51,17 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	var (
 		isParagraphOpen               bool
 		bodyStyleApplied              bool
+		bodyStyleCheckDone            bool
 		isStyleSpanOpen               bool
 		isBold, isItalic, isUnderline bool
 		isListActive, isItemActive    bool
-		firstLineIndent               int
+		isInTable, isInRow, isInCell  bool
+		isParagraphInTable            bool // Flag to mark a paragraph as part of a table.
+		// Table border properties
+		tableBorderWidth      int
+		tableBorderStyle      string
+		tableBorderColorIndex int
+		firstLineIndent       int
 	)
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
 	fontSize := 24 // RTF default font size is 12pt (24 half-points). Initialize it here.
@@ -133,17 +140,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 
 	// openParagraph closes any existing paragraph and opens a new one with the current style.
 	openParagraph := func(stack rtf.StackType) {
-		if isParagraphOpen {
-			stack.Actions().AppendString("</p>\n")
-		}
-
-		if !bodyStyleApplied && paperWidth > 0 {
-			// 1 point = 20 twips.
-			contentWidthPt := float64(paperWidth-marginLeft-marginRight) / 20.0
-			stack.Actions().AppendString(fmt.Sprintf(`<div style="width: %.2fpt; margin: auto;">`, contentWidthPt))
-			bodyStyleApplied = true
-		}
-
 		style := getStyle()
 		if style != "" {
 			stack.Actions().AppendString(fmt.Sprintf(`<p style="%s;">`, style))
@@ -208,32 +204,37 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// Start with a clean ruleset for full control over paragraph structure.
 	rules := rtf.RuleSet{
 		"line": rtf.As("<br>\n"),
-		"par": func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
-			// A paragraph break also resets any inline styles and closes open toggles.
-			closeStyleSpan(stack)
-			stack.CloseAllStackToggles()
+	}
 
-			if isItemActive {
-				// A paragraph break inside a list item closes the item.
-				stack.Actions().AppendString("</li>\n")
-				isItemActive = false
-			} else if isParagraphOpen {
-				stack.Actions().AppendString("</p>\n")
-				isParagraphOpen = false
-			} else {
-				// A \par when no paragraph is open means a blank line.
-				stack.Actions().AppendString("<p>&nbsp;</p>\n")
-			}
+	// The 'par' rule is defined outside the literal to break the initialization loop,
+	// as it needs to refer to the 'rules' map itself to call other rules.
+	rules["par"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// A paragraph break also resets any inline styles and closes open toggles.
+		closeStyleSpan(stack)
+		stack.CloseAllStackToggles()
 
-			// Reset paragraph-specific styles for the next paragraph.
-			// This is a pragmatic choice to handle documents where styles
-			// are not explicitly reset with \pard, which is common.
-			leftIndent = 0
-			rightIndent = 0
-			textAlign = ""
-			firstLineIndent = 0
-			return nil
-		},
+		if isItemActive {
+			// A paragraph break inside a list item closes the item.
+			stack.Actions().AppendString("</li>\n")
+			isItemActive = false
+		} else if isParagraphOpen {
+			stack.Actions().AppendString("</p>\n")
+			isParagraphOpen = false
+		} else if isInCell {
+			// Only render blank paragraphs if they appear inside a table cell.
+			// This prevents spurious <p>&nbsp;</p> tags from appearing between other elements.
+			stack.Actions().AppendString("<p>&nbsp;</p>\n")
+		}
+
+		isParagraphInTable = false // A paragraph break resets this flag.
+		// Reset paragraph-specific styles for the next paragraph.
+		// This is a pragmatic choice to handle documents where styles
+		// are not explicitly reset with \pard, which is common.
+		leftIndent = 0
+		rightIndent = 0
+		textAlign = ""
+		firstLineIndent = 0
+		return nil
 	}
 
 	// Rules for bold, italic, and underline now just set state flags.
@@ -317,6 +318,40 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		return nil
 	}
 
+	// --- Table Processing Rules ---
+
+	rules["intbl"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// This marks the upcoming paragraph as being part of a table.
+		// The actual tags will be created lazily by the text hook.
+		isParagraphInTable = true
+		return nil
+	}
+
+	rules["cell"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+		// End of a table cell.
+		if isInCell {
+			// A cell tag implies the end of the paragraph within it.
+			if isParagraphOpen {
+				stack.Actions().AppendString("</p>\n")
+				isParagraphOpen = false
+			}
+			stack.Actions().AppendString("</td>\n")
+			isInCell = false
+		}
+		return nil
+	}
+
+	rules["row"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
+		// A row end implicitly ends the last cell in that row.
+		rules["cell"](rtf.Header{}, stack, act)
+		// And it ends the row itself.
+		if isInRow {
+			stack.Actions().AppendString("</tr>\n")
+			isInRow = false
+		}
+		return nil
+	}
+
 	// Add rule for first-line indent.
 	rules["fi"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
 		if act.Para != nil {
@@ -328,14 +363,77 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// __textHook__ is a special rule triggered just before any text is written.
 	// This is our chance to ensure a block-level element (p or li) is open.
 	rules["__textHook__"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
-		// If we are about to write text and not inside a list item or an existing paragraph,
-		// it must be a new standalone paragraph.
-		if !isItemActive && !isParagraphOpen {
-			// If a list was active, it must be closed before starting a new paragraph.
-			if isListActive {
-				stack.Actions().AppendString("</ul>\n")
-				isListActive = false
+		// On the first text element, check if we need to apply the overall page layout.
+		if !bodyStyleCheckDone {
+			bodyStyleCheckDone = true // Ensure this check only runs once.
+			// Calculate the effective content width.
+			// RTF units are in "twips". 1 point = 20 twips.
+			contentWidth := float64(paperWidth-marginLeft-marginRight) / 20.0
+			if contentWidth > 0 {
+				stack.Actions().AppendString(fmt.Sprintf(`<div style="width: %.2fpt; margin: auto;">`, contentWidth))
+				bodyStyleApplied = true
 			}
+		}
+
+		if isParagraphInTable {
+			// This is the "lazy" part. Create table structure only when text is imminent.
+			if !isInTable {
+				style := ""
+				if tableBorderWidth > 0 {
+					// Use border-collapse for a cleaner look when cells have borders.
+					style = ` style="border-collapse: collapse;"`
+				}
+				stack.Actions().AppendString(fmt.Sprintf("<table%s>\n<tbody>\n", style))
+				isInTable = true
+			}
+			if !isInRow {
+				stack.Actions().AppendString("<tr>\n")
+				isInRow = true
+			}
+			if !isInCell {
+				style := ""
+				if tableBorderWidth > 0 {
+					widthPt := float64(tableBorderWidth) / 20.0
+					bStyle := "solid" // Default
+					if tableBorderStyle != "" {
+						bStyle = tableBorderStyle
+					}
+					bColor := "#000000" // Default
+					if tableBorderColorIndex > 0 && tableBorderColorIndex < len(colorTable) {
+						bColor = colorTable[tableBorderColorIndex]
+					}
+					// HACK: If the border color is white, it's likely for layout.
+					// Override it to a visible color for better HTML rendering.
+					if bColor == "#ffffff" {
+						bColor = "#cccccc" // A light gray is less intrusive than black.
+					}
+					styleStr := fmt.Sprintf("border: %.2fpt %s %s; padding: 5px;", widthPt, bStyle, bColor)
+					style = fmt.Sprintf(` style="%s"`, styleStr)
+				}
+				stack.Actions().AppendString(fmt.Sprintf("<td%s>", style))
+				isInCell = true
+			}
+		} else if isInTable {
+			// We are about to write text that is NOT in a table. Close the active table.
+			if isInCell {
+				stack.Actions().AppendString("</td>\n")
+				isInCell = false
+			}
+			if isInRow {
+				stack.Actions().AppendString("</tr>\n")
+				isInRow = false
+			}
+			stack.Actions().AppendString("</tbody>\n</table>\n")
+			isInTable = false
+			// Reset table styles for the next table
+			tableBorderWidth = 0
+			tableBorderStyle = ""
+			tableBorderColorIndex = 0
+		}
+
+		// If we are about to write text and no block is open (paragraph or list item),
+		// we must open a new paragraph.
+		if !isParagraphOpen && !isItemActive {
 			openParagraph(stack)
 		}
 		if !isStyleSpanOpen {
@@ -496,6 +594,35 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		return nil
 	}
 
+	// --- Table Border Rules ---
+	rules["brdrs"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		tableBorderStyle = "solid"
+		return nil
+	}
+	rules["brdrdot"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		tableBorderStyle = "dotted"
+		return nil
+	}
+	rules["brdrdash"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		tableBorderStyle = "dashed"
+		return nil
+	}
+	rules["brdrw"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			tableBorderWidth = *act.Para
+		}
+		return nil
+	}
+	rules["brdrcf"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			// This index is 1-based in RTF, but our colorTable is 0-based.
+			// However, the first color in the table is often a dummy/auto color,
+			// so using the index directly often works out. We'll assume it's correct.
+			tableBorderColorIndex = *act.Para
+		}
+		return nil
+	}
+
 	// Add a rule for \pard, which resets to default paragraph properties.
 	// In many RTF documents, this implicitly resets all character formatting,
 	// so we close all open toggles to prevent styles from leaking between paragraphs.
@@ -505,13 +632,15 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		if stack.IsInGroup("listtext") {
 			return nil
 		}
+
 		// The \pard command resets all paragraph properties to their defaults for
 		// the current scope. It does not end the current paragraph, but rather
 		// affects the formatting of the paragraph currently being defined or the
 		// one that immediately follows.
 		leftIndent = 0
 		rightIndent = 0
-		textAlign = "" // Reset alignment to default (left)
+		isParagraphInTable = false // \pard resets all paragraph properties, including table state.
+		textAlign = ""             // Reset alignment to default (left)
 		firstLineIndent = 0
 
 		// Reset character properties as well, since \pard implies this.
@@ -529,14 +658,24 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		if isStyleSpanOpen {
 			actions.AppendString("</span>")
 		}
+		// The finalizer must close any remaining open tags in the correct order.
+		if isParagraphOpen {
+			actions.AppendString("</p>\n")
+		}
+		if isInCell {
+			actions.AppendString("</td>\n")
+		}
+		if isInRow {
+			actions.AppendString("</tr>\n")
+		}
+		if isInTable {
+			actions.AppendString("</tbody>\n</table>\n")
+		}
 		if isItemActive {
 			actions.AppendString("</li>\n")
 		}
 		if isListActive {
 			actions.AppendString("</ul>\n")
-		}
-		if isParagraphOpen {
-			actions.AppendString("</p>\n")
 		}
 		if bodyStyleApplied {
 			actions.AppendString("</div>\n")
