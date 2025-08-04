@@ -330,6 +330,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	rules["cell"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 		// End of a table cell.
 		if isInCell {
+			// A cell tag implies the end of any inline styles within it.
+			closeStyleSpan(stack)
 			// A cell tag implies the end of the paragraph within it.
 			if isParagraphOpen {
 				stack.Actions().AppendString("</p>\n")
