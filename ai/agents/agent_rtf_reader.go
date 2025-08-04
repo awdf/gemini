@@ -44,8 +44,9 @@ func rtfIgnoreList() []string {
 // extendedHTMLRules creates a new, stateful ruleset and a finalizer for a single RTF conversion.
 // It returns both so they can share the same state via a closure, ensuring that each
 // conversion is independent and does not suffer from stale state.
+// It now also returns a set of post-processing rules for handling complex fields like hyperlinks.
 // Specification: https://www.biblioscape.com/rtf15_spec.htm
-func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
+func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// --- State variables for a single conversion run ---
 	var (
 		isParagraphOpen               bool
@@ -132,13 +133,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 
 	// openParagraph closes any existing paragraph and opens a new one with the current style.
 	openParagraph := func(stack rtf.StackType) {
-		// If we are about to open a standalone paragraph (i.e., not inside a list item),
-		// then any previously active list must be closed. This is the key to preventing
-		// headings from being wrapped in <ul> tags.
-		if !isItemActive && isListActive {
-			stack.Actions().AppendString("</ul>\n")
-			isListActive = false
-		}
 		if isParagraphOpen {
 			stack.Actions().AppendString("</p>\n")
 		}
@@ -159,6 +153,58 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 		isParagraphOpen = true
 	}
 
+	// postRules defines the post-processing rules for handling `\field` groups
+	// that contain hyperlinks. It's defined as a closure to get access to the state
+	// variables of extendedHTMLRules, which is necessary for resetting style state.
+	postRules := func() rtf.PostRuleSet {
+		var url string
+
+		return rtf.PostRuleSet{
+			"fldinst": func(actions *rtf.Actions) error {
+				// This rule runs after the \fldinst group is parsed.
+				// We execute its actions to get the raw text content (e.g., "HYPERLINK ...").
+				var buf bytes.Buffer
+				actions.Execute(&buf)
+				text := strings.TrimSpace(buf.String())
+
+				// Use regex to extract the URL from the instruction text.
+				re := regexp.MustCompile(`(?i)HYPERLINK\s+"([^"]+)"`)
+				if subs := re.FindStringSubmatch(text); len(subs) > 1 {
+					url = subs[1]
+				}
+				// Clear the actions for this group so the raw instruction text isn't rendered.
+				*actions = rtf.Actions{}
+				return nil
+			},
+			"fldrslt": func(actions *rtf.Actions) error {
+				// This rule runs after the \fldrslt group is parsed. We have the URL from
+				// fldinst and the display text is in 'actions'. We replace the display
+				// text actions with the full <a> tag, followed by a style reset.
+				linkTextActions := actions.Clone()
+
+				// The linkAction will now handle closing the span if it was open.
+				linkAction := createHyperlinkAction(url, linkTextActions, isStyleSpanOpen)
+
+				// Replace the group's actions with the complete link.
+				*actions = *linkAction
+
+				// Now, reset the state for whatever comes next in the parent (\field) group.
+				isStyleSpanOpen = false // The span was closed inside the link.
+				isUnderline = false
+				currentColorIndex = 0
+				lastAppliedStyle = "reset_by_fldrslt"
+
+				url = "" // Reset url for the next link
+				return nil
+			},
+			"field": func(actions *rtf.Actions) error {
+				// The field group's actions now correctly contain the link and any following text.
+				// No special processing is needed here, but the rule must exist to be in the PostRuleSet.
+				return nil
+			},
+		}
+	}
+
 	// Start with a clean ruleset for full control over paragraph structure.
 	rules := rtf.RuleSet{
 		"line": rtf.As("<br>\n"),
@@ -167,21 +213,16 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 			closeStyleSpan(stack)
 			stack.CloseAllStackToggles()
 
-			if isParagraphOpen {
+			if isItemActive {
+				// A paragraph break inside a list item closes the item.
+				stack.Actions().AppendString("</li>\n")
+				isItemActive = false
+			} else if isParagraphOpen {
 				stack.Actions().AppendString("</p>\n")
 				isParagraphOpen = false
 			} else {
 				// A \par when no paragraph is open means a blank line.
-				// We need to wrap it in a <p> tag.
-				// We don't need to check isItemActive, because if it is,
-				// the blank paragraph will correctly be inside the <li>.
 				stack.Actions().AppendString("<p>&nbsp;</p>\n")
-			}
-
-			// A paragraph end also ends the list item it was in.
-			if isItemActive {
-				stack.Actions().AppendString("</li>\n")
-				isItemActive = false
 			}
 
 			// Reset paragraph-specific styles for the next paragraph.
@@ -247,8 +288,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 
 	// Rule for list text, which indicates the start of a list item.
 	rules["listtext"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
-		// If we are starting a list item, but we were in a plain paragraph,
-		// that paragraph must be closed.
 		if isParagraphOpen {
 			stack.Actions().AppendString("</p>\n")
 			isParagraphOpen = false
@@ -259,13 +298,18 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 			isListActive = true
 		}
 
-		// A new list item always closes the previous one.
 		if isItemActive {
 			stack.Actions().AppendString("</li>\n")
 		}
 
-		// Open the new list item.
-		stack.Actions().AppendString("<li>")
+		// Open the new list item, applying paragraph styles directly to the <li> tag.
+		// This prevents creating a nested <p> tag which would cause a line break.
+		style := getStyle()
+		if style != "" {
+			stack.Actions().AppendString(fmt.Sprintf(`<li style="%s;">`, style))
+		} else {
+			stack.Actions().AppendString("<li>")
+		}
 		isItemActive = true
 
 		// The content of \listtext (the bullet and tab) should be ignored for rendering.
@@ -284,12 +328,14 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 	// __textHook__ is a special rule triggered just before any text is written.
 	// This is our chance to ensure a block-level element (p or li) is open.
 	rules["__textHook__"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
-		// If we are about to write text and no block is open, it's a new paragraph.
-		if !isParagraphOpen {
-			// Whether it's a standalone paragraph or content within a list item,
-			// it needs to be wrapped in a <p> tag. The openParagraph function
-			// now correctly handles closing the <ul> if necessary, so we can
-			// simplify this hook to just call it.
+		// If we are about to write text and not inside a list item or an existing paragraph,
+		// it must be a new standalone paragraph.
+		if !isItemActive && !isParagraphOpen {
+			// If a list was active, it must be closed before starting a new paragraph.
+			if isListActive {
+				stack.Actions().AppendString("</ul>\n")
+				isListActive = false
+			}
 			openParagraph(stack)
 		}
 		if !isStyleSpanOpen {
@@ -497,52 +543,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.Finalizer) {
 		}
 	}
 
-	return rules, finalizer
-}
-
-// hyperlinkPostRules defines the post-processing rules for handling `\field` groups
-// that contain hyperlinks. It uses a closure to maintain state between different
-// parts of the field.
-func hyperlinkPostRules() rtf.PostRuleSet {
-	var url string
-	var resultActions *rtf.Actions
-
-	return rtf.PostRuleSet{
-		"fldinst": func(actions *rtf.Actions) error {
-			// This rule runs after the \fldinst group is parsed.
-			// We execute its actions to get the raw text content (e.g., "HYPERLINK ...").
-			var buf bytes.Buffer
-			actions.Execute(&buf)
-			text := strings.TrimSpace(buf.String())
-
-			// Use regex to extract the URL from the instruction text.
-			re := regexp.MustCompile(`(?i)HYPERLINK\s+"([^"]+)"`)
-			if subs := re.FindStringSubmatch(text); len(subs) > 1 {
-				url = subs[1]
-			}
-			// Clear the actions for this group so the raw instruction text isn't rendered.
-			*actions = rtf.Actions{}
-			return nil
-		},
-		"fldrslt": func(actions *rtf.Actions) error {
-			// This rule runs after the \fldrslt group is parsed.
-			// We must capture a *copy* of the parsed actions (the link's display text)
-			// because the original 'actions' will be modified and its pointer is shared.
-			resultActions = actions.Clone()
-
-			*actions = rtf.Actions{}
-			return nil
-		},
-		"field": func(actions *rtf.Actions) error {
-			// This rule runs after the entire \field group is parsed.
-			// We replace all of its child actions with a single new action
-			// that renders the complete <a> tag.
-			*actions = *createHyperlinkAction(url, resultActions)
-			// Reset state for the next potential link in the document.
-			url, resultActions = "", nil
-			return nil
-		},
-	}
+	return rules, postRules(), finalizer
 }
 
 type RtfReaderAgent struct {
@@ -617,10 +618,10 @@ func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *g
 			} else {
 				// Get a fresh, stateful ruleset and its corresponding finalizer for this conversion.
 				// This is critical to prevent state from leaking between different tool calls.
-				rules, finalizer := extendedHTMLRules()
+				rules, postRules, finalizer := extendedHTMLRules()
 
 				// Use our extended rules, custom ignore list, and new post-rules.
-				html, convertErr := rtf.Convert(string(rtfBytes), rules, rtfIgnoreList(), hyperlinkPostRules(), finalizer)
+				html, convertErr := rtf.Convert(string(rtfBytes), rules, rtfIgnoreList(), postRules, finalizer)
 				if convertErr != nil {
 					err = fmt.Errorf("RTF to HTML conversion failed: %w", convertErr)
 				} else {
@@ -636,7 +637,7 @@ func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *g
 }
 
 // createHyperlinkAction is a helper to construct the final action for an <a> tag.
-func createHyperlinkAction(url string, result *rtf.Actions) *rtf.Actions {
+func createHyperlinkAction(url string, result *rtf.Actions, spanWasOpen bool) *rtf.Actions {
 	var newActions rtf.Actions
 	if url != "" && result != nil {
 		// If we have both a URL and display text, create the full <a> tag.
@@ -644,6 +645,11 @@ func createHyperlinkAction(url string, result *rtf.Actions) *rtf.Actions {
 			Write: func(b *bytes.Buffer) {
 				b.WriteString(`<a href="` + url + `">`)
 				result.Execute(b)
+				// If a style span was opened for the link text, we must close it here,
+				// inside the <a> tag, to prevent the style from leaking.
+				if spanWasOpen {
+					b.WriteString(`</span>`)
+				}
 				b.WriteString(`</a>`)
 			},
 		})
@@ -652,4 +658,22 @@ func createHyperlinkAction(url string, result *rtf.Actions) *rtf.Actions {
 		newActions.Append(result.Action())
 	}
 	return &newActions
+}
+
+func createStyleResetAction(
+	isStyleSpanOpen, isUnderline *bool,
+	currentColorIndex *int,
+	lastAppliedStyle *string,
+) rtf.Action {
+	return rtf.Action{
+		Write: func(b *bytes.Buffer) {
+			if *isStyleSpanOpen {
+				b.WriteString("</span>")
+				*isStyleSpanOpen = false
+			}
+			*isUnderline = false
+			*currentColorIndex = 0 // Reset to default color
+			*lastAppliedStyle = "reset_by_hyperlink_field"
+		},
+	}
 }
