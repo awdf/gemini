@@ -431,6 +431,14 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			tableBorderColorIndex = 0
 		}
 
+		// If we are about to write text that is NOT part of a list item,
+		// but a list is currently active, it means the list has ended.
+		// We close the list before opening the new paragraph.
+		if !isItemActive && isListActive {
+			stack.Actions().AppendString("</ul>\n")
+			isListActive = false
+		}
+
 		// If we are about to write text and no block is open (paragraph or list item),
 		// we must open a new paragraph.
 		if !isParagraphOpen && !isItemActive {
