@@ -94,6 +94,11 @@ func (b *borderProps) reset() {
 	b.width, b.colorIndex, b.space = 0, 0, 0
 }
 
+// cellDef holds the full set of border properties for a single table cell.
+type cellDef struct {
+	borderTop, borderBottom, borderLeft, borderRight borderProps
+}
+
 // extendedHTMLRules creates a new, stateful ruleset and a finalizer for a single RTF conversion.
 // It returns both so they can share the same state via a closure, ensuring that each
 // conversion is independent and does not suffer from stale state.
@@ -120,12 +125,14 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		pictureScaleX                                        int = 100 // Default scale is 100%
 		pictureScaleY                                        int = 100 // Default scale is 100%
 		pictureType                                          string
-		tableBorderStyle                                     string
-		tableBorderColorIndex                                int
 		firstLineIndent                                      int
 		pBorderTop, pBorderBottom, pBorderLeft, pBorderRight borderProps
 		currentBorders                                       []*borderProps
 		footerActions                                        *rtf.Actions
+		// New state for robust table parsing
+		rowCellDefs      []cellDef
+		currentCellDef   *cellDef
+		currentCellIndex int
 	)
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
 	fontSize := 24 // RTF default font size is 12pt (24 half-points). Initialize it here.
@@ -162,12 +169,15 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 				styles = append(styles, fmt.Sprintf("border-%s: none", side))
 				return
 			}
-			if props.width > 0 {
-				widthPt := float64(props.width) / 20.0
-				bStyle := "solid" // Default
-				if props.style != "" {
-					bStyle = props.style
+			// Render a border if a style has been explicitly set. This is more robust
+			// than checking for width, as some RTF writers imply a default width.
+			if props.style != "" {
+				width := props.width
+				if width == 0 {
+					width = 15 // Default to 0.75pt if no width is specified.
 				}
+				widthPt := float64(width) / 20.0
+				bStyle := props.style
 				bColor := "#000000" // Default
 				if props.colorIndex > 0 && props.colorIndex < len(colorTable) {
 					bColor = colorTable[props.colorIndex]
@@ -265,26 +275,43 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			isInRow = true
 		}
 		if !isInCell {
-			style := ""
-			if tableBorderWidth > 0 {
-				widthPt := float64(tableBorderWidth) / 20.0
-				bStyle := "solid" // Default
-				if tableBorderStyle != "" {
-					bStyle = tableBorderStyle
-				}
-				bColor := "#000000" // Default
-				if tableBorderColorIndex > 0 && tableBorderColorIndex < len(colorTable) {
-					bColor = colorTable[tableBorderColorIndex]
-				}
-				// HACK: If the border color is white, it's likely for layout.
-				// Override it to a visible color for better HTML rendering.
-				if bColor == "#ffffff" {
-					bColor = "#cccccc" // A light gray is less intrusive than black.
-				}
-				styleStr := fmt.Sprintf("border: %.2fpt %s %s; padding: 5px;", widthPt, bStyle, bColor)
-				style = fmt.Sprintf(` style="%s"`, styleStr)
+			// Get the border properties for the current cell from our parsed definitions.
+			var props cellDef
+			if currentCellIndex < len(rowCellDefs) {
+				props = rowCellDefs[currentCellIndex]
 			}
-			stack.Actions().AppendString(fmt.Sprintf("<td%s>", style))
+
+			var styles []string
+			addBorder := func(side string, bProps borderProps) {
+				if bProps.style == "none" {
+					styles = append(styles, fmt.Sprintf("border-%s: none", side))
+					return
+				}
+				if bProps.style != "" {
+					width := bProps.width
+					if width == 0 {
+						width = 15 // Default to 0.75pt if no width is specified.
+					}
+					widthPt := float64(width) / 20.0
+					bStyle := bProps.style
+					bColor := "#000000" // Default
+					if bProps.colorIndex > 0 && bProps.colorIndex < len(colorTable) {
+						bColor = colorTable[bProps.colorIndex]
+					}
+					styles = append(styles, fmt.Sprintf("border-%s: %.2fpt %s %s", side, widthPt, bStyle, bColor))
+					if bProps.space > 0 {
+						styles = append(styles, fmt.Sprintf("padding-%s: %.2fpt", side, float64(bProps.space)/20.0))
+					}
+				}
+			}
+			addBorder("top", props.borderTop)
+			addBorder("bottom", props.borderBottom)
+			addBorder("left", props.borderLeft)
+			addBorder("right", props.borderRight)
+
+			styles = append(styles, "padding: 5px") // Add a default padding for all cells.
+
+			stack.Actions().AppendString(fmt.Sprintf(`<td style="%s">`, strings.Join(styles, "; ")))
 			isInCell = true
 		}
 	}
@@ -456,6 +483,14 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	rules["footer"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 		// This rule ensures the \footer group is not ignored, allowing the post-rule
 		// to capture its content.
+		// We must explicitly set ignorable to false in case it's inside a `\*` group.
+		stack.SetIgnorable(false)
+
+		// Reset all table-related state before parsing the footer content to prevent
+		// styles from the main document body from leaking into the footer. This ensures
+		// the footer is rendered with a clean slate.
+		isInTable, isInRow, isInCell = false, false, false
+		tableBorderWidth = 0
 		return nil
 	}
 
@@ -604,8 +639,10 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 				stack.Actions().AppendString("</p>\n")
 				isParagraphOpen = false
 			}
+
 			stack.Actions().AppendString("</td>\n")
 			isInCell = false
+			currentCellIndex++ // Increment to use the next cell's definition
 		}
 		return nil
 	}
@@ -618,6 +655,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			stack.Actions().AppendString("</tr>\n")
 			isInRow = false
 		}
+		currentCellIndex = 0 // Reset for the next row.
 		return nil
 	}
 
@@ -762,8 +800,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			isInTable = false
 			// Reset table styles for the next table
 			tableBorderWidth = 0
-			tableBorderStyle = ""
-			tableBorderColorIndex = 0
 		}
 
 		// If we are about to write text that is NOT part of a list item,
@@ -959,6 +995,50 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		return nil
 	}
 
+	rules["trowd"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		// Start of a table row's definition block.
+		rowCellDefs = nil             // Clear definitions from any previous row.
+		currentCellDef = new(cellDef) // Start building the first cell's definition.
+		return nil
+	}
+
+	rules["cellx"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		// A \cellx command marks the end of the current cell's properties definition
+		// within a \trowd block. We save the definition we've built so far and
+		// prepare for the next one.
+		if currentCellDef != nil {
+			rowCellDefs = append(rowCellDefs, *currentCellDef)
+			currentCellDef = new(cellDef)
+		}
+		return nil
+	}
+
+	// --- Cell Border Rules ---
+	rules["clbrdrt"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		if currentCellDef != nil {
+			currentBorders = []*borderProps{&currentCellDef.borderTop}
+		}
+		return nil
+	}
+	rules["clbrdrb"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		if currentCellDef != nil {
+			currentBorders = []*borderProps{&currentCellDef.borderBottom}
+		}
+		return nil
+	}
+	rules["clbrdrl"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		if currentCellDef != nil {
+			currentBorders = []*borderProps{&currentCellDef.borderLeft}
+		}
+		return nil
+	}
+	rules["clbrdrr"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		if currentCellDef != nil {
+			currentBorders = []*borderProps{&currentCellDef.borderRight}
+		}
+		return nil
+	}
+
 	// Border styles
 	borderStyleMap := map[string]string{
 		"brdrs":      "solid",
@@ -977,18 +1057,10 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		// Use a closure to capture the cssStyle for each keyword
 		func(style string) {
 			rules[keyword] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
-				// Check if we are in a paragraph border context.
-				// This is true if \brdrt, \brdrb, etc. was just seen.
-				if len(currentBorders) > 0 {
-					for _, b := range currentBorders {
-						if b != nil {
-							b.style = style
-						}
+				for _, b := range currentBorders {
+					if b != nil {
+						b.style = style
 					}
-				} else {
-					// Otherwise, assume it's a table border style.
-					// This is a simplification, but should handle common cases.
-					tableBorderStyle = style
 				}
 				return nil
 			}
@@ -998,28 +1070,20 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// Border properties - these can apply to paragraphs or table cells.
 	rules["brdrw"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
 		if act.Para != nil {
-			if len(currentBorders) > 0 {
-				for _, b := range currentBorders {
-					if b != nil {
-						b.width = *act.Para
-					}
+			for _, b := range currentBorders {
+				if b != nil {
+					b.width = *act.Para
 				}
-			} else {
-				tableBorderWidth = *act.Para
 			}
 		}
 		return nil
 	}
 	rules["brdrcf"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
 		if act.Para != nil {
-			if len(currentBorders) > 0 {
-				for _, b := range currentBorders {
-					if b != nil {
-						b.colorIndex = *act.Para
-					}
+			for _, b := range currentBorders {
+				if b != nil {
+					b.colorIndex = *act.Para
 				}
-			} else {
-				tableBorderColorIndex = *act.Para
 			}
 		}
 		return nil
@@ -1102,12 +1166,13 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		}
 		// Now, append the footer content if it exists.
 		if footerActions != nil {
-			// Create a semantic footer element with a separator line for better visual structure.
-			// The individual paragraphs and images within the footer actions already have their
-			// own alignment styles, so we don't need an extra centering div.
-			actions.AppendString(`<footer style="padding-top: 20px; border-top: 1px solid #cccccc; margin-top: 20px;">` + "\n")
+			// The footer content is pre-rendered. We just wrap it in a <footer> tag.
+			// We assume the footer RTF is well-formed and produces a valid HTML fragment.
+			// The previous logic for resetting state and closing tags here was flawed
+			// because the state of the footer content is not known at this stage.
+			actions.AppendString("<footer>\n")
 			actions.Append(footerActions.Action())
-			actions.AppendString("</footer>\n") // Close the main footer container.
+			actions.AppendString("</footer>\n")
 		}
 	}
 
