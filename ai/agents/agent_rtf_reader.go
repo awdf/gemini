@@ -97,6 +97,8 @@ func (b *borderProps) reset() {
 // cellDef holds the full set of border properties for a single table cell.
 type cellDef struct {
 	borderTop, borderBottom, borderLeft, borderRight borderProps
+	foregroundColorIndex                             int
+	backgroundColorIndex                             int
 }
 
 // extendedHTMLRules creates a new, stateful ruleset and a finalizer for a single RTF conversion.
@@ -143,6 +145,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	var lastAppliedStyle string // Track the last style applied to avoid redundant spans.
 	var colorTable []string     // stores hex colors like "#RRGGBB"
 	var currentR, currentG, currentB int
+	var firstSemicolonInColorTbl bool
 	var currentColorIndex int
 	var textAlign string // Can be "left", "right", "center", "justify"
 
@@ -205,8 +208,16 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		if fontFamily != "" {
 			styles = append(styles, fmt.Sprintf("font-family:'%s'", fontFamily))
 		}
-		if currentColorIndex >= 0 && currentColorIndex < len(colorTable) {
-			styles = append(styles, fmt.Sprintf("color:%s", colorTable[currentColorIndex]))
+		var finalColorIndex int
+		// An explicit \cf inside a cell's content takes highest precedence.
+		if currentColorIndex > 0 {
+			finalColorIndex = currentColorIndex
+		} else if isInCell && currentCellIndex < len(rowCellDefs) && rowCellDefs[currentCellIndex].foregroundColorIndex > 0 {
+			// Otherwise, use the cell's default color if defined.
+			finalColorIndex = rowCellDefs[currentCellIndex].foregroundColorIndex
+		}
+		if finalColorIndex >= 0 && finalColorIndex < len(colorTable) {
+			styles = append(styles, fmt.Sprintf("color:%s", colorTable[finalColorIndex]))
 		}
 		if isBold {
 			styles = append(styles, "font-weight:bold")
@@ -342,6 +353,16 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			addBorder("left", props.borderLeft)
 			addBorder("right", props.borderRight)
 
+			// Add background color style.
+			if props.backgroundColorIndex > 0 && props.backgroundColorIndex < len(colorTable) {
+				bgColor := colorTable[props.backgroundColorIndex]
+				// RTF often uses white for "no color", so we only apply non-white backgrounds
+				// to avoid adding unnecessary `background-color: #ffffff`.
+				if bgColor != "#ffffff" {
+					styles = append(styles, fmt.Sprintf("background-color: %s", bgColor))
+				}
+			}
+
 			styles = append(styles, "padding: 5px") // Add a default padding for all cells.
 
 			stack.Actions().AppendString(fmt.Sprintf(`<td style="%s">`, strings.Join(styles, "; ")))
@@ -356,6 +377,16 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		var url string
 
 		postRulesMap := rtf.PostRuleSet{
+			"trowd": func(actions *rtf.Actions) error {
+				// After the table row definition group is fully parsed, we must
+				// reset currentCellDef to nil. This prevents the \cf rule from
+				// incorrectly modifying cell properties when it should be modifying
+				// the global text color.
+				currentCellDef = nil
+				// The definition group itself produces no output.
+				*actions = rtf.Actions{}
+				return nil
+			},
 			"fldinst": func(actions *rtf.Actions) error {
 				// This rule runs after the \fldinst group is parsed.
 				// We execute its actions to get the raw text content (e.g., "HYPERLINK ...").
@@ -397,7 +428,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			var finalTag string
 			if pictureType != "" {
 				// The actions can contain a mix of injected HTML (like a <td> tag from
-				// ensureTableCell) and the raw hex data for the image. We need to
 				// separate them before decoding the hex.
 				var contentBuf bytes.Buffer
 				actions.Execute(&contentBuf)
@@ -494,6 +524,14 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		postRulesMap["footer"] = func(actions *rtf.Actions) error {
 			// The footer group has been parsed. Store its actions to be appended
 			// at the very end of the document by the finalizer.
+			// After parsing the footer, which is a self-contained unit, we must
+			// reset any state that might have been modified during its parse,
+			// to prevent it from "leaking" into the parsing of the main document body
+			// that follows the footer group in the RTF stream.
+			isInTable, isInRow, isInCell = false, false, false
+			isParagraphInTable = false
+			currentColorIndex = 0 // Reset color to default after footer.
+
 			footerActions = actions.Clone()
 			// Clear the original actions so the footer isn't rendered in place.
 			*actions = rtf.Actions{}
@@ -854,17 +892,24 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	rules["colortbl"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 		// Set this group to be ignorable for rendering, but our custom rules will still fire.
 		stack.SetIgnorable(true)
-		// We re-initialize the color table here to handle multiple tables in a doc.
-		colorTable = nil // Start with an empty table.
+		// The RTF color table is 1-indexed, but \cf0 refers to the 'auto' color.
+		// We'll create a 0-indexed slice where colorTable[0] is the auto color.
+		colorTable = []string{"#000000"} // Default "auto" color at index 0.
+		firstSemicolonInColorTbl = true
 		currentR, currentG, currentB = 0, 0, 0
 		return nil
 	}
 	rules[";"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
 		// If we are inside a color table, this is a delimiter.
 		if stack.IsInGroup("colortbl") {
-			// A semicolon terminates a color definition. Add the color defined by the preceding \red, \green, \blue tags.
-			hexColor := fmt.Sprintf("#%02x%02x%02x", currentR, currentG, currentB)
-			colorTable = append(colorTable, hexColor)
+			if firstSemicolonInColorTbl {
+				// The first semicolon just terminates the \colortbl keyword and should be ignored.
+				firstSemicolonInColorTbl = false
+			} else {
+				// Subsequent semicolons terminate an explicit color definition.
+				hexColor := fmt.Sprintf("#%02x%02x%02x", currentR, currentG, currentB)
+				colorTable = append(colorTable, hexColor)
+			}
 			// Reset for the next color definition.
 			currentR, currentG, currentB = 0, 0, 0
 		} else if !stack.Ignorable() {
@@ -927,6 +972,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			return nil
 		}
 		if act.Para != nil {
+			// The \cf command always sets the current text color, regardless of context.
 			currentColorIndex = *act.Para
 			closeStyleSpan(stack)
 		}
@@ -1077,6 +1123,27 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	rules["clbrdrr"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
 		if currentCellDef != nil {
 			currentBorders = []*borderProps{&currentCellDef.borderRight}
+		}
+		return nil
+	}
+
+	rules["clcfpat"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if currentCellDef != nil && act.Para != nil {
+			currentCellDef.foregroundColorIndex = *act.Para
+		}
+		return nil
+	}
+
+	rules["clcfpat"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if currentCellDef != nil && act.Para != nil {
+			currentCellDef.foregroundColorIndex = *act.Para
+		}
+		return nil
+	}
+
+	rules["clcbpat"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if currentCellDef != nil && act.Para != nil {
+			currentCellDef.backgroundColorIndex = *act.Para
 		}
 		return nil
 	}
