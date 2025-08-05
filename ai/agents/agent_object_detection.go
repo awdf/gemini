@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"log"
 	"strings"
 	"time"
 
@@ -184,14 +183,14 @@ func (a *ObjectDetectionAgent) handleDetectObjectsTool(call *genai.FunctionCall)
 				if boundsErr != nil {
 					err = fmt.Errorf("failed to get display bounds for object detection context: %w", boundsErr)
 				} else {
-					log.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
+					a.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
 					// Process the image with the agent, using the query from the tool call as the prompt.
 					// The image buffer is PNG encoded.
 					detectionResult, processErr := a.Process(query, genai.NewPartFromBytes(imageBuf.Bytes(), "image/png"))
 					if processErr != nil {
 						err = fmt.Errorf("object detection failed: %w", processErr)
 					} else {
-						log.Printf("Object detection successful for query: '%s'", query)
+						a.Printf("Object detection successful for query: '%s'", query)
 						result = map[string]any{"detected_objects": detectionResult}
 					}
 				}
@@ -208,7 +207,7 @@ func (a *ObjectDetectionAgent) handleDetectObjectsTool(call *genai.FunctionCall)
 }
 
 func (a *ObjectDetectionAgent) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
@@ -265,7 +264,7 @@ func (a *ObjectDetectionAgent) handleVerifyObjectDetectionTool(call *genai.Funct
 						turn := genai.NewContentFromParts(parts, genai.RoleUser)
 						content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
 
-						log.Println("Successfully prepared verification image to be sent to live session.")
+						a.Println("Successfully prepared verification image to be sent to live session.")
 						result = map[string]any{
 							"status":       "Verification image prepared. Awaiting sending.",
 							"send_content": content, // Special key for LiveAI to handle
@@ -285,7 +284,7 @@ func (a *ObjectDetectionAgent) handleVerifyObjectDetectionTool(call *genai.Funct
 }
 
 func (a *ObjectDetectionAgent) handleMouseClickTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
@@ -324,7 +323,7 @@ func (a *ObjectDetectionAgent) handleMouseClickTool(call *genai.FunctionCall) *g
 						clicks = 1
 					}
 
-					log.Printf("Performing %d mouse click(s) at absolute pixel coordinates (%d, %d)", clicks, absX, absY)
+					a.Printf("Performing %d mouse click(s) at absolute pixel coordinates (%d, %d)", clicks, absX, absY)
 
 					// 5. Execute the desktop automation.
 					wayland.MoveMouseToPosition(absX, absY)

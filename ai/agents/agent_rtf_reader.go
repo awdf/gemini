@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -16,13 +15,96 @@ import (
 	"google.golang.org/genai"
 
 	"gemini/config"
-	"gemini/helpers"
 )
 
 func init() {
 	RegisterFactory(AgentRtfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
 		return NewRtfReaderAgent(ctx, client, toolset)
 	})
+}
+
+type RtfReaderAgent struct {
+	*Agent
+}
+
+// NewRtfReaderAgent creates a specialized agent for converting RTF documents to HTML.
+func NewRtfReaderAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *RtfReaderAgent {
+	functions := genai.FunctionDeclaration{
+		Name:        "readRtf",
+		Description: "RTF Reader: Read an RTF file and return its contents as HTML. You MUST use this tool to read the content of any RTF file before you can analyze or summarize it.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"path": {
+					Type:        genai.TypeString,
+					Description: "The path of the RTF file.",
+				},
+			},
+			Required: []string{"path"},
+		},
+		Behavior: genai.BehaviorBlocking,
+	}
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &functions)
+
+	agentConfig := AgentConfig{
+		Name: AgentRtfReaderName,
+	}
+
+	baseAgent := NewAgent(ctx, client, agentConfig)
+
+	rtfAgent := &RtfReaderAgent{Agent: baseAgent}
+
+	return rtfAgent
+}
+
+func (a *RtfReaderAgent) WarmUp() time.Duration {
+	// This agent only performs local operations, no warm-up needed.
+	return 0
+}
+
+func (a *RtfReaderAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
+	switch call.Name {
+	case "readRtf":
+		return a.handleConvertRtfToHtmlTool(call)
+	default:
+		return a.Agent.Handle(call)
+	}
+}
+
+func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	var result any
+	var err error
+
+	path, pathOK := call.Args["path"].(string)
+	if !pathOK || path == "" {
+		err = fmt.Errorf("'path' argument is required and must be a non-empty string")
+	} else {
+		safePath, pathErr := config.GetSafePath(path)
+		if pathErr != nil {
+			err = pathErr
+		} else {
+			rtfBytes, readErr := os.ReadFile(safePath)
+			if readErr != nil {
+				err = fmt.Errorf("failed to read RTF file '%s': %w", path, readErr)
+			} else {
+				// Get a fresh, stateful ruleset and its corresponding finalizer for this conversion.
+				// This is critical to prevent state from leaking between different tool calls.
+				rules, postRules, finalizer := extendedHTMLRules(a)
+
+				// Use our extended rules, custom ignore list, and new post-rules.
+				html, convertErr := rtf.Convert(string(rtfBytes), rules, rtfIgnoreList(), postRules, finalizer)
+				if convertErr != nil {
+					err = fmt.Errorf("RTF read failed: %w", convertErr)
+				} else {
+					// The new state-based styling should prevent empty/invalid tags.
+					a.Printf("RTF read successful for file: '%s'", path)
+					result = map[string]any{"html_content": html}
+				}
+			}
+		}
+	}
+
+	return a.CreateFunctionResponse(call, result, err)
 }
 
 // rtfIgnoreList creates a custom ignore list that allows processing of field results.
@@ -118,7 +200,7 @@ type styleState struct {
 // conversion is independent and does not suffer from stale state.
 // It now also returns a set of post-processing rules for handling complex fields like hyperlinks.
 // Specification: https://www.biblioscape.com/rtf15_spec.htm
-func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
+func extendedHTMLRules(a *RtfReaderAgent) (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// --- State variables for a single conversion run ---
 	var (
 		isParagraphOpen                                      bool
@@ -476,11 +558,11 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 				cleanedHex := strings.Join(strings.Fields(hexContent), "")
 				binData, err := hex.DecodeString(cleanedHex)
 				if err != nil {
-					log.Printf("RTF: failed to decode image hex data: %v", err)
+					a.Printf("RTF: failed to decode image hex data: %v", err)
 					// Keep the prefix but show an error for the image part.
 					finalTag = prefix + `<p>[Error: Could not decode image]</p>`
 				} else {
-					log.Printf("RTF: decoded %s image data, size: %d bytes", pictureType, len(binData))
+					a.Printf("RTF: decoded %s image data, size: %d bytes", pictureType, len(binData))
 					b64Data := base64.StdEncoding.EncodeToString(binData)
 
 					// Start with the goal size in twips, if available. This is the unscaled size.
@@ -1332,96 +1414,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	}
 
 	return rules, postRules(), finalizer
-}
-
-type RtfReaderAgent struct {
-	*Agent
-}
-
-// NewRtfReaderAgent creates a specialized agent for converting RTF documents to HTML.
-func NewRtfReaderAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *RtfReaderAgent {
-	systemInstruction := `You are an RTF document conversion specialist. You can convert RTF files into HTML format, which can then be analyzed or displayed.`
-
-	functions := genai.FunctionDeclaration{
-		Name:        "convertRtfToHtml",
-		Description: "RTF Reader: Converts an RTF file into HTML. You MUST use this tool to read the content of any RTF file before you can analyze or summarize it.",
-		Parameters: &genai.Schema{
-			Type: genai.TypeObject,
-			Properties: map[string]*genai.Schema{
-				"path": {
-					Type:        genai.TypeString,
-					Description: "The path of the RTF file to convert.",
-				},
-			},
-			Required: []string{"path"},
-		},
-		Behavior: genai.BehaviorBlocking,
-	}
-	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &functions)
-
-	agentConfig := AgentConfig{
-		Name:              AgentRtfReaderName,
-		Model:             config.C.AI.Model,
-		RPM:               config.C.AI.ModelRPM,
-		SystemInstruction: systemInstruction,
-		Temperature:       helpers.Ptr(float32(0.0)),
-	}
-
-	baseAgent := NewAgent(ctx, client, agentConfig)
-
-	rtfAgent := &RtfReaderAgent{Agent: baseAgent}
-
-	return rtfAgent
-}
-
-func (a *RtfReaderAgent) WarmUp() time.Duration {
-	// This agent only performs local operations, no warm-up needed.
-	return 0
-}
-
-func (a *RtfReaderAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
-	switch call.Name {
-	case "convertRtfToHtml":
-		return a.handleConvertRtfToHtmlTool(call)
-	default:
-		return a.Agent.Handle(call)
-	}
-}
-
-func (a *RtfReaderAgent) handleConvertRtfToHtmlTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	var result any
-	var err error
-
-	path, pathOK := call.Args["path"].(string)
-	if !pathOK || path == "" {
-		err = fmt.Errorf("'path' argument is required and must be a non-empty string")
-	} else {
-		safePath, pathErr := config.GetSafePath(path)
-		if pathErr != nil {
-			err = pathErr
-		} else {
-			rtfBytes, readErr := os.ReadFile(safePath)
-			if readErr != nil {
-				err = fmt.Errorf("failed to read RTF file '%s': %w", path, readErr)
-			} else {
-				// Get a fresh, stateful ruleset and its corresponding finalizer for this conversion.
-				// This is critical to prevent state from leaking between different tool calls.
-				rules, postRules, finalizer := extendedHTMLRules()
-
-				// Use our extended rules, custom ignore list, and new post-rules.
-				html, convertErr := rtf.Convert(string(rtfBytes), rules, rtfIgnoreList(), postRules, finalizer)
-				if convertErr != nil {
-					err = fmt.Errorf("RTF to HTML conversion failed: %w", convertErr)
-				} else {
-					// The new state-based styling should prevent empty/invalid tags.
-					log.Printf("RTF conversion successful for file: '%s'", path)
-					result = map[string]any{"html_content": html}
-				}
-			}
-		}
-	}
-
-	return a.CreateFunctionResponse(call, result, err)
 }
 
 // createHyperlinkAction is a helper to construct the final action for an <a> tag.

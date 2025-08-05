@@ -158,8 +158,6 @@ func Registerate(ctx context.Context, client *genai.Client, toolset *genai.Tool,
 
 // NewAgent creates a new AI agent with a specific configuration.
 func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig) *Agent {
-	log.Printf("Creating new %s agent with model: %s", agentConfig.Name, agentConfig.Model)
-
 	agent := Agent{
 		name:           agentConfig.Name,
 		ctx:            ctx,
@@ -170,6 +168,8 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 		temperature:    agentConfig.Temperature,
 	}
 
+	agent.Printf("Creating new agent with model: %s", agent.modelName)
+
 	if agentConfig.SystemInstruction != "" {
 		agent.systemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(agentConfig.SystemInstruction)}, "")
 	}
@@ -177,27 +177,26 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 	// Determine if any tools are enabled by checking the specific configuration flags.
 	toolsEnabled := agentConfig.EnableGoogleSearch || agentConfig.EnableURLContext || agentConfig.EnableCodeExecution
 	if toolsEnabled {
-		log.Printf("[%s] Tool use is enabled.", agentConfig.Name)
+		agent.Println("Tool use is enabled.")
 		var tools []*genai.Tool
 
 		// Standard tools can be combined into a single tool definition.
 		if agentConfig.EnableGoogleSearch || agentConfig.EnableURLContext {
 			standardTool := &genai.Tool{}
 			if agentConfig.EnableGoogleSearch {
-				log.Printf("[%s] GoogleSearch tool enabled", agentConfig.Name)
+				agent.Println("GoogleSearch tool enabled")
 				standardTool.GoogleSearch = &genai.GoogleSearch{}
 			}
 			if agentConfig.EnableURLContext {
-				log.Printf("[%s] URLContext tool enabled", agentConfig.Name)
+				agent.Println("URLContext tool enabled")
 				standardTool.URLContext = &genai.URLContext{}
 			}
 			tools = append(tools, standardTool)
 		}
 
 		if agentConfig.EnableCodeExecution {
-			codeExecutionTool := &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}}
-			tools = append(tools, codeExecutionTool)
-			log.Printf("[%s] Code execution tool enabled", agentConfig.Name)
+			tools = append(tools, &genai.Tool{CodeExecution: &genai.ToolCodeExecution{}})
+			agent.Println("Code execution tool enabled")
 		}
 
 		if len(tools) > 0 {
@@ -221,7 +220,7 @@ func (a *Agent) RPM() int {
 // Process sends a prompt (with optional other parts like images or URIs) to the agent's model and returns the text response.
 // It's a synchronous, one-shot call.
 func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error) {
-	log.Printf("[%s] Processing prompt: '%s'", a.name, prompt)
+	a.Printf("Processing prompt: '%s'", prompt)
 	if len(otherParts) > 0 {
 		var partDescriptions []string
 		for _, p := range otherParts {
@@ -231,7 +230,7 @@ func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error
 				partDescriptions = append(partDescriptions, fmt.Sprintf("FileURI(%s)", p.FileData.FileURI))
 			}
 		}
-		log.Printf("[%s] Processing with %d additional parts: %s", a.name, len(otherParts), strings.Join(partDescriptions, ", "))
+		a.Printf("Processing with %d additional parts: %s", len(otherParts), strings.Join(partDescriptions, ", "))
 	}
 
 	startTime := time.Now()
@@ -269,12 +268,12 @@ func (a *Agent) Process(prompt string, otherParts ...*genai.Part) (string, error
 
 	resp, err := a.client.Models.GenerateContent(a.ctx, a.modelName, conversation, genConfig)
 	if err != nil {
-		log.Printf("[%s] ERROR: Content generation failed: %v", a.name, err)
+		a.Printf("ERROR: Content generation failed: %v", err)
 		return "", fmt.Errorf("[%s] content generation failed: %w", a.name, err)
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("[%s] Processing successful in %v. Response length: %d", a.name, duration, len(resp.Text()))
+	a.Printf("Processing successful in %v. Response length: %d", duration, len(resp.Text()))
 	return resp.Text(), nil
 }
 
@@ -289,20 +288,20 @@ func (a *Agent) WarmUp() time.Duration {
 
 	warmUpMu.Lock()
 	if warmedUpModels[a.modelName] {
-		log.Printf("Model '%s' already warmed up, skipping for agent '%s'.", a.modelName, a.name)
+		a.Printf("Model '%s' already warmed up, skipping for agent '%s'.", a.modelName, a.name)
 		warmUpMu.Unlock()
 		return 0
 	}
 	warmedUpModels[a.modelName] = true
 	warmUpMu.Unlock()
 
-	log.Printf("[%s] Warming up model '%s'...", a.name, a.modelName)
+	a.Printf("Warming up model '%s'...", a.modelName)
 	startTime := time.Now()
 	_, err := a.Process("ping")
 	duration := time.Since(startTime)
 
 	if err != nil {
-		log.Printf("[%s] WARNING: Warm-up call failed: %v", a.name, err)
+		a.Printf("WARNING: Warm-up call failed: %v", err)
 		return 0 // Return 0 on failure so it doesn't count against rate limits.
 	}
 	return duration
@@ -317,7 +316,7 @@ func (a *Agent) Handle(_ *genai.FunctionCall) *genai.FunctionResponse {
 // CreateFunctionResponse is a method to standardize the creation of FunctionResponse objects for an agent.
 func (a *Agent) CreateFunctionResponse(call *genai.FunctionCall, result any, err error) *genai.FunctionResponse {
 	if err != nil {
-		log.Printf("[%s] ERROR executing tool call '%s': %v", a.name, call.Name, err)
+		a.Printf("ERROR executing tool call '%s': %v", call.Name, err)
 		result = map[string]any{"error": err.Error()}
 	}
 
@@ -325,7 +324,7 @@ func (a *Agent) CreateFunctionResponse(call *genai.FunctionCall, result any, err
 
 	responseMap, ok := result.(map[string]any)
 	if !ok {
-		log.Printf("[%s] NOTICE: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", a.name, call.Name, result)
+		a.Printf("NOTICE: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
 		responseMap = map[string]any{"output": result}
 	}
 
@@ -335,4 +334,14 @@ func (a *Agent) CreateFunctionResponse(call *genai.FunctionCall, result any, err
 		Response:   responseMap,
 		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
 	}
+}
+
+func (a *Agent) Printf(format string, args ...any) {
+	log.Printf(fmt.Sprintf("[%s] %s", a.name, format), args...)
+}
+
+func (a *Agent) Println(args ...any) {
+	// Prepend agent name to the arguments for log.Println
+	allArgs := append([]any{fmt.Sprintf("[%s]", a.name)}, args...)
+	log.Println(allArgs...)
 }

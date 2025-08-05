@@ -3,7 +3,6 @@ package agents
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"google.golang.org/genai"
@@ -117,7 +116,7 @@ func (a *YoutubeAgent) handleYoutubeAnalysisTool(call *genai.FunctionCall) *gena
 		if processErr != nil {
 			err = fmt.Errorf("YouTube video processing failed: %w", processErr)
 		} else {
-			log.Printf("YouTube video analysis successful for url: '%s'", url)
+			a.Printf("YouTube video analysis successful for url: '%s'", url)
 			result = map[string]any{"result": resultText}
 		}
 	}

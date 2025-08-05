@@ -3,7 +3,6 @@ package agents
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"google.golang.org/genai"
@@ -85,7 +84,7 @@ func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespon
 }
 
 func (a *WebScraperAgent) handleWebScraperTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
@@ -103,7 +102,7 @@ func (a *WebScraperAgent) handleWebScraperTool(call *genai.FunctionCall) *genai.
 		if processErr != nil {
 			err = fmt.Errorf("web page processing failed: %w", processErr)
 		} else {
-			log.Printf("Web page analysis successful for url: '%s'", url)
+			a.Printf("Web page analysis successful for url: '%s'", url)
 			result = map[string]any{"result": resultText}
 		}
 	}

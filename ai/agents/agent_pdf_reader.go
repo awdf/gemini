@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -118,7 +117,7 @@ func (a *PdfReaderAgent) handleReadPdfTool(call *genai.FunctionCall) *genai.Func
 					if jsonErr := json.Unmarshal([]byte(summaryJSON), &summaryData); jsonErr != nil {
 						err = fmt.Errorf("failed to parse summary from agent response: %w", jsonErr)
 					} else {
-						log.Printf("PDF processing successful for query: '%s'", query)
+						a.Printf("PDF processing successful for query: '%s'", query)
 						result = map[string]any{"summary": summaryData.Summary}
 					}
 				}

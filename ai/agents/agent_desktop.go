@@ -3,13 +3,11 @@ package agents
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"google.golang.org/genai"
 
-	"gemini/helpers"
 	"gemini/wayland"
 )
 
@@ -135,8 +133,6 @@ var keyCodeToName = [maxKeyCode]string{
 
 // NewDesktopAgent creates a specialized agent for desktop automation tasks.
 func NewDesktopAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *DesktopAgent {
-	systemInstruction := `You are a desktop automation expert. You can control the keyboard to type text and perform key combinations.`
-
 	functions := []*genai.FunctionDeclaration{
 		{
 			Name:        "typeText",
@@ -171,9 +167,7 @@ func NewDesktopAgent(ctx context.Context, client *genai.Client, toolset *genai.T
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, functions...)
 
 	agentConfig := AgentConfig{
-		Name:              AgentDesktopName,
-		SystemInstruction: systemInstruction,
-		Temperature:       helpers.Ptr(float32(0.0)),
+		Name: AgentDesktopName,
 	}
 	baseAgent := NewAgent(ctx, client, agentConfig)
 
@@ -198,7 +192,7 @@ func (a *DesktopAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse 
 }
 
 func (a *DesktopAgent) handleTypeTextTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 	text, ok := call.Args["text"].(string)
 	if !ok || text == "" {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("argument 'text' is required and must be a non-empty string"))
@@ -209,7 +203,7 @@ func (a *DesktopAgent) handleTypeTextTool(call *genai.FunctionCall) *genai.Funct
 }
 
 func (a *DesktopAgent) handleKeyActionTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 	codesArg, ok := call.Args["key_codes"].([]interface{})
 	if !ok {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("argument 'key_codes' (array of integers) is required"))
@@ -237,7 +231,7 @@ func (a *DesktopAgent) handleKeyActionTool(call *genai.FunctionCall) *genai.Func
 		}
 	}
 	keyNamesStr := strings.Join(keyNames, " + ")
-	log.Printf("Performing key press for: %s", keyNamesStr)
+	a.Printf("Performing key press for: %s", keyNamesStr)
 
 	result := map[string]any{"status": fmt.Sprintf("key action for %s performed", keyNamesStr)}
 	return a.CreateFunctionResponse(call, result, nil)

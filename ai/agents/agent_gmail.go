@@ -145,7 +145,7 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 		userEmail: profile.EmailAddress,
 	}
 
-	log.Printf("Gmail Agent initialized successfully for user: %s", gmailAgent.userEmail)
+	gmailAgent.Printf("Initialized successfully for user: %s", gmailAgent.userEmail)
 	return gmailAgent
 }
 
@@ -192,7 +192,7 @@ func (a *GmailAgent) ListEmails(query string, maxResults int64) ([]EmailSummary,
 	for _, msg := range msgs.Messages {
 		fullMessage, err := a.service.Users.Messages.Get("me", msg.Id).Format("metadata").Do()
 		if err != nil {
-			log.Printf("WARNING: unable to get full message for ID %s: %v", msg.Id, err)
+			a.Printf("WARNING: unable to get full message for ID %s: %v", msg.Id, err)
 			continue
 		}
 		summary := EmailSummary{ID: fullMessage.Id, Snippet: fullMessage.Snippet}
@@ -351,7 +351,7 @@ func (a *GmailAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 }
 
 func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
@@ -369,7 +369,7 @@ func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.F
 			if sendErr != nil {
 				err = fmt.Errorf("failed to send email: %w", sendErr)
 			} else {
-				log.Printf("Successfully sent email to: '%s'", to)
+				a.Printf("Successfully sent email to: '%s'", to)
 				result = map[string]any{"status": status}
 			}
 		}
@@ -379,7 +379,7 @@ func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.F
 }
 
 func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
@@ -398,7 +398,7 @@ func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.
 		if listErr != nil {
 			err = fmt.Errorf("failed to list emails: %w", listErr)
 		} else {
-			log.Printf("Successfully listed %d emails for query: '%s'", len(emails), query)
+			a.Printf("Successfully listed %d emails for query: '%s'", len(emails), query)
 			result = map[string]any{"emails": emails}
 		}
 	}
@@ -407,7 +407,7 @@ func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.
 }
 
 func (a *GmailAgent) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	log.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
 
 	var result any
 	var err error
@@ -423,7 +423,7 @@ func (a *GmailAgent) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.F
 			if readErr != nil {
 				err = fmt.Errorf("failed to read email with ID '%s': %w", messageID, readErr)
 			} else {
-				log.Printf("Successfully read email with ID: '%s'", messageID)
+				a.Printf("Successfully read email with ID: '%s'", messageID)
 				result = map[string]any{"content": content}
 			}
 		}

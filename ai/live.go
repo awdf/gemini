@@ -218,7 +218,7 @@ func (l *LiveAI) OpenSession() {
 		if config.C.AI.EnableFunctionCalling {
 			// Add file system tools
 			tools = append(tools, l.toolset)
-			log.Println("File system tools enabled for live session.")
+			log.Println("Function calling tools enabled for live session.")
 		}
 
 		if len(tools) > 0 {
@@ -437,6 +437,7 @@ func (l *LiveAI) Run() {
 // Must be run only once to avoid double processing of responses
 func (l *LiveAI) handleResponses() {
 	var needToGo bool
+	var generation bool
 	var inModelTurn bool   // State to track if we are in the middle of a model's turn.
 	var inTranscript bool  // State to track if we are in the middle of a model's turn.
 	var outTranscript bool // State to track if we are in the middle of a model's turn.
@@ -556,9 +557,14 @@ func (l *LiveAI) handleResponses() {
 		case msg.GoAway != nil:
 			// The loop will terminate in the next iteration due to the connection closing.
 			log.Printf("Live stream session GoAway received: %+v", msg.GoAway.TimeLeft)
-			needToGo = true
+			if generation {
+				needToGo = true
+			} else {
+				fireClose()
+			}
 		case msg.SessionResumptionUpdate != nil:
 			if msg.SessionResumptionUpdate.Resumable {
+				generation = false
 				log.Printf("Live session resumption handle updated. New handle received.")
 				l.resumptionHandle = msg.SessionResumptionUpdate.NewHandle
 				// After GoAway message we have 1 minute to exit.
@@ -568,6 +574,7 @@ func (l *LiveAI) handleResponses() {
 					fireClose()
 				}
 			} else {
+				generation = true
 				log.Printf("Live session resumption handle generates. Wait please.")
 			}
 		default:
