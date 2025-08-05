@@ -101,6 +101,18 @@ type cellDef struct {
 	backgroundColorIndex                             int
 }
 
+// styleState holds all character-level formatting that can be scoped by RTF groups.
+type styleState struct {
+	isBold, isItalic, isUnderline bool
+	fontSize                      int
+	fontFamily                    string
+	currentColorIndex             int
+	// Caching the last applied style string at each stack level prevents redundant
+	// <span> tags from being generated.
+	lastAppliedStyle string
+	isStyleSpanOpen  bool
+}
+
 // extendedHTMLRules creates a new, stateful ruleset and a finalizer for a single RTF conversion.
 // It returns both so they can share the same state via a closure, ensuring that each
 // conversion is independent and does not suffer from stale state.
@@ -112,8 +124,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		isParagraphOpen                                      bool
 		bodyStyleApplied                                     bool
 		bodyStyleCheckDone                                   bool
-		isStyleSpanOpen                                      bool
-		isBold, isItalic, isUnderline                        bool
 		isListActive, isItemActive                           bool
 		isInTable, isInRow, isInCell                         bool
 		isParagraphInTable                                   bool // Flag to mark a paragraph as part of a table.
@@ -135,18 +145,23 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		currentCellIndex int
 		rowCellPositions []int
 		tableLeftIndent  int
+
+		// Character formatting is now managed by a stack to handle RTF's group scoping.
+		styleStack []styleState
 	)
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
-	fontSize := 24 // RTF default font size is 12pt (24 half-points). Initialize it here.
-	var fontFamily string
 
+	// Initialize the style stack with the default RTF state.
+	initialState := styleState{fontSize: 24} // Default is 12pt (24 half-points)
+	styleStack = []styleState{initialState}
+	currentStyle := func() *styleState {
+		return &styleStack[len(styleStack)-1]
+	}
 	// hexRegex is used to extract the hexadecimal image data from a pict block.
 	hexRegex := regexp.MustCompile(`(?i)([0-9a-f][0-9a-f\s]*)$`)
-	var lastAppliedStyle string // Track the last style applied to avoid redundant spans.
-	var colorTable []string     // stores hex colors like "#RRGGBB"
+	var colorTable []string // stores hex colors like "#RRGGBB"
 	var currentR, currentG, currentB int
 	var firstSemicolonInColorTbl bool
-	var currentColorIndex int
 	var textAlign string // Can be "left", "right", "center", "justify"
 
 	// getStyle generates the CSS for paragraph indentation.
@@ -200,18 +215,19 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 
 	// getInlineStyle generates the CSS for inline elements like <span>.
 	getInlineStyle := func() string {
+		cs := currentStyle()
 		var styles []string
 		// RTF default font size is 12pt (24 half-points).
-		if fontSize != 24 {
-			styles = append(styles, fmt.Sprintf("font-size:%.0fpt", float64(fontSize)/2.0))
+		if cs.fontSize != 24 {
+			styles = append(styles, fmt.Sprintf("font-size:%.0fpt", float64(cs.fontSize)/2.0))
 		}
-		if fontFamily != "" {
-			styles = append(styles, fmt.Sprintf("font-family:'%s'", fontFamily))
+		if cs.fontFamily != "" {
+			styles = append(styles, fmt.Sprintf("font-family:'%s'", cs.fontFamily))
 		}
 		var finalColorIndex int
 		// An explicit \cf inside a cell's content takes highest precedence.
-		if currentColorIndex > 0 {
-			finalColorIndex = currentColorIndex
+		if cs.currentColorIndex > 0 {
+			finalColorIndex = cs.currentColorIndex
 		} else if isInCell && currentCellIndex < len(rowCellDefs) && rowCellDefs[currentCellIndex].foregroundColorIndex > 0 {
 			// Otherwise, use the cell's default color if defined.
 			finalColorIndex = rowCellDefs[currentCellIndex].foregroundColorIndex
@@ -219,13 +235,13 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		if finalColorIndex >= 0 && finalColorIndex < len(colorTable) {
 			styles = append(styles, fmt.Sprintf("color:%s", colorTable[finalColorIndex]))
 		}
-		if isBold {
+		if cs.isBold {
 			styles = append(styles, "font-weight:bold")
 		}
-		if isItalic {
+		if cs.isItalic {
 			styles = append(styles, "font-style:italic")
 		}
-		if isUnderline {
+		if cs.isUnderline {
 			styles = append(styles, "text-decoration:underline")
 		}
 		return strings.Join(styles, "; ")
@@ -233,23 +249,31 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 
 	// closeStyleSpan closes the generic style span if it's open.
 	closeStyleSpan := func(stack rtf.StackType) {
-		if isStyleSpanOpen {
+		cs := currentStyle()
+		if cs.isStyleSpanOpen {
 			stack.Actions().AppendString("</span>")
-			isStyleSpanOpen = false
+			cs.isStyleSpanOpen = false
 		}
 	}
 
 	// openStyleSpan closes any existing style span and opens a new one if needed.
 	openStyleSpan := func(stack rtf.StackType) {
-		currentStyle := getInlineStyle()
+		cs := currentStyle()
+		// Do not attempt to open a style span if we are not inside a paragraph
+		// or a list item. This prevents invalid nesting like <span><p>...</p></span>
+		// by ensuring block-level tags are opened before inline ones.
+		if !isParagraphOpen && !isItemActive {
+			return
+		}
+		currentStyleStr := getInlineStyle()
 		// Only change the span if the style has actually changed.
-		if currentStyle != lastAppliedStyle {
+		if currentStyleStr != cs.lastAppliedStyle {
 			closeStyleSpan(stack) // Close the old span first.
-			if currentStyle != "" {
-				stack.Actions().AppendString(fmt.Sprintf(`<span style="%s">`, currentStyle))
-				isStyleSpanOpen = true
+			if currentStyleStr != "" {
+				stack.Actions().AppendString(fmt.Sprintf(`<span style="%s">`, currentStyleStr))
+				cs.isStyleSpanOpen = true
 			}
-			lastAppliedStyle = currentStyle
+			cs.lastAppliedStyle = currentStyleStr
 		}
 	}
 
@@ -524,15 +548,15 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		postRulesMap["footer"] = func(actions *rtf.Actions) error {
 			// The footer group has been parsed. Store its actions to be appended
 			// at the very end of the document by the finalizer.
+			footerActions = actions.Clone()
+
 			// After parsing the footer, which is a self-contained unit, we must
 			// reset any state that might have been modified during its parse,
 			// to prevent it from "leaking" into the parsing of the main document body
 			// that follows the footer group in the RTF stream.
-			isInTable, isInRow, isInCell = false, false, false
-			isParagraphInTable = false
-			currentColorIndex = 0 // Reset color to default after footer.
+			isInTable, isInRow, isInCell, isParagraphInTable = false, false, false, false
+			styleStack = []styleState{initialState} // Reset character style stack.
 
-			footerActions = actions.Clone()
 			// Clear the original actions so the footer isn't rendered in place.
 			*actions = rtf.Actions{}
 			return nil
@@ -544,6 +568,23 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// Start with a clean ruleset for full control over paragraph structure.
 	rules := rtf.RuleSet{
 		"line": rtf.As("<br>\n"),
+		// Add rules for group delimiters to manage the style stack.
+		"{": func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+			// A new group is starting. Push a copy of the current style state onto the stack.
+			// The RTF parser will handle its own group stack; we just mirror it for styles.
+			styleStack = append(styleStack, *currentStyle())
+			return nil
+		},
+		"}": func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+			// A group is ending. The style is about to revert to the parent's state.
+			// First, close any span that was opened within the closing group.
+			closeStyleSpan(stack)
+			// Now, pop our style stack to revert to the parent's style state.
+			if len(styleStack) > 1 {
+				styleStack = styleStack[:len(styleStack)-1]
+			}
+			return nil
+		},
 	}
 
 	rules["header"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
@@ -561,6 +602,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		// styles from the main document body from leaking into the footer. This ensures
 		// the footer is rendered with a clean slate.
 		isInTable, isInRow, isInCell = false, false, false
+		isParagraphInTable = false
+		styleStack = []styleState{initialState} // Reset character style stack.
 		return nil
 	}
 
@@ -613,24 +656,24 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		if stack.Ignorable() {
 			return nil
 		}
-		isBold = (act.Para == nil || *act.Para != 0) // \b is on, \b0 is off
-		closeStyleSpan(stack)                        // Close the current span; the text hook will open a new one if needed.
+		currentStyle().isBold = (act.Para == nil || *act.Para != 0) // \b is on, \b0 is off
+		openStyleSpan(stack)
 		return nil
 	}
 	rules["i"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
 		if stack.Ignorable() {
 			return nil
 		}
-		isItalic = (act.Para == nil || *act.Para != 0)
-		closeStyleSpan(stack)
+		currentStyle().isItalic = (act.Para == nil || *act.Para != 0)
+		openStyleSpan(stack)
 		return nil
 	}
 	rules["ul"] = func(_ rtf.Header, stack rtf.StackType, act rtf.Action) error {
 		if stack.Ignorable() {
 			return nil
 		}
-		isUnderline = (act.Para == nil || *act.Para != 0)
-		closeStyleSpan(stack)
+		currentStyle().isUnderline = (act.Para == nil || *act.Para != 0)
+		openStyleSpan(stack)
 		return nil
 	}
 	rules["strike"] = rtf.Toggle("<s>", "</s>")
@@ -643,8 +686,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// Some RTF writers use \ulnone to disable underlining. The default Toggle for 'ul'
 	// only handles \ul0. We can add an explicit rule for \ulnone.
 	rules["ulnone"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
-		isUnderline = false
-		closeStyleSpan(stack)
+		currentStyle().isUnderline = false
+		openStyleSpan(stack)
 		return nil
 	}
 
@@ -883,9 +926,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		if !isParagraphOpen && !isItemActive {
 			openParagraph(stack)
 		}
-		if !isStyleSpanOpen {
-			openStyleSpan(stack)
-		}
+		openStyleSpan(stack)
 		return nil
 	}
 
@@ -944,8 +985,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			return nil
 		}
 		if act.Para != nil {
-			fontSize = *act.Para
-			closeStyleSpan(stack)
+			currentStyle().fontSize = *act.Para
+			openStyleSpan(stack)
 		}
 		return nil
 	}
@@ -960,8 +1001,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 				8:  "Arial", // Common fallback for \f8
 				10: "Arial", // Common fallback for \f10
 			}
-			fontFamily = fontMap[*act.Para] // Returns "" if not found, which is fine.
-			closeStyleSpan(stack)
+			currentStyle().fontFamily = fontMap[*act.Para] // Returns "" if not found, which is fine.
+			openStyleSpan(stack)
 		}
 		return nil
 	}
@@ -973,8 +1014,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		}
 		if act.Para != nil {
 			// The \cf command always sets the current text color, regardless of context.
-			currentColorIndex = *act.Para
-			closeStyleSpan(stack)
+			currentStyle().currentColorIndex = *act.Para
+			openStyleSpan(stack)
 		}
 		return nil
 	}
@@ -987,13 +1028,9 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		if stack.IsInGroup("listtext") {
 			return nil
 		}
-		closeStyleSpan(stack)
-		fontSize = 24
-		fontFamily = ""
-		lastAppliedStyle = ""
-		currentColorIndex = 0
-		isBold, isItalic, isUnderline = false, false, false
+		*currentStyle() = initialState // Reset current style state to default.
 		stack.CloseAllStackToggles()
+		openStyleSpan(stack)
 		return nil
 	}
 
@@ -1237,18 +1274,16 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		currentBorders = nil
 
 		// Reset character properties as well, since \pard implies this.
-		fontSize = 24
-		fontFamily = ""
-		lastAppliedStyle = ""
-		currentColorIndex = 0
-		isBold, isItalic, isUnderline = false, false, false
+		*currentStyle() = initialState
+		openStyleSpan(stack)
 		return nil
 	}
 
 	// Define the finalizer function. It captures the state variables via closure.
 	finalizer := func(actions *rtf.Actions) {
 		// Close any open tags at the very end of the document to ensure valid HTML.
-		if isStyleSpanOpen {
+		cs := currentStyle()
+		if cs.isStyleSpanOpen {
 			actions.AppendString("</span>")
 		}
 		// The finalizer must close any remaining open tags in the correct order.
