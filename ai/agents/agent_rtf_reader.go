@@ -107,16 +107,14 @@ type cellDef struct {
 func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	// --- State variables for a single conversion run ---
 	var (
-		isParagraphOpen               bool
-		bodyStyleApplied              bool
-		bodyStyleCheckDone            bool
-		isStyleSpanOpen               bool
-		isBold, isItalic, isUnderline bool
-		isListActive, isItemActive    bool
-		isInTable, isInRow, isInCell  bool
-		isParagraphInTable            bool // Flag to mark a paragraph as part of a table.
-		// Table border properties
-		tableBorderWidth                                     int
+		isParagraphOpen                                      bool
+		bodyStyleApplied                                     bool
+		bodyStyleCheckDone                                   bool
+		isStyleSpanOpen                                      bool
+		isBold, isItalic, isUnderline                        bool
+		isListActive, isItemActive                           bool
+		isInTable, isInRow, isInCell                         bool
+		isParagraphInTable                                   bool // Flag to mark a paragraph as part of a table.
 		isInPicture                                          bool
 		pictureWidthPixels                                   int
 		pictureHeightPixels                                  int
@@ -133,6 +131,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		rowCellDefs      []cellDef
 		currentCellDef   *cellDef
 		currentCellIndex int
+		rowCellPositions []int
+		tableLeftIndent  int
 	)
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
 	fontSize := 24 // RTF default font size is 12pt (24 half-points). Initialize it here.
@@ -262,12 +262,45 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 
 		// This is the "lazy" part. Create table structure only when content is imminent.
 		if !isInTable {
-			style := ""
-			if tableBorderWidth > 0 {
-				// Use border-collapse for a cleaner look when cells have borders.
-				style = ` style="border-collapse: collapse;"`
+			var styles []string
+			styles = append(styles, "border-collapse: collapse")
+			// Use "table-layout: fixed" to ensure browsers respect the <col> widths.
+			styles = append(styles, "table-layout: fixed")
+
+			var colgroup string
+			var tableWidthTwips int
+
+			if len(rowCellPositions) > 0 {
+				var colWidths []string
+				// The first column's width is its right edge minus the table's left indent.
+				lastPos := tableLeftIndent
+				for _, pos := range rowCellPositions {
+					width := pos - lastPos
+					if width > 0 {
+						widthPt := float64(width) / 20.0
+						colWidths = append(colWidths, fmt.Sprintf(`<col style="width: %.2fpt;">`, widthPt))
+					}
+					lastPos = pos
+				}
+				// The total table width is the right edge of the last cell minus the table's left indent.
+				tableWidthTwips = lastPos - tableLeftIndent
+
+				if len(colWidths) > 0 {
+					colgroup = fmt.Sprintf("<colgroup>%s</colgroup>", strings.Join(colWidths, ""))
+				}
 			}
-			stack.Actions().AppendString(fmt.Sprintf("<table%s>\n<tbody>\n", style))
+
+			if tableWidthTwips > 0 {
+				widthPt := float64(tableWidthTwips) / 20.0
+				styles = append(styles, fmt.Sprintf("width: %.2fpt", widthPt))
+			}
+
+			styleAttr := ""
+			if len(styles) > 0 {
+				styleAttr = fmt.Sprintf(` style="%s"`, strings.Join(styles, "; "))
+			}
+
+			stack.Actions().AppendString(fmt.Sprintf("<table%s>\n%s<tbody>\n", styleAttr, colgroup))
 			isInTable = true
 		}
 		if !isInRow {
@@ -490,7 +523,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		// styles from the main document body from leaking into the footer. This ensures
 		// the footer is rendered with a clean slate.
 		isInTable, isInRow, isInCell = false, false, false
-		tableBorderWidth = 0
 		return nil
 	}
 
@@ -798,8 +830,6 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			}
 			stack.Actions().AppendString("</tbody>\n</table>\n")
 			isInTable = false
-			// Reset table styles for the next table
-			tableBorderWidth = 0
 		}
 
 		// If we are about to write text that is NOT part of a list item,
@@ -997,18 +1027,30 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 
 	rules["trowd"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
 		// Start of a table row's definition block.
-		rowCellDefs = nil             // Clear definitions from any previous row.
-		currentCellDef = new(cellDef) // Start building the first cell's definition.
+		rowCellDefs = nil      // Clear definitions from any previous row.
+		rowCellPositions = nil // Clear cell positions for the new row.
+		tableLeftIndent = 0    // Reset table indent for the new row.
+		currentCellDef = new(cellDef)
 		return nil
 	}
 
-	rules["cellx"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+	rules["trleft"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			tableLeftIndent = *act.Para
+		}
+		return nil
+	}
+
+	rules["cellx"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
 		// A \cellx command marks the end of the current cell's properties definition
 		// within a \trowd block. We save the definition we've built so far and
 		// prepare for the next one.
 		if currentCellDef != nil {
 			rowCellDefs = append(rowCellDefs, *currentCellDef)
 			currentCellDef = new(cellDef)
+		}
+		if act.Para != nil {
+			rowCellPositions = append(rowCellPositions, *act.Para)
 		}
 		return nil
 	}
@@ -1166,12 +1208,23 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		}
 		// Now, append the footer content if it exists.
 		if footerActions != nil {
-			// The footer content is pre-rendered. We just wrap it in a <footer> tag.
-			// We assume the footer RTF is well-formed and produces a valid HTML fragment.
-			// The previous logic for resetting state and closing tags here was flawed
-			// because the state of the footer content is not known at this stage.
-			actions.AppendString("<footer>\n")
+			// The footer content is pre-rendered. We wrap it in a <footer> tag.
+			// We also need to apply the same page-level centering as the main body.
+			// Add a top margin to visually separate the footer from the main content.
+			actions.AppendString(`<footer style="margin-top: 20pt;">` + "\n")
+
+			// Calculate the effective content width for centering.
+			contentWidth := float64(paperWidth-marginLeft-marginRight) / 20.0
+			if contentWidth > 0 {
+				actions.AppendString(fmt.Sprintf(`<div style="width: %.2fpt; margin: auto;">`, contentWidth))
+			}
+
 			actions.Append(footerActions.Action())
+
+			if contentWidth > 0 {
+				actions.AppendString("</div>\n")
+			}
+
 			actions.AppendString("</footer>\n")
 		}
 	}
