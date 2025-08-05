@@ -80,6 +80,20 @@ func rtfIgnoreList() []string {
 	return newList
 }
 
+// borderProps holds the CSS-like properties for a border.
+type borderProps struct {
+	style      string
+	width      int // in twips
+	colorIndex int
+	space      int // in twips
+}
+
+// reset clears the border properties to their default state.
+func (b *borderProps) reset() {
+	b.style = ""
+	b.width, b.colorIndex, b.space = 0, 0, 0
+}
+
 // extendedHTMLRules creates a new, stateful ruleset and a finalizer for a single RTF conversion.
 // It returns both so they can share the same state via a closure, ensuring that each
 // conversion is independent and does not suffer from stale state.
@@ -97,17 +111,21 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		isInTable, isInRow, isInCell  bool
 		isParagraphInTable            bool // Flag to mark a paragraph as part of a table.
 		// Table border properties
-		tableBorderWidth      int
-		isInPicture           bool
-		pictureWidthPixels    int
-		pictureHeightPixels   int
-		pictureWidthTwips     int
-		pictureHeightTwips    int
-		pictureType           string
-		tableBorderStyle      string
-		tableBorderColorIndex int
-		firstLineIndent       int
-		footerActions         *rtf.Actions
+		tableBorderWidth                                     int
+		isInPicture                                          bool
+		pictureWidthPixels                                   int
+		pictureHeightPixels                                  int
+		pictureWidthTwips                                    int
+		pictureHeightTwips                                   int
+		pictureScaleX                                        int = 100 // Default scale is 100%
+		pictureScaleY                                        int = 100 // Default scale is 100%
+		pictureType                                          string
+		tableBorderStyle                                     string
+		tableBorderColorIndex                                int
+		firstLineIndent                                      int
+		pBorderTop, pBorderBottom, pBorderLeft, pBorderRight borderProps
+		currentBorders                                       []*borderProps
+		footerActions                                        *rtf.Actions
 	)
 	var leftIndent, rightIndent, paperWidth, marginLeft, marginRight int
 	fontSize := 24 // RTF default font size is 12pt (24 half-points). Initialize it here.
@@ -137,6 +155,33 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		if textAlign != "" {
 			styles = append(styles, fmt.Sprintf("text-align: %s", textAlign))
 		}
+
+		// Add border styles
+		addBorder := func(side string, props borderProps) {
+			if props.style == "none" {
+				styles = append(styles, fmt.Sprintf("border-%s: none", side))
+				return
+			}
+			if props.width > 0 {
+				widthPt := float64(props.width) / 20.0
+				bStyle := "solid" // Default
+				if props.style != "" {
+					bStyle = props.style
+				}
+				bColor := "#000000" // Default
+				if props.colorIndex > 0 && props.colorIndex < len(colorTable) {
+					bColor = colorTable[props.colorIndex]
+				}
+				styles = append(styles, fmt.Sprintf("border-%s: %.2fpt %s %s", side, widthPt, bStyle, bColor))
+				if props.space > 0 {
+					styles = append(styles, fmt.Sprintf("padding-%s: %.2fpt", side, float64(props.space)/20.0))
+				}
+			}
+		}
+		addBorder("top", pBorderTop)
+		addBorder("bottom", pBorderBottom)
+		addBorder("left", pBorderLeft)
+		addBorder("right", pBorderRight)
 		return strings.Join(styles, "; ")
 	}
 
@@ -324,19 +369,26 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 					log.Printf("RTF: decoded %s image data, size: %d bytes", pictureType, len(binData))
 					b64Data := base64.StdEncoding.EncodeToString(binData)
 
+					// Start with the goal size in twips, if available. This is the unscaled size.
 					widthTwips := pictureWidthTwips
 					heightTwips := pictureHeightTwips
-					// If goal size (in twips) is not set, fall back to pixel size.
-					// This is a heuristic, as we must assume a DPI to convert pixels to points.
-					// A common assumption is that the pixel dimensions are for a 96 DPI screen,
-					// and we want to convert to 72 DPI points for CSS.
-					// width_pt = width_px * (72/96) => width_pt = width_px * 0.75
-					// width_twips = width_pt * 20 => width_twips = (width_px * 0.75) * 20 = width_px * 15.
+
+					// If goal size (\picwgoal) is not available, calculate it from the source pixel dimensions (\picw).
 					if widthTwips == 0 && pictureWidthPixels > 0 {
+						// Convert source pixels to twips (1px = 15 twips, a common assumption).
 						widthTwips = pictureWidthPixels * 15
 					}
 					if heightTwips == 0 && pictureHeightPixels > 0 {
 						heightTwips = pictureHeightPixels * 15
+					}
+
+					// Now, apply scaling to the determined base twips dimensions.
+					// The scaling factor is a percentage.
+					if widthTwips > 0 {
+						widthTwips = (widthTwips * pictureScaleX) / 100
+					}
+					if heightTwips > 0 {
+						heightTwips = (heightTwips * pictureScaleY) / 100
 					}
 
 					var styleAttr string
@@ -353,9 +405,9 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 					// Wrap in a paragraph for block layout, applying paragraph styles.
 					pStyle := getStyle()
 					if pStyle != "" {
-						finalTag = prefix + fmt.Sprintf(`<p style="%s">%s</p>\n`, pStyle, imgTag)
+						finalTag = prefix + fmt.Sprintf(`<p style="%s">%s</p>`, pStyle, imgTag)
 					} else {
-						finalTag = prefix + fmt.Sprintf("<p>%s</p>\n", imgTag)
+						finalTag = prefix + fmt.Sprintf("<p>%s</p>", imgTag)
 					}
 				}
 			} else {
@@ -374,6 +426,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 			pictureHeightTwips = 0
 			pictureWidthPixels = 0
 			pictureHeightPixels = 0
+			pictureScaleX = 100
+			pictureScaleY = 100
 			return nil
 		}
 
@@ -441,6 +495,10 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		rightIndent = 0
 		textAlign = ""
 		firstLineIndent = 0
+		pBorderTop.reset()
+		pBorderBottom.reset()
+		pBorderLeft.reset()
+		pBorderRight.reset()
 		return nil
 	}
 
@@ -602,6 +660,8 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		pictureHeightTwips = 0
 		pictureWidthPixels = 0
 		pictureHeightPixels = 0
+		pictureScaleX = 100
+		pictureScaleY = 100
 		// Don't set ignorable, we want to capture the hex data as text.
 		return nil
 	}
@@ -620,7 +680,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	}
 
 	// Rules to capture the source width and height of a picture in pixels.
-	// This is used as a fallback if the goal dimensions are not specified.
+	// This is used with scaling factors if goal dimensions are not specified.
 	rules["picw"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
 		if isInPicture && act.Para != nil {
 			pictureWidthPixels = *act.Para
@@ -645,6 +705,20 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	rules["pichgoal"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
 		if isInPicture && act.Para != nil {
 			pictureHeightTwips = *act.Para
+		}
+		return nil
+	}
+
+	// Add rules for picture scaling percentages.
+	rules["picscalex"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if isInPicture && act.Para != nil {
+			pictureScaleX = *act.Para
+		}
+		return nil
+	}
+	rules["picscaley"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if isInPicture && act.Para != nil {
+			pictureScaleY = *act.Para
 		}
 		return nil
 	}
@@ -863,6 +937,88 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		return nil
 	}
 
+	// --- Paragraph Border Rules ---
+	rules["brdrt"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		currentBorders = []*borderProps{&pBorderTop}
+		return nil
+	}
+	rules["brdrb"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		currentBorders = []*borderProps{&pBorderBottom}
+		return nil
+	}
+	rules["brdrl"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		currentBorders = []*borderProps{&pBorderLeft}
+		return nil
+	}
+	rules["brdrr"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		currentBorders = []*borderProps{&pBorderRight}
+		return nil
+	}
+	rules["brdrbox"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+		currentBorders = []*borderProps{&pBorderTop, &pBorderBottom, &pBorderLeft, &pBorderRight}
+		return nil
+	}
+
+	// Border styles
+	borderStyleMap := map[string]string{
+		"brdrs":      "solid",
+		"brdrth":     "solid", // thick
+		"brdrsh":     "outset",
+		"brdrdot":    "dotted",
+		"brdrdash":   "dashed",
+		"brdrhair":   "solid", // hairline
+		"brdrdb":     "double",
+		"brdrdashd":  "dashed",
+		"brdrdashdd": "dashed",
+		"brdrtriple": "double",
+		"brdrnone":   "none",
+	}
+	for keyword, cssStyle := range borderStyleMap {
+		// Use a closure to capture the cssStyle for each keyword
+		func(style string) {
+			rules[keyword] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
+				for _, b := range currentBorders {
+					if b != nil {
+						b.style = style
+					}
+				}
+				return nil
+			}
+		}(cssStyle)
+	}
+
+	// Border properties
+	rules["brdrw"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			for _, b := range currentBorders {
+				if b != nil {
+					b.width = *act.Para
+				}
+			}
+		}
+		return nil
+	}
+	rules["brdrcf"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			for _, b := range currentBorders {
+				if b != nil {
+					b.colorIndex = *act.Para
+				}
+			}
+		}
+		return nil
+	}
+	rules["brsp"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
+		if act.Para != nil {
+			for _, b := range currentBorders {
+				if b != nil {
+					b.space = *act.Para
+				}
+			}
+		}
+		return nil
+	}
+
 	// --- Table Border Rules ---
 	rules["brdrs"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
 		tableBorderStyle = "solid"
@@ -911,6 +1067,11 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		isParagraphInTable = false // \pard resets all paragraph properties, including table state.
 		textAlign = ""             // Reset alignment to default (left)
 		firstLineIndent = 0
+		pBorderTop.reset()
+		pBorderBottom.reset()
+		pBorderLeft.reset()
+		pBorderRight.reset()
+		currentBorders = nil
 
 		// Reset character properties as well, since \pard implies this.
 		fontSize = 24
