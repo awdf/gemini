@@ -977,33 +977,49 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 		// Use a closure to capture the cssStyle for each keyword
 		func(style string) {
 			rules[keyword] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
-				for _, b := range currentBorders {
-					if b != nil {
-						b.style = style
+				// Check if we are in a paragraph border context.
+				// This is true if \brdrt, \brdrb, etc. was just seen.
+				if len(currentBorders) > 0 {
+					for _, b := range currentBorders {
+						if b != nil {
+							b.style = style
+						}
 					}
+				} else {
+					// Otherwise, assume it's a table border style.
+					// This is a simplification, but should handle common cases.
+					tableBorderStyle = style
 				}
 				return nil
 			}
 		}(cssStyle)
 	}
 
-	// Border properties
+	// Border properties - these can apply to paragraphs or table cells.
 	rules["brdrw"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
 		if act.Para != nil {
-			for _, b := range currentBorders {
-				if b != nil {
-					b.width = *act.Para
+			if len(currentBorders) > 0 {
+				for _, b := range currentBorders {
+					if b != nil {
+						b.width = *act.Para
+					}
 				}
+			} else {
+				tableBorderWidth = *act.Para
 			}
 		}
 		return nil
 	}
 	rules["brdrcf"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
 		if act.Para != nil {
-			for _, b := range currentBorders {
-				if b != nil {
-					b.colorIndex = *act.Para
+			if len(currentBorders) > 0 {
+				for _, b := range currentBorders {
+					if b != nil {
+						b.colorIndex = *act.Para
+					}
 				}
+			} else {
+				tableBorderColorIndex = *act.Para
 			}
 		}
 		return nil
@@ -1020,33 +1036,7 @@ func extendedHTMLRules() (rtf.RuleSet, rtf.PostRuleSet, rtf.Finalizer) {
 	}
 
 	// --- Table Border Rules ---
-	rules["brdrs"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
-		tableBorderStyle = "solid"
-		return nil
-	}
-	rules["brdrdot"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
-		tableBorderStyle = "dotted"
-		return nil
-	}
-	rules["brdrdash"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
-		tableBorderStyle = "dashed"
-		return nil
-	}
-	rules["brdrw"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
-		if act.Para != nil {
-			tableBorderWidth = *act.Para
-		}
-		return nil
-	}
-	rules["brdrcf"] = func(_ rtf.Header, _ rtf.StackType, act rtf.Action) error {
-		if act.Para != nil {
-			// This index is 1-based in RTF, but our colorTable is 0-based.
-			// However, the first color in the table is often a dummy/auto color,
-			// so using the index directly often works out. We'll assume it's correct.
-			tableBorderColorIndex = *act.Para
-		}
-		return nil
-	}
+	// The border style, width, and color rules are now combined with the paragraph border rules.
 
 	// Add a rule for \pard, which resets to default paragraph properties.
 	// In many RTF documents, this implicitly resets all character formatting,
