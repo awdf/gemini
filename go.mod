@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/aiq/go-rtf v0.0.0-20250119212555-f57508a7d581
+	github.com/fumiama/go-docx v0.0.0
 	github.com/go-gst/go-glib v1.4.0
 	github.com/go-gst/go-gst v1.4.0
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
@@ -16,6 +17,7 @@ require (
 require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.4 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/fumiama/imgsz v0.0.2 // indirect
 	github.com/gen2brain/shm v0.1.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -63,3 +65,6 @@ require (
 
 // Replace the remote go-rtf module with your local, fixed version.
 replace github.com/aiq/go-rtf => ./internal/libs/go-rtf
+
+// Replace the remote go-docx module with your local, forked version.
+replace github.com/fumiama/go-docx => ./internal/libs/go-docx

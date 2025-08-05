@@ -141,9 +141,8 @@ func parseFlags() *CliFlags {
 	return flags
 }
 
-// testRtfAgent is a temporary function for development to test the RTF agent independently.
-func testRtfAgent(testFilePath string) {
-	log.Println("--- RUNNING RTF AGENT TEST ---")
+func testDocxAgent(testFilePath string) {
+	log.Println("--- RUNNING DOCX AGENT TEST ---")
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
@@ -157,15 +156,14 @@ func testRtfAgent(testFilePath string) {
 	toolset := agents.NewToolSet()
 
 	// Manually register the agent for this test run.
-	// This mimics the application's startup process for a single agent.
-	agents.Registerate(ctx, client, toolset, agents.AgentRtfReaderName)
+	agents.Registerate(ctx, client, toolset, agents.AgentDocxReaderName)
 
-	agentCallable, ok := agents.AgentRegistry[agents.AgentRtfReaderName]
+	agentCallable, ok := agents.AgentRegistry[agents.AgentDocxReaderName]
 	if !ok {
-		log.Fatalf("Failed to register or find RTF reader agent in registry.")
+		log.Fatalf("Failed to register or find DOCX reader agent in registry.")
 	}
 
-	rtfAgent, ok := agentCallable.(interface {
+	docxAgent, ok := agentCallable.(interface {
 		Handle(*genai.FunctionCall) *genai.FunctionResponse
 	})
 	if !ok {
@@ -173,36 +171,36 @@ func testRtfAgent(testFilePath string) {
 	}
 
 	testCall := &genai.FunctionCall{
-		Name: "convertRtfToHtml",
+		Name: "readDocx",
 		Args: map[string]any{
 			"path": testFilePath,
 		},
 	}
 
-	response := rtfAgent.Handle(testCall)
+	response := docxAgent.Handle(testCall)
 	if response == nil {
-		log.Fatalf("RTF agent did not handle the call.")
+		log.Fatalf("DOCX agent did not handle the call.")
 	}
 
 	if response.Response != nil {
 		if errVal, ok := response.Response["error"]; ok {
-			log.Fatalf("RTF agent returned an error: %v", errVal)
+			log.Fatalf("DOCX agent returned an error: %v", errVal)
 		}
-		if htmlContent, ok := response.Response["html_content"].(string); ok {
-			log.Println("--- RTF Conversion Successful ---")
-			outputFile := "convert.html"
-			err := os.WriteFile(outputFile, []byte(htmlContent), 0o644)
+		if content, ok := response.Response["content"].(string); ok {
+			log.Println("--- DOCX Read Successful ---")
+			outputFile := "docx_test_output.txt"
+			err := os.WriteFile(outputFile, []byte(content), 0o644)
 			if err != nil {
 				log.Fatalf("Failed to write test output to %s: %v", outputFile, err)
 			}
-			log.Printf("HTML output saved to %s", outputFile)
+			log.Printf("Content from DOCX saved to %s", outputFile)
 		} else {
-			log.Printf("RTF agent response did not contain html_content: %+v", response.Response)
+			log.Printf("DOCX agent response did not contain content: %+v", response.Response)
 		}
 	} else {
-		log.Fatalf("RTF agent returned a nil response map.")
+		log.Fatalf("DOCX agent returned a nil response map.")
 	}
-	log.Println("--- FINISHED RTF AGENT TEST ---")
+	log.Println("--- FINISHED DOCX AGENT TEST ---")
 }
 
 func main() {
@@ -211,23 +209,23 @@ func main() {
 
 	config.Load(flags.ConfigPath)
 
-	// // Command-line flags override config file settings for convenience.
-	// // --- START OF USER REQUESTED TEST BLOCK ---
-	// // This block is for development purposes to test the RTF agent.
-	// // It can be removed once testing is complete.
+	// Command-line flags override config file settings for convenience.
 
-	// // testFilePath := "/home/awdf/Workspace/portfolio/Dmytro Tarielkin Profile.rtf"
-	// testFilePath := "/home/awdf/Workspace/portfolio/CV_ENG.rtf"
+	// --- START OF USER REQUESTED TEST BLOCK ---
+	// This block is for development purposes to test the DOCX agent.
+	// It can be removed once testing is complete.
 
-	// if _, err := os.Stat(testFilePath); err == nil {
-	// 	// Only run the test if the file exists to avoid crashing on other machines.
-	// 	testRtfAgent(testFilePath)
-	// 	// Exit after test to prevent running the full application.
-	// 	os.Exit(0)
-	// } else {
-	// 	log.Printf("Skipping RTF agent test: test file not found at %s.", testFilePath)
-	// }
-	// // --- END OF USER REQUESTED TEST BLOCK ---
+	testFilePath := "/home/awdf/Workspace/portfolio/CV_ENG.docx"
+
+	if _, err := os.Stat(testFilePath); err == nil {
+		// Only run the test if the file exists to avoid crashing on other machines.
+		testDocxAgent(testFilePath)
+		// Exit after test to prevent running the full application.
+		os.Exit(0)
+	} else {
+		log.Printf("Skipping DOCX agent test: test file not found at %s.", testFilePath)
+	}
+	// --- END OF USER REQUESTED TEST BLOCK ---
 
 	if flags.Voice {
 		config.C.AI.VoiceEnabled = true

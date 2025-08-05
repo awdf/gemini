@@ -102,6 +102,7 @@ func NewAI(
 		agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
 		agents.Registerate(ctx, client, toolset, agents.AgentRtfReaderName)
 		agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
+		agents.Registerate(ctx, client, toolset, agents.AgentDocxReaderName)
 	}
 
 	ai := &AI{
