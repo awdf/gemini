@@ -2,8 +2,12 @@ package agents
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"html"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,7 +35,7 @@ type DocxAgent struct {
 func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *DocxAgent {
 	readDocxFunc := &genai.FunctionDeclaration{
 		Name:        "readDocx",
-		Description: "DOCX Reader: Reads the content of a .docx file from the workspace and returns it as text. You MUST use this tool to read the content of any DOCX file before you can analyze or summarize it.",
+		Description: "DOCX Reader: Reads the content of a .docx file from the workspace and returns it as HTML. You MUST use this tool to read the content of any DOCX file before you can analyze or summarize it.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
@@ -73,17 +77,18 @@ func (a *DocxAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
 	}
 
-	content, err := a.readDocxFile(path)
+	htmlContent, err := a.convertDocxToHTML(path)
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
-	return a.CreateFunctionResponse(call, map[string]any{"content": content}, nil)
+	return a.CreateFunctionResponse(call, map[string]any{"content": htmlContent}, nil)
 }
 
-// readDocxFile reads the content of a docx file from the configured workspace.
-// Specification: https://pkg.go.dev/github.com/fumiama/go-docx
-func (a *DocxAgent) readDocxFile(path string) (string, error) {
+// convertDocxToHTML reads a .docx file and converts its content to an HTML string.
+// It handles paragraphs, text formatting (bold, italic, etc.), hyperlinks, tables, and images.
+// DOCX Format Specification (ECMA-376): https://www.ecma-international.org/publications-and-standards/standards/ecma-376/
+func (a *DocxAgent) convertDocxToHTML(path string) (string, error) {
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return "", err
@@ -109,70 +114,155 @@ func (a *DocxAgent) readDocxFile(path string) (string, error) {
 	}
 
 	var textBuilder strings.Builder
+	// Add a basic stylesheet for readability.
+	textBuilder.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family: sans-serif; line-height: 1.4;} table{border-collapse: collapse; width: 100%; margin-bottom: 1em;} td,th{border: 1px solid #dddddd; text-align: left; padding: 8px;} tr:nth-child(even){background-color: #f2f2f2;}</style></head><body>`)
 	for _, it := range doc.Document.Body.Items {
-		a.Write(&textBuilder, doc, it)
+		a.writeHTMLNode(&textBuilder, doc, it)
 	}
-
+	textBuilder.WriteString("</body></html>")
 	return textBuilder.String(), nil
 }
 
-func (a *DocxAgent) Write(textBuilder *strings.Builder, doc *docx.Docx, item interface{}) {
+// writeHTMLNode recursively traverses the DOCX document tree and writes corresponding HTML to the builder.
+func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, item interface{}) {
 	switch v := item.(type) {
 	case *docx.Paragraph:
-		// A paragraph can contain simple text runs and complex fields like hyperlinks.
-		// We need to iterate through its items to correctly extract all text.
-
+		textBuilder.WriteString("<p>")
 		for _, pItem := range v.Children {
-			a.Write(textBuilder, doc, pItem)
+			a.writeHTMLNode(textBuilder, doc, pItem)
 		}
-		textBuilder.WriteByte('\n')
+		textBuilder.WriteString("</p>\n")
 	case *docx.Table:
-		// For tables, the default String() method is generally sufficient.
-		textBuilder.WriteString(v.String())
-		textBuilder.WriteString("\n")
+		// The library's String() method provides a plain-text representation.
+		// While not ideal for full HTML conversion, it's a robust fallback.
+		// We wrap it in <pre> to preserve some of the spacing.
+		textBuilder.WriteString("<table><tr><td><pre>")
+		textBuilder.WriteString(html.EscapeString(v.String()))
+		textBuilder.WriteString("</pre></td></tr></table>\n")
 	case *docx.Run:
-		// A Run is a container for elements with the same properties.
-		// The visible text is in its children (e.g., *docx.Text).
-		// We should not process InstrText here, as it contains field codes, not display text.
-		for _, child := range v.Children {
-			a.Write(textBuilder, doc, child)
+		var tags []string
+		var styles []string
+		if p := v.RunProperties; p != nil {
+			if p.Bold != nil {
+				tags = append(tags, "b")
+			}
+			if p.Italic != nil {
+				tags = append(tags, "i")
+			}
+			if p.Underline != nil && p.Underline.Val != "none" {
+				tags = append(tags, "u")
+			}
+			if p.Strike != nil {
+				tags = append(tags, "s")
+			}
+			if p.Color != nil {
+				styles = append(styles, "color:#"+p.Color.Val)
+			}
+			if p.Size != nil {
+				// Size is in half-points. Convert to points for CSS.
+				sizeVal, err := strconv.Atoi(p.Size.Val)
+				if err == nil {
+					styles = append(styles, fmt.Sprintf("font-size:%.1fpt", float64(sizeVal)/2.0))
+				}
+			}
 		}
+
+		// Open tags
+		for _, tag := range tags {
+			textBuilder.WriteString("<" + tag + ">")
+		}
+		if len(styles) > 0 {
+			textBuilder.WriteString(fmt.Sprintf(`<span style="%s">`, strings.Join(styles, "; ")))
+		}
+
+		for _, child := range v.Children {
+			a.writeHTMLNode(textBuilder, doc, child)
+		}
+
+		// Close tags in reverse order
+		if len(styles) > 0 {
+			textBuilder.WriteString("</span>")
+		}
+		for i := len(tags) - 1; i >= 0; i-- {
+			textBuilder.WriteString("</" + tags[i] + ">")
+		}
+
 	case *docx.Hyperlink:
-		// The hyperlink's display text is contained within its Run element.
-		// We process the Run by calling the Write method recursively, which will
-		// in turn handle the children of the Run (like *docx.Text).
-		a.Write(textBuilder, doc, &v.Run)
 		link, err := doc.ReferTarget(v.ID)
 		if err == nil {
-			textBuilder.WriteString(" (")
-			textBuilder.WriteString(link)
-			textBuilder.WriteByte(')')
+			textBuilder.WriteString(fmt.Sprintf(`<a href="%s" target="_blank">`, html.EscapeString(link)))
 		}
+		a.writeHTMLNode(textBuilder, doc, &v.Run)
+		if err == nil {
+			textBuilder.WriteString("</a>")
+		}
+
 	case *docx.Text:
-		textBuilder.WriteString(v.Text)
+		textBuilder.WriteString(html.EscapeString(v.Text))
 	case *docx.Tab:
-		textBuilder.WriteByte('\t')
+		textBuilder.WriteString("&emsp;")
 	case *docx.BarterRabbet:
-		// Handle different types of breaks. For text extraction,
-		// page breaks can be represented distinctly.
 		if v.Type == "page" {
-			textBuilder.WriteString("\n\n--- Page Break ---\n\n")
+			textBuilder.WriteString(`<hr style="page-break-after:always; visibility:hidden;">`)
 		} else {
-			// This covers "textWrapping" (a simple line break), "column" breaks, and default cases.
-			textBuilder.WriteByte('\n')
+			textBuilder.WriteString("<br>")
 		}
 	case *docx.Drawing:
-		if v.Inline != nil {
-			textBuilder.WriteString(v.Inline.String())
-		}
-		if v.Anchor != nil {
-			textBuilder.WriteString(v.Anchor.String())
-		}
+		a.writeImage(textBuilder, doc, v)
 	default:
-		// Fallback for any other printable types.
-		if stringer, ok := v.(fmt.Stringer); ok {
-			textBuilder.WriteString(stringer.String())
-			textBuilder.WriteString("\n")
+		// For unhandled types, we can log them for future development.
+		a.Printf("Unhandled DOCX node type: %T", v)
+	}
+}
+
+// writeImage extracts image data from the DOCX package and writes an <img> tag.
+func (a *DocxAgent) writeImage(textBuilder *strings.Builder, doc *docx.Docx, drawing *docx.Drawing) {
+	var relID string
+	var descr string
+
+	// Extract relationship ID and description from either inline or anchor drawings.
+	if drawing.Inline != nil && drawing.Inline.Graphic != nil && drawing.Inline.Graphic.GraphicData != nil && drawing.Inline.Graphic.GraphicData.Pic != nil {
+		pic := drawing.Inline.Graphic.GraphicData.Pic
+		if pic.BlipFill != nil && pic.BlipFill.Blip.Embed != "" {
+			relID = pic.BlipFill.Blip.Embed
+		}
+		if drawing.Inline.DocPr != nil {
+			descr = drawing.Inline.DocPr.Name
+		}
+	} else if drawing.Anchor != nil && drawing.Anchor.Graphic != nil && drawing.Anchor.Graphic.GraphicData != nil && drawing.Anchor.Graphic.GraphicData.Pic != nil {
+		pic := drawing.Anchor.Graphic.GraphicData.Pic
+		if pic.BlipFill != nil && pic.BlipFill.Blip.Embed != "" {
+			relID = pic.BlipFill.Blip.Embed
+		}
+		if drawing.Anchor.DocPr != nil {
+			descr = drawing.Anchor.DocPr.Name
 		}
 	}
+
+	if relID == "" {
+		textBuilder.WriteString("[Unsupported Drawing Type]")
+		return
+	}
+
+	// Find the relationship target (e.g., "media/image1.png") using the library's helper.
+	imgTarget, err := doc.ReferTarget(relID)
+	if err != nil {
+		textBuilder.WriteString(fmt.Sprintf("[Image not found for relID: %s]", relID))
+		return
+	}
+
+	// The library provides a direct way to access media data.
+	// The target is usually prefixed with "media/", which we need to strip.
+	media := doc.Media(strings.TrimPrefix(imgTarget, "media/"))
+	if media != nil && len(media.Data) > 0 {
+		encoded := base64.StdEncoding.EncodeToString(media.Data)
+		mimeType := http.DetectContentType(media.Data)
+		src := fmt.Sprintf("data:%s;base64,%s", mimeType, encoded)
+		alt := html.EscapeString(descr)
+		textBuilder.WriteString(fmt.Sprintf(`<img src="%s" alt="%s" style="max-width:100%%; height:auto;" />`, src, alt))
+		return // Success
+	}
+
+	// Fallback if the image could not be read.
+	textBuilder.WriteString(fmt.Sprintf("[Image: %s]", html.EscapeString(descr)))
 }

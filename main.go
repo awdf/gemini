@@ -188,7 +188,7 @@ func testDocxAgent(testFilePath string) {
 		}
 		if content, ok := response.Response["content"].(string); ok {
 			log.Println("--- DOCX Read Successful ---")
-			outputFile := "docx_test_output.txt"
+			outputFile := "docx_test_output.html"
 			err := os.WriteFile(outputFile, []byte(content), 0o644)
 			if err != nil {
 				log.Fatalf("Failed to write test output to %s: %v", outputFile, err)
