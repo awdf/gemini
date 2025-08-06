@@ -110,13 +110,69 @@ func (a *DocxAgent) readDocxFile(path string) (string, error) {
 
 	var textBuilder strings.Builder
 	for _, it := range doc.Document.Body.Items {
-		// The items in the body are of type interface{}. We must use a type assertion
-		// to check if an item implements the fmt.Stringer interface (which provides the String() method).
-		if stringer, ok := it.(fmt.Stringer); ok {
-			textBuilder.WriteString(stringer.String())
-			textBuilder.WriteString("\n") // Add a newline to separate block elements
-		}
+		a.Write(&textBuilder, doc, it)
 	}
 
 	return textBuilder.String(), nil
+}
+
+func (a *DocxAgent) Write(textBuilder *strings.Builder, doc *docx.Docx, item interface{}) {
+	switch v := item.(type) {
+	case *docx.Paragraph:
+		// A paragraph can contain simple text runs and complex fields like hyperlinks.
+		// We need to iterate through its items to correctly extract all text.
+
+		for _, pItem := range v.Children {
+			a.Write(textBuilder, doc, pItem)
+		}
+		textBuilder.WriteByte('\n')
+	case *docx.Table:
+		// For tables, the default String() method is generally sufficient.
+		textBuilder.WriteString(v.String())
+		textBuilder.WriteString("\n")
+	case *docx.Run:
+		// A Run is a container for elements with the same properties.
+		// The visible text is in its children (e.g., *docx.Text).
+		// We should not process InstrText here, as it contains field codes, not display text.
+		for _, child := range v.Children {
+			a.Write(textBuilder, doc, child)
+		}
+	case *docx.Hyperlink:
+		// The hyperlink's display text is contained within its Run element.
+		// We process the Run by calling the Write method recursively, which will
+		// in turn handle the children of the Run (like *docx.Text).
+		a.Write(textBuilder, doc, &v.Run)
+		link, err := doc.ReferTarget(v.ID)
+		if err == nil {
+			textBuilder.WriteString(" (")
+			textBuilder.WriteString(link)
+			textBuilder.WriteByte(')')
+		}
+	case *docx.Text:
+		textBuilder.WriteString(v.Text)
+	case *docx.Tab:
+		textBuilder.WriteByte('\t')
+	case *docx.BarterRabbet:
+		// Handle different types of breaks. For text extraction,
+		// page breaks can be represented distinctly.
+		if v.Type == "page" {
+			textBuilder.WriteString("\n\n--- Page Break ---\n\n")
+		} else {
+			// This covers "textWrapping" (a simple line break), "column" breaks, and default cases.
+			textBuilder.WriteByte('\n')
+		}
+	case *docx.Drawing:
+		if v.Inline != nil {
+			textBuilder.WriteString(v.Inline.String())
+		}
+		if v.Anchor != nil {
+			textBuilder.WriteString(v.Anchor.String())
+		}
+	default:
+		// Fallback for any other printable types.
+		if stringer, ok := v.(fmt.Stringer); ok {
+			textBuilder.WriteString(stringer.String())
+			textBuilder.WriteString("\n")
+		}
+	}
 }
