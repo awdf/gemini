@@ -186,7 +186,7 @@ func testDocxAgent(testFilePath string) {
 		if errVal, ok := response.Response["error"]; ok {
 			log.Fatalf("DOCX agent returned an error: %v", errVal)
 		}
-		if content, ok := response.Response["content"].(string); ok {
+		if content, ok := response.Response["html_content"].(string); ok {
 			log.Println("--- DOCX Read Successful ---")
 			outputFile := "docx_test_output.html"
 			err := os.WriteFile(outputFile, []byte(content), 0o644)
@@ -195,7 +195,7 @@ func testDocxAgent(testFilePath string) {
 			}
 			log.Printf("Content from DOCX saved to %s", outputFile)
 		} else {
-			log.Printf("DOCX agent response did not contain content: %+v", response.Response)
+			log.Printf("DOCX agent response did not contain html_content: %+v", response.Response)
 		}
 	} else {
 		log.Fatalf("DOCX agent returned a nil response map.")

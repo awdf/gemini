@@ -82,7 +82,7 @@ func (a *DocxAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
-	return a.CreateFunctionResponse(call, map[string]any{"content": htmlContent}, nil)
+	return a.CreateFunctionResponse(call, map[string]any{"html_content": htmlContent}, nil)
 }
 
 // convertDocxToHTML reads a .docx file and converts its content to an HTML string.
@@ -116,33 +116,135 @@ func (a *DocxAgent) convertDocxToHTML(path string) (string, error) {
 	var textBuilder strings.Builder
 	// Add a basic stylesheet for readability.
 	textBuilder.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family: sans-serif; line-height: 1.4;} table{border-collapse: collapse; width: 100%; margin-bottom: 1em;} td,th{border: 1px solid #dddddd; text-align: left; padding: 8px;} tr:nth-child(even){background-color: #f2f2f2;}</style></head><body>`)
+
+	var isListActive bool
 	for _, it := range doc.Document.Body.Items {
-		a.writeHTMLNode(&textBuilder, doc, it)
+		// Check if the current item is a paragraph that's part of a list.
+		isListItem := false
+		if p, ok := it.(*docx.Paragraph); ok && p.Properties != nil && p.Properties.NumProperties != nil {
+			isListItem = true
+		}
+
+		// Manage the opening and closing of the <ul> tag.
+		if isListItem {
+			if !isListActive {
+				textBuilder.WriteString("<ul>\n")
+				isListActive = true
+			}
+		} else {
+			if isListActive {
+				textBuilder.WriteString("</ul>\n")
+				isListActive = false
+			}
+		}
+		// Top-level items have no inherited run properties.
+		a.writeHTMLNode(&textBuilder, doc, it, nil)
+	}
+	if isListActive {
+		textBuilder.WriteString("</ul>\n")
 	}
 	textBuilder.WriteString("</body></html>")
 	return textBuilder.String(), nil
 }
 
 // writeHTMLNode recursively traverses the DOCX document tree and writes corresponding HTML to the builder.
-func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, item interface{}) {
+// pRunProps represents the run properties inherited from the parent paragraph.
+func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, item interface{}, pRunProps *docx.RunProperties) {
 	switch v := item.(type) {
 	case *docx.Paragraph:
-		textBuilder.WriteString("<p>")
-		for _, pItem := range v.Children {
-			a.writeHTMLNode(textBuilder, doc, pItem)
+		var pStyles []string
+		var defaultRPr *docx.RunProperties
+		isListItem := false
+
+		if p := v.Properties; p != nil {
+			// Check if this paragraph is a list item.
+			if p.NumProperties != nil {
+				isListItem = true
+			}
+
+			// Extract paragraph-level styles (alignment, indentation).
+			if p.Justification != nil {
+				textAlign := p.Justification.Val
+				if textAlign == "both" {
+					textAlign = "justify"
+				}
+				pStyles = append(pStyles, "text-align:"+textAlign)
+			}
+			if p.Ind != nil { // The compiler indicates Left and FirstLine are ints, and Right is undefined.
+				if p.Ind.Left != 0 {
+					pStyles = append(pStyles, fmt.Sprintf("padding-left:%.1fpt", float64(p.Ind.Left)/20.0))
+				}
+				// Right indent handling removed as p.Ind.Right is undefined in the library version used.
+				if p.Ind.FirstLine != 0 {
+					pStyles = append(pStyles, fmt.Sprintf("text-indent:%.1fpt", float64(p.Ind.FirstLine)/20.0))
+				}
+			}
+			// Extract the default run properties for this paragraph, which children will inherit.
+			if p.RunProperties != nil {
+				defaultRPr = p.RunProperties
+			}
 		}
-		textBuilder.WriteString("</p>\n")
+
+		styleAttr := ""
+		if len(pStyles) > 0 {
+			styleAttr = fmt.Sprintf(` style="%s"`, strings.Join(pStyles, "; "))
+		}
+
+		var openTag, closeTag string
+		if isListItem {
+			openTag = fmt.Sprintf("<li%s>", styleAttr)
+			closeTag = "</li>\n"
+		} else {
+			openTag = fmt.Sprintf("<p%s>", styleAttr)
+			closeTag = "</p>\n"
+		}
+
+		textBuilder.WriteString(openTag)
+		for _, pItem := range v.Children {
+			a.writeHTMLNode(textBuilder, doc, pItem, defaultRPr)
+		}
+		textBuilder.WriteString(closeTag)
 	case *docx.Table:
 		// The library's String() method provides a plain-text representation.
-		// While not ideal for full HTML conversion, it's a robust fallback.
-		// We wrap it in <pre> to preserve some of the spacing.
-		textBuilder.WriteString("<table><tr><td><pre>")
-		textBuilder.WriteString(html.EscapeString(v.String()))
-		textBuilder.WriteString("</pre></td></tr></table>\n")
+		// We can now render it properly as HTML.
+		textBuilder.WriteString("<table>\n")
+		for _, row := range v.TableRows {
+			textBuilder.WriteString("  <tr>\n")
+			for _, cell := range row.TableCells {
+				textBuilder.WriteString("    <td>")
+				var isListInCellActive bool
+				for _, p := range cell.Paragraphs {
+					isListItem := p.Properties != nil && p.Properties.NumProperties != nil
+					if isListItem {
+						if !isListInCellActive {
+							textBuilder.WriteString("<ul>\n")
+							isListInCellActive = true
+						}
+					} else {
+						if isListInCellActive {
+							textBuilder.WriteString("</ul>\n")
+							isListInCellActive = false
+						}
+					}
+					a.writeHTMLNode(textBuilder, doc, p, nil)
+				}
+				if isListInCellActive {
+					textBuilder.WriteString("</ul>\n")
+				}
+				for _, t := range cell.Tables {
+					a.writeHTMLNode(textBuilder, doc, t, nil)
+				}
+				textBuilder.WriteString("</td>\n")
+			}
+			textBuilder.WriteString("  </tr>\n")
+		}
+		textBuilder.WriteString("</table>\n")
 	case *docx.Run:
 		var tags []string
 		var styles []string
-		if p := v.RunProperties; p != nil {
+
+		// Merge the inherited paragraph properties with the run's specific properties.
+		if p := mergeRunProperties(pRunProps, v.RunProperties); p != nil {
 			if p.Bold != nil {
 				tags = append(tags, "b")
 			}
@@ -157,6 +259,12 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 			}
 			if p.Color != nil {
 				styles = append(styles, "color:#"+p.Color.Val)
+			}
+			if p.Fonts != nil {
+				// The ascii font is the most common one for western text.
+				if p.Fonts.ASCII != "" {
+					styles = append(styles, fmt.Sprintf("font-family:'%s'", p.Fonts.ASCII))
+				}
 			}
 			if p.Size != nil {
 				// Size is in half-points. Convert to points for CSS.
@@ -176,7 +284,8 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		}
 
 		for _, child := range v.Children {
-			a.writeHTMLNode(textBuilder, doc, child)
+			// Children of a run (like Text or Tab) inherit the same properties.
+			a.writeHTMLNode(textBuilder, doc, child, pRunProps)
 		}
 
 		// Close tags in reverse order
@@ -192,7 +301,7 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		if err == nil {
 			textBuilder.WriteString(fmt.Sprintf(`<a href="%s" target="_blank">`, html.EscapeString(link)))
 		}
-		a.writeHTMLNode(textBuilder, doc, &v.Run)
+		a.writeHTMLNode(textBuilder, doc, &v.Run, pRunProps)
 		if err == nil {
 			textBuilder.WriteString("</a>")
 		}
@@ -208,11 +317,73 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 			textBuilder.WriteString("<br>")
 		}
 	case *docx.Drawing:
-		a.writeImage(textBuilder, doc, v)
+		a.writeImage(textBuilder, doc, v) // Images don't inherit text run properties.
 	default:
 		// For unhandled types, we can log them for future development.
 		a.Printf("Unhandled DOCX node type: %T", v)
 	}
+}
+
+// mergeRunProperties combines inherited properties from a paragraph with a run's specific properties.
+// The run's own properties take precedence over the inherited ones.
+func mergeRunProperties(paraProps, runProps *docx.RunProperties) *docx.RunProperties {
+	// If there are no properties at all, return nil.
+	if paraProps == nil && runProps == nil {
+		return nil
+	}
+
+	// Create a new, empty properties struct to hold the merged result.
+	// This is crucial to prevent state from leaking between paragraphs.
+	merged := &docx.RunProperties{}
+
+	// Establish a base and an override. The run's properties override the paragraph's.
+	base := paraProps
+	if base == nil {
+		base = &docx.RunProperties{} // Use an empty struct to avoid nil checks later.
+	}
+	override := runProps
+	if override == nil {
+		override = &docx.RunProperties{} // Use an empty struct to avoid nil checks later.
+	}
+
+	// For each property, check the override first, then fall back to the base.
+	if override.Bold != nil {
+		merged.Bold = override.Bold
+	} else {
+		merged.Bold = base.Bold
+	}
+	if override.Italic != nil {
+		merged.Italic = override.Italic
+	} else {
+		merged.Italic = base.Italic
+	}
+	if override.Underline != nil {
+		merged.Underline = override.Underline
+	} else {
+		merged.Underline = base.Underline
+	}
+	if override.Strike != nil {
+		merged.Strike = override.Strike
+	} else {
+		merged.Strike = base.Strike
+	}
+	if override.Color != nil {
+		merged.Color = override.Color
+	} else {
+		merged.Color = base.Color
+	}
+	if override.Fonts != nil {
+		merged.Fonts = override.Fonts
+	} else {
+		merged.Fonts = base.Fonts
+	}
+	if override.Size != nil {
+		merged.Size = override.Size
+	} else {
+		merged.Size = base.Size
+	}
+
+	return merged
 }
 
 // writeImage extracts image data from the DOCX package and writes an <img> tag.
