@@ -48,7 +48,7 @@ Thoughts = false # Turn off(false)
 
 # Tools options
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
-EnableStandardTools = false # Set to false to disable Google Search and URL Context tools.
+EnableStandardTools = true # Set to false to disable Google Search and URL Context tools.
 URLContextDisabled = false # Set to true to disable URL Context tool.
 EnableCodeExecution = false # Set to false to disable code execution tool. Not recomended to use with Function calling.
 EnableFunctionCalling = true # Set to false to disable function tool calling. Not recomended to use with Code execution.
@@ -126,5 +126,5 @@ BufferTimeUs = 500000# Physical sound device for input (Default system device by
 # List devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
 #
 # Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
-# Device = "alsa_output.usb-JBL_Quantum_400_0079CM-0265355EM-00.analog-stereo.monitor"
-Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"
+Device = "alsa_output.usb-JBL_Quantum_400_0079CM-0265355EM-00.analog-stereo.monitor"
+# Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"

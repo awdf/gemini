@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/asaskevich/EventBus"
@@ -170,36 +172,49 @@ func testDocxAgent(testFilePath string) {
 		log.Fatalf("Agent does not implement the required Handle method.")
 	}
 
-	testCall := &genai.FunctionCall{
-		Name: "readDocx",
-		Args: map[string]any{
-			"path": testFilePath,
-		},
-	}
+	// handleAgentResponse is a helper to reduce code duplication for testing agent tool calls.
+	handleAgentResponse := func(call *genai.FunctionCall, toolName, contentKey, outputFileName string) {
+		log.Printf("\n--- Testing DOCX tool '%s' ---", toolName)
 
-	response := docxAgent.Handle(testCall)
-	if response == nil {
-		log.Fatalf("DOCX agent did not handle the call.")
-	}
-
-	if response.Response != nil {
-		if errVal, ok := response.Response["error"]; ok {
-			log.Fatalf("DOCX agent returned an error: %v", errVal)
+		response := docxAgent.Handle(call)
+		if response == nil {
+			log.Fatalf("DOCX agent did not handle the '%s' call.", toolName)
 		}
-		if content, ok := response.Response["html_content"].(string); ok {
-			log.Println("--- DOCX Read Successful ---")
-			outputFile := "docx_test_output.html"
-			err := os.WriteFile(outputFile, []byte(content), 0o644)
-			if err != nil {
-				log.Fatalf("Failed to write test output to %s: %v", outputFile, err)
+
+		if response.Response != nil {
+			if errVal, ok := response.Response["error"]; ok {
+				log.Fatalf("DOCX agent '%s' returned an error: %v", toolName, errVal)
 			}
-			log.Printf("Content from DOCX saved to %s", outputFile)
+			if content, ok := response.Response[contentKey].(string); ok {
+				log.Printf("--- DOCX tool '%s' executed successfully ---", toolName)
+				err := os.WriteFile(outputFileName, []byte(content), 0o644)
+				if err != nil {
+					log.Fatalf("Failed to write test output to %s: %v", outputFileName, err)
+				}
+				outputType := strings.ToUpper(strings.TrimPrefix(filepath.Ext(outputFileName), "."))
+				log.Printf("%s content from DOCX saved to %s", outputType, outputFileName)
+			} else {
+				log.Printf("DOCX agent '%s' response did not contain key '%s': %+v", toolName, contentKey, response.Response)
+			}
 		} else {
-			log.Printf("DOCX agent response did not contain html_content: %+v", response.Response)
+			log.Fatalf("DOCX agent '%s' returned a nil response map.", toolName)
 		}
-	} else {
-		log.Fatalf("DOCX agent returned a nil response map.")
 	}
+
+	// --- Test HTML Conversion ---
+	htmlTestCall := &genai.FunctionCall{
+		Name: "readDocx",
+		Args: map[string]any{"path": testFilePath},
+	}
+	handleAgentResponse(htmlTestCall, "readDocx", "html_content", "docx_test_output.html")
+
+	// --- Test XML Extraction ---
+	xmlTestCall := &genai.FunctionCall{
+		Name: "getDocxXML",
+		Args: map[string]any{"path": testFilePath},
+	}
+	handleAgentResponse(xmlTestCall, "getDocxXML", "xml_content", "docx_test_output.xml")
+
 	log.Println("--- FINISHED DOCX AGENT TEST ---")
 }
 

@@ -1,10 +1,12 @@
 package agents
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -47,8 +49,23 @@ func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 			Required: []string{"path"},
 		},
 	}
+	getXMLFunc := &genai.FunctionDeclaration{
+		Name:        "getDocxXML",
+		Description: "DOCX Debugger: Reads the raw 'word/document.xml' content from a .docx file. This is useful for debugging parsing issues by inspecting the underlying XML structure.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"path": {
+					Type:        genai.TypeString,
+					Description: "The path of the .docx file within the workspace directory.",
+				},
+			},
+			Required: []string{"path"},
+		},
+	}
+
 	// Add this function to the toolset provided by the caller.
-	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, readDocxFunc)
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, readDocxFunc, getXMLFunc)
 
 	// Create the base agent.
 	agentConfig := AgentConfig{
@@ -68,21 +85,94 @@ func (a *DocxAgent) WarmUp() time.Duration {
 
 // Handle processes a function call for the docx agent.
 func (a *DocxAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
-	if call.Name != "readDocx" {
+	switch call.Name {
+	case "readDocx":
+		return a.handleReadDocx(call)
+	case "getDocxXML":
+		return a.handleGetDocxXML(call)
+	default:
 		return nil // Not for this agent
 	}
+}
 
+func (a *DocxAgent) handleReadDocx(call *genai.FunctionCall) *genai.FunctionResponse {
 	path, ok := call.Args["path"].(string)
 	if !ok || path == "" {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
 	}
 
-	htmlContent, err := a.convertDocxToHTML(path)
+	// The conversion function now returns the body content as a fragment.
+	htmlBody, err := a.convertDocxToHTML(path)
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
-	return a.CreateFunctionResponse(call, map[string]any{"html_content": htmlContent}, nil)
+	// We wrap the fragment in a full HTML document here, making the conversion
+	// function more reusable.
+	var fullHTML strings.Builder
+	fullHTML.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family: sans-serif; line-height: 1.4;} table{border-collapse: collapse; width: 100%; margin-bottom: 1em;} td,th{border: 1px solid #dddddd; text-align: left; padding: 8px;} tr:nth-child(even){background-color: #f2f2f2;}</style></head><body>`)
+	fullHTML.WriteString(htmlBody)
+	fullHTML.WriteString("</body></html>")
+
+	return a.CreateFunctionResponse(call, map[string]any{"html_content": fullHTML.String()}, nil)
+}
+
+func (a *DocxAgent) handleGetDocxXML(call *genai.FunctionCall) *genai.FunctionResponse {
+	path, ok := call.Args["path"].(string)
+	if !ok || path == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
+	}
+
+	xmlContent, err := a.getDocxMainXML(path)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, err)
+	}
+
+	return a.CreateFunctionResponse(call, map[string]any{"xml_content": xmlContent}, nil)
+}
+
+// getDocxMainXML extracts the raw word/document.xml content from a .docx file.
+func (a *DocxAgent) getDocxMainXML(path string) (string, error) {
+	safePath, err := config.GetSafePath(path)
+	if err != nil {
+		return "", err
+	}
+
+	a.Printf("Extracting XML from .docx file: %s", safePath)
+
+	// A .docx file is a zip archive.
+	r, err := zip.OpenReader(safePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open docx as zip archive: %w", err)
+	}
+	defer r.Close()
+
+	// Find the main document XML file.
+	var docFile *zip.File
+	for _, f := range r.File {
+		if f.Name == "word/document.xml" {
+			docFile = f
+			break
+		}
+	}
+
+	if docFile == nil {
+		return "", fmt.Errorf("could not find 'word/document.xml' in the docx file")
+	}
+
+	// Open and read the XML file.
+	rc, err := docFile.Open()
+	if err != nil {
+		return "", fmt.Errorf("failed to open 'word/document.xml': %w", err)
+	}
+	defer rc.Close()
+
+	xmlBytes, err := io.ReadAll(rc)
+	if err != nil {
+		return "", fmt.Errorf("failed to read 'word/document.xml': %w", err)
+	}
+
+	return string(xmlBytes), nil
 }
 
 // convertDocxToHTML reads a .docx file and converts its content to an HTML string.
@@ -114,8 +204,6 @@ func (a *DocxAgent) convertDocxToHTML(path string) (string, error) {
 	}
 
 	var textBuilder strings.Builder
-	// Add a basic stylesheet for readability.
-	textBuilder.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family: sans-serif; line-height: 1.4;} table{border-collapse: collapse; width: 100%; margin-bottom: 1em;} td,th{border: 1px solid #dddddd; text-align: left; padding: 8px;} tr:nth-child(even){background-color: #f2f2f2;}</style></head><body>`)
 
 	var isListActive bool
 	for _, it := range doc.Document.Body.Items {
@@ -143,7 +231,6 @@ func (a *DocxAgent) convertDocxToHTML(path string) (string, error) {
 	if isListActive {
 		textBuilder.WriteString("</ul>\n")
 	}
-	textBuilder.WriteString("</body></html>")
 	return textBuilder.String(), nil
 }
 
@@ -155,12 +242,44 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		var pStyles []string
 		var defaultRPr *docx.RunProperties
 		isListItem := false
+		headingLevel := 0
 
 		if p := v.Properties; p != nil {
 			// Check if this paragraph is a list item.
 			if p.NumProperties != nil {
 				isListItem = true
 			}
+
+			// --- Start of Improved Heading Detection ---
+
+			// Heuristic 1: Check for a specific style ID. In the provided document,
+			// style "3" is consistently used for headings. This is the most reliable
+			// indicator for this specific file, even without access to the style definitions.
+			if p.Style != nil && p.Style.Val == "3" {
+				headingLevel = 3 // Assume style "3" is Heading 3.
+			}
+
+			// Heuristic 2: If not identified by style ID, check for significant spacing before the paragraph.
+			// This is a good general heuristic for titles or headings that don't use a named style.
+			if headingLevel == 0 && p.Spacing != nil && p.Spacing.Before >= 240 {
+				// This is a strong indicator of a heading. We'll default to <h3>
+				// as it's a common level for subheadings in a CV.
+				headingLevel = 3
+			}
+
+			// Heuristic 3: If still not found, check for formatting cues.
+			// A paragraph with a single, large, bold run is likely a heading.
+			// This is kept as a fallback for unusually formatted documents.
+			if headingLevel == 0 && len(v.Children) == 1 {
+				if run, ok := v.Children[0].(*docx.Run); ok && run.RunProperties != nil {
+					if run.RunProperties.Bold != nil && run.RunProperties.Size != nil {
+						if size, err := strconv.Atoi(run.RunProperties.Size.Val); err == nil && size >= 32 { // 16pt+
+							headingLevel = 2 // Treat as H2
+						}
+					}
+				}
+			}
+			// --- End of Improved Heading Detection ---
 
 			// Extract paragraph-level styles (alignment, indentation).
 			if p.Justification != nil {
@@ -194,6 +313,9 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		if isListItem {
 			openTag = fmt.Sprintf("<li%s>", styleAttr)
 			closeTag = "</li>\n"
+		} else if headingLevel > 0 {
+			openTag = fmt.Sprintf("<h%d%s>", headingLevel, styleAttr)
+			closeTag = fmt.Sprintf("</h%d>\n", headingLevel)
 		} else {
 			openTag = fmt.Sprintf("<p%s>", styleAttr)
 			closeTag = "</p>\n"
@@ -245,16 +367,19 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 
 		// Merge the inherited paragraph properties with the run's specific properties.
 		if p := mergeRunProperties(pRunProps, v.RunProperties); p != nil {
+			// A property is considered "on" if the tag exists and its 'val' attribute
+			// is not explicitly "0" or "false". An empty 'val' also means "on".
+			// For Bold and Italic, the presence of the tag is enough.
 			if p.Bold != nil {
 				tags = append(tags, "b")
 			}
 			if p.Italic != nil {
 				tags = append(tags, "i")
 			}
-			if p.Underline != nil && p.Underline.Val != "none" {
+			if p.Underline != nil && p.Underline.Val != "none" && p.Underline.Val != "false" {
 				tags = append(tags, "u")
 			}
-			if p.Strike != nil {
+			if p.Strike != nil && p.Strike.Val != "0" && p.Strike.Val != "false" {
 				tags = append(tags, "s")
 			}
 			if p.Color != nil {
@@ -336,8 +461,17 @@ func mergeRunProperties(paraProps, runProps *docx.RunProperties) *docx.RunProper
 	// This is crucial to prevent state from leaking between paragraphs.
 	merged := &docx.RunProperties{}
 
+	// Defensively copy the paragraph's properties. This helps isolate the merge
+	// logic from potential bugs in the parser where the same property pointer
+	// might be reused across different paragraphs, causing style leaks.
+	var cleanParaProps *docx.RunProperties
+	if paraProps != nil {
+		p := *paraProps
+		cleanParaProps = &p
+	}
+
 	// Establish a base and an override. The run's properties override the paragraph's.
-	base := paraProps
+	base := cleanParaProps
 	if base == nil {
 		base = &docx.RunProperties{} // Use an empty struct to avoid nil checks later.
 	}
