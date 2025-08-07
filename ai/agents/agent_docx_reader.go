@@ -637,13 +637,6 @@ func (a *DocxAgent) isParagraphEffectivelyEmpty(p *docx.Paragraph) bool {
 func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, item interface{}, pRunProps *docx.RunProperties) {
 	switch v := item.(type) {
 	case *docx.Paragraph:
-		// Paragraphs that don't contain any renderable content (text, images, etc.)
-		// are often used for spacing in DOCX. We skip them to avoid creating
-		// empty <p></p> tags which can cause unwanted vertical space in HTML.
-		if a.isParagraphEffectivelyEmpty(v) {
-			return
-		}
-
 		var pStyles []string
 		var classNames []string
 		var directRPr *docx.RunProperties // Direct formatting from the paragraph itself.
