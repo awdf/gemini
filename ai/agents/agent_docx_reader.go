@@ -63,9 +63,23 @@ func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 			Required: []string{"path"},
 		},
 	}
+	getStylesXMLFunc := &genai.FunctionDeclaration{
+		Name:        "getDocxStylesXML",
+		Description: "DOCX Debugger: Reads the raw 'word/styles.xml' content from a .docx file. This is useful for debugging styling issues.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"path": {
+					Type:        genai.TypeString,
+					Description: "The path of the .docx file within the workspace directory.",
+				},
+			},
+			Required: []string{"path"},
+		},
+	}
 
 	// Add this function to the toolset provided by the caller.
-	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, readDocxFunc, getXMLFunc)
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, readDocxFunc, getXMLFunc, getStylesXMLFunc)
 
 	// Create the base agent.
 	agentConfig := AgentConfig{
@@ -90,6 +104,8 @@ func (a *DocxAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		return a.handleReadDocx(call)
 	case "getDocxXML":
 		return a.handleGetDocxXML(call)
+	case "getDocxStylesXML":
+		return a.handleGetDocxStylesXML(call)
 	default:
 		return nil // Not for this agent
 	}
@@ -102,7 +118,7 @@ func (a *DocxAgent) handleReadDocx(call *genai.FunctionCall) *genai.FunctionResp
 	}
 
 	// The conversion function now returns the body content as a fragment.
-	htmlBody, err := a.convertDocxToHTML(path)
+	htmlBody, cssStyles, err := a.convertDocxToHTML(path)
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
@@ -110,7 +126,13 @@ func (a *DocxAgent) handleReadDocx(call *genai.FunctionCall) *genai.FunctionResp
 	// We wrap the fragment in a full HTML document here, making the conversion
 	// function more reusable.
 	var fullHTML strings.Builder
-	fullHTML.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family: sans-serif; line-height: 1.4;} table{border-collapse: collapse; width: 100%; margin-bottom: 1em;} td,th{border: 1px solid #dddddd; text-align: left; padding: 8px;} tr:nth-child(even){background-color: #f2f2f2;}</style></head><body>`)
+	fullHTML.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+body{font-family: sans-serif; line-height: 1.4;}
+table{border-collapse: collapse; width: 100%; margin-bottom: 1em;}
+td,th{border: 1px solid #dddddd; text-align: left; padding: 8px;}
+tr:nth-child(even){background-color: #f2f2f2;}`)
+	fullHTML.WriteString(cssStyles)
+	fullHTML.WriteString("</style></head><body>")
 	fullHTML.WriteString(htmlBody)
 	fullHTML.WriteString("</body></html>")
 
@@ -131,14 +153,36 @@ func (a *DocxAgent) handleGetDocxXML(call *genai.FunctionCall) *genai.FunctionRe
 	return a.CreateFunctionResponse(call, map[string]any{"xml_content": xmlContent}, nil)
 }
 
+func (a *DocxAgent) handleGetDocxStylesXML(call *genai.FunctionCall) *genai.FunctionResponse {
+	path, ok := call.Args["path"].(string)
+	if !ok || path == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
+	}
+
+	xmlContent, err := a.getDocxStylesXML(path)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, err)
+	}
+
+	return a.CreateFunctionResponse(call, map[string]any{"xml_content": xmlContent}, nil)
+}
+
 // getDocxMainXML extracts the raw word/document.xml content from a .docx file.
 func (a *DocxAgent) getDocxMainXML(path string) (string, error) {
+	return a.extractXMLFileFromDocx(path, "word/document.xml")
+}
+
+func (a *DocxAgent) getDocxStylesXML(path string) (string, error) {
+	return a.extractXMLFileFromDocx(path, "word/styles.xml")
+}
+
+func (a *DocxAgent) extractXMLFileFromDocx(path, xmlFileToExtract string) (string, error) {
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return "", err
 	}
 
-	a.Printf("Extracting XML from .docx file: %s", safePath)
+	a.Printf("Extracting '%s' from .docx file: %s", xmlFileToExtract, safePath)
 
 	// A .docx file is a zip archive.
 	r, err := zip.OpenReader(safePath)
@@ -150,26 +194,26 @@ func (a *DocxAgent) getDocxMainXML(path string) (string, error) {
 	// Find the main document XML file.
 	var docFile *zip.File
 	for _, f := range r.File {
-		if f.Name == "word/document.xml" {
+		if f.Name == xmlFileToExtract {
 			docFile = f
 			break
 		}
 	}
 
 	if docFile == nil {
-		return "", fmt.Errorf("could not find 'word/document.xml' in the docx file")
+		return "", fmt.Errorf("could not find '%s' in the docx file", xmlFileToExtract)
 	}
 
 	// Open and read the XML file.
 	rc, err := docFile.Open()
 	if err != nil {
-		return "", fmt.Errorf("failed to open 'word/document.xml': %w", err)
+		return "", fmt.Errorf("failed to open '%s': %w", xmlFileToExtract, err)
 	}
 	defer rc.Close()
 
 	xmlBytes, err := io.ReadAll(rc)
 	if err != nil {
-		return "", fmt.Errorf("failed to read 'word/document.xml': %w", err)
+		return "", fmt.Errorf("failed to read '%s': %w", xmlFileToExtract, err)
 	}
 
 	return string(xmlBytes), nil
@@ -178,39 +222,92 @@ func (a *DocxAgent) getDocxMainXML(path string) (string, error) {
 // convertDocxToHTML reads a .docx file and converts its content to an HTML string.
 // It handles paragraphs, text formatting (bold, italic, etc.), hyperlinks, tables, and images.
 // DOCX Format Specification (ECMA-376): https://www.ecma-international.org/publications-and-standards/standards/ecma-376/
-func (a *DocxAgent) convertDocxToHTML(path string) (string, error) {
+func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string, err error) {
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	a.Printf("Reading .docx file: %s", safePath)
 
 	readFile, err := os.Open(safePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to open docx file at %s: %w", safePath, err)
+		return "", "", fmt.Errorf("failed to open docx file at %s: %w", safePath, err)
 	}
 	defer readFile.Close()
 
 	fileinfo, err := readFile.Stat()
 	if err != nil {
-		return "", fmt.Errorf("failed to get file info for %s: %w", safePath, err)
+		return "", "", fmt.Errorf("failed to get file info for %s: %w", safePath, err)
 	}
 	size := fileinfo.Size()
 
 	doc, err := docx.Parse(readFile, size)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse docx file at %s: %w", safePath, err)
+		return "", "", fmt.Errorf("failed to parse docx file at %s: %w", safePath, err)
 	}
 
+	// Generate all CSS classes from the styles defined in the document.
+	css = a.generateStyleSheet(doc)
 	var textBuilder strings.Builder
+
+	var bodyWrapperOpen, bodyWrapperClose string
+
+	// --- Start of Page Layout Logic ---
+	// Find the SectPr in the body items to apply page layout styles.
+	var sectPr *docx.SectPr
+	for _, item := range doc.Document.Body.Items {
+		if sp, ok := item.(*docx.SectPr); ok {
+			sectPr = sp
+			break // Assuming one SectPr at the end of the body.
+		}
+	}
+
+	if sectPr != nil {
+		if sectPr.PgSz != nil && sectPr.PgMar != nil {
+			pageWidth := sectPr.PgSz.W
+			leftMargin := sectPr.PgMar.Left
+			rightMargin := sectPr.PgMar.Right
+
+			// Calculate content width in points (1 point = 20 twips)
+			contentWidthTwips := pageWidth - leftMargin - rightMargin
+			if contentWidthTwips > 0 {
+				contentWidthPt := float64(contentWidthTwips) / 20.0
+				bodyWrapperOpen = fmt.Sprintf(`<div style="width: %.2fpt; margin: 0 auto;">`, contentWidthPt)
+				bodyWrapperClose = "</div>"
+			}
+		}
+	}
+
+	// --- End of Page Layout Logic ---
+
+	textBuilder.WriteString(bodyWrapperOpen)
 
 	var isListActive bool
 	for _, it := range doc.Document.Body.Items {
+		// Do not remove tis test block
+		switch it.(type) {
+		case *docx.Paragraph, *docx.Table: // printable
+			fmt.Println(it)
+		}
+
+		// SectPr is for page layout and is handled above; skip it for content rendering.
+		if _, ok := it.(*docx.SectPr); ok {
+			continue
+		}
+
 		// Check if the current item is a paragraph that's part of a list.
 		isListItem := false
-		if p, ok := it.(*docx.Paragraph); ok && p.Properties != nil && p.Properties.NumProperties != nil {
-			isListItem = true
+		if p, ok := it.(*docx.Paragraph); ok && p.Properties != nil {
+			// A paragraph is a list item if it has numbering properties AND it is not a heading.
+			// Headings can sometimes have numbering properties as a formatting artifact.
+			isHeading := false
+			if p.Properties.Style != nil && strings.HasPrefix(p.Properties.Style.Val, "Heading") {
+				isHeading = true
+			}
+			if !isHeading && p.Properties.NumProperties != nil {
+				isListItem = true
+			}
 		}
 
 		// Manage the opening and closing of the <ul> tag.
@@ -231,7 +328,200 @@ func (a *DocxAgent) convertDocxToHTML(path string) (string, error) {
 	if isListActive {
 		textBuilder.WriteString("</ul>\n")
 	}
-	return textBuilder.String(), nil
+
+	textBuilder.WriteString(bodyWrapperClose)
+
+	return textBuilder.String(), css, nil
+}
+
+// escapeCSSClassName cleans a string to be used as a CSS class name.
+func escapeCSSClassName(name string) string {
+	// A simple implementation: replace invalid characters.
+	// A more robust one would handle more edge cases.
+	return strings.NewReplacer(" ", "_", "(", "", ")", "", ":", "").Replace(name)
+}
+
+// convertRPrToCSS converts docx.RunProperties to a slice of CSS style strings.
+func (a *DocxAgent) convertRPrToCSS(p *docx.RunProperties) []string {
+	var styles []string
+	if p == nil {
+		return styles
+	}
+	if p.Bold != nil && p.Bold.Val != "0" && p.Bold.Val != "false" {
+		styles = append(styles, "font-weight: bold")
+	} else if p.Bold != nil {
+		styles = append(styles, "font-weight: normal")
+	}
+	if p.Italic != nil && p.Italic.Val != "0" && p.Italic.Val != "false" {
+		styles = append(styles, "font-style: italic")
+	} else if p.Italic != nil {
+		styles = append(styles, "font-style: normal")
+	}
+	if p.Underline != nil && p.Underline.Val != "none" && p.Underline.Val != "false" {
+		styles = append(styles, "text-decoration: underline")
+	}
+	if p.Strike != nil && p.Strike.Val != "0" && p.Strike.Val != "false" {
+		styles = append(styles, "text-decoration: line-through")
+	}
+	if p.Color != nil {
+		styles = append(styles, "color: #"+p.Color.Val)
+	}
+	if p.Fonts != nil && p.Fonts.ASCII != "" {
+		styles = append(styles, fmt.Sprintf("font-family: '%s'", p.Fonts.ASCII))
+	}
+	if p.Size != nil {
+		if sizeVal, err := strconv.Atoi(p.Size.Val); err == nil {
+			styles = append(styles, fmt.Sprintf("font-size: %.1fpt", float64(sizeVal)/2.0))
+		}
+	}
+	return styles
+}
+
+// convertPPrToCSS converts docx.ParagraphProperties to a slice of CSS style strings.
+func (a *DocxAgent) convertPPrToCSS(p *docx.ParagraphProperties) []string {
+	var styles []string
+	if p == nil {
+		return styles
+	}
+
+	// Alignment
+	if p.Justification != nil {
+		textAlign := p.Justification.Val
+		if textAlign == "both" {
+			textAlign = "justify"
+		}
+		styles = append(styles, "text-align: "+textAlign)
+	}
+
+	// Indentation (in twips, 20 twips = 1 point)
+	if p.Ind != nil {
+		if p.Ind.Left != 0 {
+			styles = append(styles, fmt.Sprintf("padding-left: %.1fpt", float64(p.Ind.Left)/20.0))
+		}
+		if p.Ind.FirstLine != 0 {
+			styles = append(styles, fmt.Sprintf("text-indent: %.1fpt", float64(p.Ind.FirstLine)/20.0))
+		}
+		// Note: Right indent is not available in the current library version.
+	}
+
+	// Spacing (in twips, 20 twips = 1 point)
+	if p.Spacing != nil {
+		if p.Spacing.Before > 0 {
+			styles = append(styles, fmt.Sprintf("margin-top: %.1fpt", float64(p.Spacing.Before)/20.0))
+		}
+		if p.Spacing.AfterSpace > 0 {
+			styles = append(styles, fmt.Sprintf("margin-bottom: %.1fpt", float64(p.Spacing.AfterSpace)/20.0))
+		}
+		// The 'line' attribute is in 240ths of a line. 240 is single spacing.
+		// A simple conversion to a multiplier is line-height: (value / 240).
+		if p.Spacing.Line > 0 {
+			// A value of 240 is single, 360 is 1.5, 480 is double.
+			// We can convert this to a unitless line-height multiplier.
+			styles = append(styles, fmt.Sprintf("line-height: %.2f", float64(p.Spacing.Line)/240.0))
+		}
+	}
+
+	return styles
+}
+
+// generateStyleSheet creates a string containing all CSS rules derived from the DOCX styles.
+// Each style from styles.xml becomes a "pure" CSS class containing only its direct properties.
+func (a *DocxAgent) generateStyleSheet(doc *docx.Docx) string {
+	var cssBuilder strings.Builder
+	if doc.Styles.Styles == nil {
+		return ""
+	}
+
+	for _, s := range doc.Styles.Styles {
+		if s.StyleID == "" {
+			continue
+		}
+
+		var directCSSProps []string
+
+		// Get run properties directly from the style definition.
+		var rPr *docx.RunProperties
+		if s.RunProperties != nil {
+			rPr = s.RunProperties
+		}
+		if s.ParagraphProperties != nil && s.ParagraphProperties.RunProperties != nil {
+			rPr = mergeRunProperties(rPr, s.ParagraphProperties.RunProperties)
+		}
+		if rPr != nil {
+			directCSSProps = append(directCSSProps, a.convertRPrToCSS(rPr)...)
+		}
+
+		// Add paragraph properties to the CSS class.
+		if s.ParagraphProperties != nil {
+			directCSSProps = append(directCSSProps, a.convertPPrToCSS(s.ParagraphProperties)...)
+		}
+
+		if len(directCSSProps) > 0 {
+			className := escapeCSSClassName(s.StyleID)
+			cssBuilder.WriteString(fmt.Sprintf(".%s {\n", className))
+			for _, prop := range directCSSProps {
+				cssBuilder.WriteString(fmt.Sprintf("  %s;\n", prop))
+			}
+			cssBuilder.WriteString("}\n")
+		}
+	}
+	return cssBuilder.String()
+}
+
+// getStyleChain recursively finds the inheritance chain for a style.
+// It returns a slice of style IDs from the most base to the most specific.
+func (a *DocxAgent) getStyleChain(doc *docx.Docx, styleID string, visited map[string]bool) []string {
+	if styleID == "" || visited[styleID] {
+		return nil
+	}
+	visited[styleID] = true
+
+	var chain []string
+	for _, s := range doc.Styles.Styles {
+		if s.StyleID == styleID {
+			// 1. Get the chain from the base style first.
+			if s.BasedOn != nil && s.BasedOn.Val != "" {
+				chain = append(chain, a.getStyleChain(doc, s.BasedOn.Val, visited)...)
+			}
+			// 2. Then, add the linked character style.
+			if s.Link != nil && s.Link.Val != "" {
+				// The linked style can also have its own base, so we get its full chain.
+				chain = append(chain, a.getStyleChain(doc, s.Link.Val, visited)...)
+			}
+			// 3. Finally, add the current style itself.
+			chain = append(chain, styleID)
+			return chain
+		}
+	}
+	return nil
+}
+
+// isParagraphEffectivelyEmpty checks if a paragraph contains any renderable content.
+// A paragraph is considered empty if it has no children, or if its children
+// (like runs) do not contain any visible elements like text, tabs, or images.
+func (a *DocxAgent) isParagraphEffectivelyEmpty(p *docx.Paragraph) bool {
+	// This function iterates through all parts of a paragraph to see if it contains
+	// any visible content. If it only contains formatting or empty text, it's skipped.
+	var contentText string
+	var hasVisibleElement bool
+
+	for _, child := range p.Children {
+		if run, ok := child.(*docx.Run); ok {
+			for _, runChild := range run.Children {
+				if text, ok := runChild.(*docx.Text); ok {
+					contentText += text.Text
+				} else {
+					// Any non-text element within a run (e.g., tab, image, line break)
+					// is considered visible content.
+					hasVisibleElement = true
+				}
+			}
+		} else {
+			// Any non-run element at the paragraph level (e.g., hyperlink) is content.
+			hasVisibleElement = true
+		}
+	}
+	return !hasVisibleElement && strings.TrimSpace(contentText) == ""
 }
 
 // writeHTMLNode recursively traverses the DOCX document tree and writes corresponding HTML to the builder.
@@ -239,24 +529,60 @@ func (a *DocxAgent) convertDocxToHTML(path string) (string, error) {
 func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, item interface{}, pRunProps *docx.RunProperties) {
 	switch v := item.(type) {
 	case *docx.Paragraph:
+		// Paragraphs that don't contain any renderable content (text, images, etc.)
+		// are often used for spacing in DOCX. We skip them to avoid creating
+		// empty <p></p> tags which can cause unwanted vertical space in HTML.
+		if a.isParagraphEffectivelyEmpty(v) {
+			return
+		}
+
 		var pStyles []string
-		var defaultRPr *docx.RunProperties
+		var classNames []string
+		var directRPr *docx.RunProperties // Direct formatting from the paragraph itself.
 		isListItem := false
 		headingLevel := 0
 
 		if p := v.Properties; p != nil {
-			// Check if this paragraph is a list item.
-			if p.NumProperties != nil {
-				isListItem = true
+			// Get the full inheritance chain of style names to use as CSS classes.
+			if p.Style != nil {
+				chain := a.getStyleChain(doc, p.Style.Val, make(map[string]bool))
+				for _, styleName := range chain {
+					classNames = append(classNames, escapeCSSClassName(styleName))
+				}
+			}
+
+			// The paragraph's own run properties are treated as a direct override.
+			if p.RunProperties != nil {
+				directRPr = p.RunProperties
 			}
 
 			// --- Start of Improved Heading Detection ---
 
-			// Heuristic 1: Check for a specific style ID. In the provided document,
-			// style "3" is consistently used for headings. This is the most reliable
-			// indicator for this specific file, even without access to the style definitions.
-			if p.Style != nil && p.Style.Val == "3" {
-				headingLevel = 3 // Assume style "3" is Heading 3.
+			// Heuristic 1: Check for a style name that indicates a heading (e.g., "Heading1", "heading 2")
+			// or if the style ID is a number between 1 and 6.
+			if p.Style != nil {
+				styleVal := strings.ToLower(p.Style.Val)
+				if strings.HasPrefix(styleVal, "heading") {
+					// Attempt to parse the level from the style name, e.g., "Heading3" -> 3
+					levelStr := ""
+					for _, char := range p.Style.Val {
+						if char >= '0' && char <= '9' {
+							levelStr += string(char)
+						}
+					}
+
+					if level, err := strconv.Atoi(levelStr); err == nil && level > 0 && level < 7 {
+						headingLevel = level
+					} else {
+						// If parsing fails (e.g., "Heading" with no number), default to h1.
+						headingLevel = 1
+					}
+				} else {
+					// Also check if the style ID itself is a number from 1 to 6, which can indicate a heading level.
+					if level, err := strconv.Atoi(p.Style.Val); err == nil && level > 0 && level < 7 {
+						headingLevel = level
+					}
+				}
 			}
 
 			// Heuristic 2: If not identified by style ID, check for significant spacing before the paragraph.
@@ -271,37 +597,75 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 			// A paragraph with a single, large, bold run is likely a heading.
 			// This is kept as a fallback for unusually formatted documents.
 			if headingLevel == 0 && len(v.Children) == 1 {
-				if run, ok := v.Children[0].(*docx.Run); ok && run.RunProperties != nil {
-					if run.RunProperties.Bold != nil && run.RunProperties.Size != nil {
-						if size, err := strconv.Atoi(run.RunProperties.Size.Val); err == nil && size >= 32 { // 16pt+
+				if run, ok := v.Children[0].(*docx.Run); ok {
+					// Merge paragraph-level default properties with the run's specific properties
+					// to get the final, effective style of the text. This is more accurate than
+					// just checking the run's direct properties. We pass nil for the base style here.
+					finalRunProps := mergeRunProperties(directRPr, run.RunProperties)
+					if finalRunProps != nil && finalRunProps.Bold != nil && finalRunProps.Size != nil {
+						// Check for bold text that is at least 16pt (32 half-points).
+						if size, err := strconv.Atoi(finalRunProps.Size.Val); err == nil && size >= 32 {
 							headingLevel = 2 // Treat as H2
 						}
 					}
 				}
 			}
+
+			// Heuristic 4: Check for short, fully-bolded lines that act as headings.
+			// This is for headings that don't use a named style and might not be large,
+			// like "Contacts:" in a CV.
+			if headingLevel == 0 {
+				var totalText string
+				allRunsAreBold := true
+				isSimpleTextParagraph := true
+
+				if len(v.Children) == 0 {
+					isSimpleTextParagraph = false
+				}
+
+				for _, child := range v.Children {
+					if run, ok := child.(*docx.Run); ok {
+						hasTextInRun := false
+						for _, runChild := range run.Children {
+							if text, ok := runChild.(*docx.Text); ok {
+								totalText += text.Text
+								hasTextInRun = true
+							}
+						}
+						// Only check for boldness if the run actually contains text.
+						if hasTextInRun {
+							finalRunProps := mergeRunProperties(directRPr, run.RunProperties)
+							if finalRunProps == nil || finalRunProps.Bold == nil || finalRunProps.Bold.Val == "0" || finalRunProps.Bold.Val == "false" {
+								allRunsAreBold = false
+								break
+							}
+						}
+					} else {
+						// If there's anything other than a run (e.g., a hyperlink), it's not a simple heading.
+						isSimpleTextParagraph = false
+						break
+					}
+				}
+
+				trimmedText := strings.TrimSpace(totalText)
+				if isSimpleTextParagraph && allRunsAreBold && len(trimmedText) > 0 && len(trimmedText) < 60 && !strings.HasSuffix(trimmedText, ".") {
+					headingLevel = 4 // A good default for this kind of inferred heading.
+				}
+			}
 			// --- End of Improved Heading Detection ---
 
-			// Extract paragraph-level styles (alignment, indentation).
-			if p.Justification != nil {
-				textAlign := p.Justification.Val
-				if textAlign == "both" {
-					textAlign = "justify"
-				}
-				pStyles = append(pStyles, "text-align:"+textAlign)
+			// A paragraph is only a list item if it has numbering properties AND it has not been identified as a heading.
+			if headingLevel == 0 && p.NumProperties != nil {
+				isListItem = true
 			}
-			if p.Ind != nil { // The compiler indicates Left and FirstLine are ints, and Right is undefined.
-				if p.Ind.Left != 0 {
-					pStyles = append(pStyles, fmt.Sprintf("padding-left:%.1fpt", float64(p.Ind.Left)/20.0))
-				}
-				// Right indent handling removed as p.Ind.Right is undefined in the library version used.
-				if p.Ind.FirstLine != 0 {
-					pStyles = append(pStyles, fmt.Sprintf("text-indent:%.1fpt", float64(p.Ind.FirstLine)/20.0))
-				}
-			}
-			// Extract the default run properties for this paragraph, which children will inherit.
-			if p.RunProperties != nil {
-				defaultRPr = p.RunProperties
-			}
+
+			// Convert all direct paragraph properties to inline styles.
+			pStyles = a.convertPPrToCSS(p)
+		}
+
+		classAttr := ""
+		if len(classNames) > 0 {
+			classAttr = fmt.Sprintf(` class="%s"`, strings.Join(classNames, " "))
 		}
 
 		styleAttr := ""
@@ -311,19 +675,21 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 
 		var openTag, closeTag string
 		if isListItem {
-			openTag = fmt.Sprintf("<li%s>", styleAttr)
+			openTag = fmt.Sprintf("<li%s%s>", classAttr, styleAttr)
 			closeTag = "</li>\n"
 		} else if headingLevel > 0 {
-			openTag = fmt.Sprintf("<h%d%s>", headingLevel, styleAttr)
+			openTag = fmt.Sprintf("<h%d%s%s>", headingLevel, classAttr, styleAttr)
 			closeTag = fmt.Sprintf("</h%d>\n", headingLevel)
 		} else {
-			openTag = fmt.Sprintf("<p%s>", styleAttr)
+			openTag = fmt.Sprintf("<p%s%s>", classAttr, styleAttr)
 			closeTag = "</p>\n"
 		}
 
 		textBuilder.WriteString(openTag)
 		for _, pItem := range v.Children {
-			a.writeHTMLNode(textBuilder, doc, pItem, defaultRPr)
+			// Pass down only the direct run properties from the paragraph.
+			// The class attributes on the parent element handle the main styling.
+			a.writeHTMLNode(textBuilder, doc, pItem, directRPr)
 		}
 		textBuilder.WriteString(closeTag)
 	case *docx.Table:
@@ -333,10 +699,31 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		for _, row := range v.TableRows {
 			textBuilder.WriteString("  <tr>\n")
 			for _, cell := range row.TableCells {
-				textBuilder.WriteString("    <td>")
+				var cellStyles []string
+				// Check for cell properties, specifically shading for background color.
+				// The underlying library must support parsing the Shade element.
+				if cell.TableCellProperties != nil && cell.TableCellProperties.Shade != nil {
+					// A fill color of "auto" means no background color.
+					if fill := cell.TableCellProperties.Shade.Fill; fill != "" && fill != "auto" {
+						cellStyles = append(cellStyles, "background-color:#"+fill)
+					}
+				}
+
+				styleAttr := ""
+				if len(cellStyles) > 0 {
+					styleAttr = fmt.Sprintf(` style="%s"`, strings.Join(cellStyles, "; "))
+				}
+				textBuilder.WriteString(fmt.Sprintf("    <td%s>", styleAttr))
 				var isListInCellActive bool
-				for _, p := range cell.Paragraphs {
-					isListItem := p.Properties != nil && p.Properties.NumProperties != nil
+				// We need to iterate over this slice to render all content within the cell.
+				for _, item := range cell.Items {
+					// Check if the current item is a paragraph that's part of a list.
+					isListItem := false
+					if p, ok := item.(*docx.Paragraph); ok && p.Properties != nil && p.Properties.NumProperties != nil {
+						isListItem = true
+					}
+
+					// Manage the opening and closing of the <ul> tag.
 					if isListItem {
 						if !isListInCellActive {
 							textBuilder.WriteString("<ul>\n")
@@ -348,13 +735,11 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 							isListInCellActive = false
 						}
 					}
-					a.writeHTMLNode(textBuilder, doc, p, nil)
+					// Recursively call writeHTMLNode for any type of item inside the cell.
+					a.writeHTMLNode(textBuilder, doc, item, nil)
 				}
 				if isListInCellActive {
 					textBuilder.WriteString("</ul>\n")
-				}
-				for _, t := range cell.Tables {
-					a.writeHTMLNode(textBuilder, doc, t, nil)
 				}
 				textBuilder.WriteString("</td>\n")
 			}
@@ -362,63 +747,27 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		}
 		textBuilder.WriteString("</table>\n")
 	case *docx.Run:
-		var tags []string
 		var styles []string
+		// A run represents a direct formatting override. We merge any direct properties
+		// from the parent paragraph with the run's own properties.
+		finalRunProps := mergeRunProperties(pRunProps, v.RunProperties)
 
-		// Merge the inherited paragraph properties with the run's specific properties.
-		if p := mergeRunProperties(pRunProps, v.RunProperties); p != nil {
-			// A property is considered "on" if the tag exists and its 'val' attribute
-			// is not explicitly "0" or "false". An empty 'val' also means "on".
-			// For Bold and Italic, the presence of the tag is enough.
-			if p.Bold != nil {
-				tags = append(tags, "b")
-			}
-			if p.Italic != nil {
-				tags = append(tags, "i")
-			}
-			if p.Underline != nil && p.Underline.Val != "none" && p.Underline.Val != "false" {
-				tags = append(tags, "u")
-			}
-			if p.Strike != nil && p.Strike.Val != "0" && p.Strike.Val != "false" {
-				tags = append(tags, "s")
-			}
-			if p.Color != nil {
-				styles = append(styles, "color:#"+p.Color.Val)
-			}
-			if p.Fonts != nil {
-				// The ascii font is the most common one for western text.
-				if p.Fonts.ASCII != "" {
-					styles = append(styles, fmt.Sprintf("font-family:'%s'", p.Fonts.ASCII))
-				}
-			}
-			if p.Size != nil {
-				// Size is in half-points. Convert to points for CSS.
-				sizeVal, err := strconv.Atoi(p.Size.Val)
-				if err == nil {
-					styles = append(styles, fmt.Sprintf("font-size:%.1fpt", float64(sizeVal)/2.0))
-				}
-			}
+		if finalRunProps != nil {
+			styles = a.convertRPrToCSS(finalRunProps)
 		}
 
-		// Open tags
-		for _, tag := range tags {
-			textBuilder.WriteString("<" + tag + ">")
-		}
 		if len(styles) > 0 {
 			textBuilder.WriteString(fmt.Sprintf(`<span style="%s">`, strings.Join(styles, "; ")))
 		}
 
 		for _, child := range v.Children {
-			// Children of a run (like Text or Tab) inherit the same properties.
+			// Children of a run (like Text or Tab) don't have their own properties,
+			// but we pass pRunProps down in case of nested structures.
 			a.writeHTMLNode(textBuilder, doc, child, pRunProps)
 		}
 
-		// Close tags in reverse order
 		if len(styles) > 0 {
 			textBuilder.WriteString("</span>")
-		}
-		for i := len(tags) - 1; i >= 0; i-- {
-			textBuilder.WriteString("</" + tags[i] + ">")
 		}
 
 	case *docx.Hyperlink:
@@ -451,73 +800,46 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 
 // mergeRunProperties combines inherited properties from a paragraph with a run's specific properties.
 // The run's own properties take precedence over the inherited ones.
-func mergeRunProperties(paraProps, runProps *docx.RunProperties) *docx.RunProperties {
-	// If there are no properties at all, return nil.
-	if paraProps == nil && runProps == nil {
+func mergeRunProperties(base, override *docx.RunProperties) *docx.RunProperties {
+	if base == nil && override == nil {
 		return nil
 	}
-
-	// Create a new, empty properties struct to hold the merged result.
-	// This is crucial to prevent state from leaking between paragraphs.
-	merged := &docx.RunProperties{}
-
-	// Defensively copy the paragraph's properties. This helps isolate the merge
-	// logic from potential bugs in the parser where the same property pointer
-	// might be reused across different paragraphs, causing style leaks.
-	var cleanParaProps *docx.RunProperties
-	if paraProps != nil {
-		p := *paraProps
-		cleanParaProps = &p
-	}
-
-	// Establish a base and an override. The run's properties override the paragraph's.
-	base := cleanParaProps
 	if base == nil {
-		base = &docx.RunProperties{} // Use an empty struct to avoid nil checks later.
+		return override
 	}
-	override := runProps
 	if override == nil {
-		override = &docx.RunProperties{} // Use an empty struct to avoid nil checks later.
+		return base
 	}
 
-	// For each property, check the override first, then fall back to the base.
+	// Create a new struct, starting with the base properties.
+	// This is a shallow copy, which is fine since we replace pointers, not modify them.
+	merged := *base
+
+	// Now, apply the override properties. If a property exists in the override,
+	// it replaces the one from the base.
 	if override.Bold != nil {
 		merged.Bold = override.Bold
-	} else {
-		merged.Bold = base.Bold
 	}
 	if override.Italic != nil {
 		merged.Italic = override.Italic
-	} else {
-		merged.Italic = base.Italic
 	}
 	if override.Underline != nil {
 		merged.Underline = override.Underline
-	} else {
-		merged.Underline = base.Underline
 	}
 	if override.Strike != nil {
 		merged.Strike = override.Strike
-	} else {
-		merged.Strike = base.Strike
 	}
 	if override.Color != nil {
 		merged.Color = override.Color
-	} else {
-		merged.Color = base.Color
 	}
 	if override.Fonts != nil {
 		merged.Fonts = override.Fonts
-	} else {
-		merged.Fonts = base.Fonts
 	}
 	if override.Size != nil {
 		merged.Size = override.Size
-	} else {
-		merged.Size = base.Size
 	}
 
-	return merged
+	return &merged
 }
 
 // writeImage extracts image data from the DOCX package and writes an <img> tag.
