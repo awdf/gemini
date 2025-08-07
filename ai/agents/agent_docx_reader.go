@@ -94,8 +94,9 @@ func (a *DocxAgent) extractStyles(xmlContent string) string {
 			continue
 		}
 
+		// Replacer for docx style names. Replsaces with HTML tag names
 		switch className {
-		case "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6":
+		case "Heading", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6":
 			className = strings.Replace(className, "Heading", "h", 1)
 			css.WriteString(fmt.Sprintf("%s {\n", className))
 		default:
