@@ -4,23 +4,168 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/base64"
+	"encoding/xml"
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"gemini/config"
+
 	"github.com/fumiama/go-docx"
 	"google.golang.org/genai"
-
-	"gemini/config"
 )
 
 // AgentDocxReaderName is the name of the docx reader agent.
 const AgentDocxReaderName = "docxReaderAgent"
+
+type Style struct {
+	Type    string `xml:"type,attr"`
+	StyleID string `xml:"styleId,attr"`
+	Name    struct {
+		Val string `xml:"val,attr"`
+	} `xml:"name"`
+	RPr struct {
+		Color struct {
+			Val string `xml:"val,attr"`
+		} `xml:"color"`
+		Sz struct {
+			Val string `xml:"val,attr"`
+		} `xml:"sz"`
+		SzCs struct {
+			Val string `xml:"val,attr"`
+		} `xml:"szCs"`
+		B struct {
+			Val string `xml:"val,attr"`
+		} `xml:"b"`
+		I struct {
+			Val string `xml:"val,attr"`
+		} `xml:"i"`
+		U struct {
+			Val string `xml:"val,attr"`
+		} `xml:"u"`
+	} `xml:"rPr"`
+	PPr struct {
+		Spacing struct {
+			Before string `xml:"before,attr"`
+			After  string `xml:"after,attr"`
+		} `xml:"spacing"`
+		Jc struct {
+			Val string `xml:"val,attr"`
+		} `xml:"jc"`
+		PBdr struct {
+			Bottom struct {
+				Val   string `xml:"val,attr"`
+				Sz    string `xml:"sz,attr"`
+				Space string `xml:"space,attr"`
+				Color string `xml:"color,attr"`
+			} `xml:"bottom"`
+		} `xml:"pBdr"`
+	} `xml:"pPr"`
+}
+
+type Styles struct {
+	XMLName xml.Name `xml:"styles"`
+	Styles  []Style  `xml:"style"`
+}
+
+func (a *DocxAgent) extractStyles(xmlContent string) string {
+	var styles Styles
+	err := xml.Unmarshal([]byte(xmlContent), &styles)
+	if err != nil {
+		log.Printf("Error unmarshalling styles XML: %v", err)
+		return ""
+	}
+
+	var css strings.Builder
+	for _, s := range styles.Styles {
+		if s.StyleID == "" {
+			continue
+		}
+		// Sanitize style ID for CSS class name
+		className := regexp.MustCompile("[^a-zA-Z0-9-]").ReplaceAllString(s.StyleID, "")
+		if className == "" {
+			continue
+		}
+
+		switch className {
+		case "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6":
+			className = strings.Replace(className, "Heading", "h", 1)
+			css.WriteString(fmt.Sprintf("%s {\n", className))
+		default:
+			css.WriteString(fmt.Sprintf(".%s {\n", className))
+		}
+
+		// Font size (w:sz is in half-points)
+		if s.RPr.Sz.Val != "" {
+			if sz, err := strconv.Atoi(s.RPr.Sz.Val); err == nil {
+				css.WriteString(fmt.Sprintf("  font-size: %dpt;\n", sz/2))
+			}
+		}
+		// Color
+		if s.RPr.Color.Val != "" && s.RPr.Color.Val != "auto" {
+			css.WriteString(fmt.Sprintf("  color: #%s;\n", s.RPr.Color.Val))
+		}
+		// Bold
+		if s.RPr.B.Val != "" && s.RPr.B.Val != "0" {
+			css.WriteString("  font-weight: bold;\n")
+		}
+		// Italic
+		if s.RPr.I.Val != "" && s.RPr.I.Val != "0" {
+			css.WriteString("  font-style: italic;\n")
+		}
+		// Underline
+		if s.RPr.U.Val != "" && s.RPr.U.Val != "none" {
+			css.WriteString("  text-decoration: underline;\n")
+		}
+
+		// Paragraph alignment
+		if s.PPr.Jc.Val != "" {
+			css.WriteString(fmt.Sprintf("  text-align: %s;\n", s.PPr.Jc.Val))
+		}
+
+		// Spacing (w:spacing is in twentieths of a point)
+		if s.PPr.Spacing.Before != "" {
+			if val, err := strconv.Atoi(s.PPr.Spacing.Before); err == nil {
+				css.WriteString(fmt.Sprintf("  margin-top: %dpt;\n", val/20))
+			}
+		}
+		if s.PPr.Spacing.After != "" {
+			if val, err := strconv.Atoi(s.PPr.Spacing.After); err == nil {
+				css.WriteString(fmt.Sprintf("  margin-bottom: %dpt;\n", val/20))
+			}
+		}
+
+		// Border
+		if s.PPr.PBdr.Bottom.Val != "" && s.PPr.PBdr.Bottom.Val != "none" {
+			sz := "1"
+			if s.PPr.PBdr.Bottom.Sz != "" {
+				if val, err := strconv.Atoi(s.PPr.PBdr.Bottom.Sz); err == nil {
+					sz = fmt.Sprintf("%d", val/8) // Borders are in eighths of a point
+				}
+			}
+			color := "black"
+			if s.PPr.PBdr.Bottom.Color != "" && s.PPr.PBdr.Bottom.Color != "auto" {
+				color = "#" + s.PPr.PBdr.Bottom.Color
+			}
+			css.WriteString(fmt.Sprintf("  border-bottom: %spx solid %s;\n", sz, color))
+			if s.PPr.PBdr.Bottom.Space != "" {
+				if val, err := strconv.Atoi(s.PPr.PBdr.Bottom.Space); err == nil {
+					css.WriteString(fmt.Sprintf("  padding-bottom: %dpt;\n", val)) // Space is in points
+				}
+			}
+		}
+
+		css.WriteString("}\n")
+	}
+	return css.String()
+}
 
 func init() {
 	RegisterFactory(AgentDocxReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
@@ -248,7 +393,13 @@ func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string,
 	}
 
 	// Generate all CSS classes from the styles defined in the document.
-	css = a.generateStyleSheet(doc)
+	stylesXML, err := a.getDocxStylesXML(path)
+	if err != nil {
+		a.Printf("Warning: could not extract styles.xml from %s: %v. Proceeding without custom styles.", path, err)
+	} else {
+		css = a.extractStyles(stylesXML)
+	}
+
 	var textBuilder strings.Builder
 
 	var bodyWrapperOpen, bodyWrapperClose string
@@ -422,50 +573,6 @@ func (a *DocxAgent) convertPPrToCSS(p *docx.ParagraphProperties) []string {
 	}
 
 	return styles
-}
-
-// generateStyleSheet creates a string containing all CSS rules derived from the DOCX styles.
-// Each style from styles.xml becomes a "pure" CSS class containing only its direct properties.
-func (a *DocxAgent) generateStyleSheet(doc *docx.Docx) string {
-	var cssBuilder strings.Builder
-	if doc.Styles.Styles == nil {
-		return ""
-	}
-
-	for _, s := range doc.Styles.Styles {
-		if s.StyleID == "" {
-			continue
-		}
-
-		var directCSSProps []string
-
-		// Get run properties directly from the style definition.
-		var rPr *docx.RunProperties
-		if s.RunProperties != nil {
-			rPr = s.RunProperties
-		}
-		if s.ParagraphProperties != nil && s.ParagraphProperties.RunProperties != nil {
-			rPr = mergeRunProperties(rPr, s.ParagraphProperties.RunProperties)
-		}
-		if rPr != nil {
-			directCSSProps = append(directCSSProps, a.convertRPrToCSS(rPr)...)
-		}
-
-		// Add paragraph properties to the CSS class.
-		if s.ParagraphProperties != nil {
-			directCSSProps = append(directCSSProps, a.convertPPrToCSS(s.ParagraphProperties)...)
-		}
-
-		if len(directCSSProps) > 0 {
-			className := escapeCSSClassName(s.StyleID)
-			cssBuilder.WriteString(fmt.Sprintf(".%s {\n", className))
-			for _, prop := range directCSSProps {
-				cssBuilder.WriteString(fmt.Sprintf("  %s;\n", prop))
-			}
-			cssBuilder.WriteString("}\n")
-		}
-	}
-	return cssBuilder.String()
 }
 
 // getStyleChain recursively finds the inheritance chain for a style.
@@ -678,7 +785,7 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 			openTag = fmt.Sprintf("<li%s%s>", classAttr, styleAttr)
 			closeTag = "</li>\n"
 		} else if headingLevel > 0 {
-			openTag = fmt.Sprintf("<h%d%s%s>", headingLevel, classAttr, styleAttr)
+			openTag = fmt.Sprintf("<h%d%s>", headingLevel, styleAttr)
 			closeTag = fmt.Sprintf("</h%d>\n", headingLevel)
 		} else {
 			openTag = fmt.Sprintf("<p%s%s>", classAttr, styleAttr)

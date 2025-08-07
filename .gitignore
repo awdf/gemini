@@ -1,4 +1,5 @@
 gemini
+*.xml
 *.wav
 *.jar
 *.log
