@@ -544,8 +544,13 @@ func (a *DocxAgent) convertRPrToCSS(p *docx.RunProperties) []string {
 	} else if p.Italic != nil {
 		styles = append(styles, "font-style: normal")
 	}
-	if p.Underline != nil && p.Underline.Val != "none" && p.Underline.Val != "false" {
-		styles = append(styles, "text-decoration: underline")
+	if p.Underline != nil {
+		// If an underline is specified, handle both enabling and disabling it.
+		if p.Underline.Val != "none" && p.Underline.Val != "false" {
+			styles = append(styles, "text-decoration: underline")
+		} else {
+			styles = append(styles, "text-decoration: none")
+		}
 	}
 	if p.Strike != nil && p.Strike.Val != "0" && p.Strike.Val != "false" {
 		styles = append(styles, "text-decoration: line-through")
@@ -608,6 +613,22 @@ func (a *DocxAgent) convertPPrToCSS(p *docx.ParagraphProperties) []string {
 		}
 	}
 
+	// Paragraph Borders (for horizontal lines, etc.)
+	if p.ParaBorders != nil {
+		if p.ParaBorders.Top != nil {
+			styles = append(styles, "border-top: "+a.borderToCSS(p.ParaBorders.Top))
+		}
+		if p.ParaBorders.Bottom != nil {
+			styles = append(styles, "border-bottom: "+a.borderToCSS(p.ParaBorders.Bottom))
+		}
+		if p.ParaBorders.Left != nil {
+			styles = append(styles, "border-left: "+a.borderToCSS(p.ParaBorders.Left))
+		}
+		if p.ParaBorders.Right != nil {
+			styles = append(styles, "border-right: "+a.borderToCSS(p.ParaBorders.Right))
+		}
+	}
+
 	return styles
 }
 
@@ -637,34 +658,6 @@ func (a *DocxAgent) getStyleChain(doc *docx.Docx, styleID string, visited map[st
 		}
 	}
 	return nil
-}
-
-// isParagraphEffectivelyEmpty checks if a paragraph contains any renderable content.
-// A paragraph is considered empty if it has no children, or if its children
-// (like runs) do not contain any visible elements like text, tabs, or images.
-func (a *DocxAgent) isParagraphEffectivelyEmpty(p *docx.Paragraph) bool {
-	// This function iterates through all parts of a paragraph to see if it contains
-	// any visible content. If it only contains formatting or empty text, it's skipped.
-	var contentText string
-	var hasVisibleElement bool
-
-	for _, child := range p.Children {
-		if run, ok := child.(*docx.Run); ok {
-			for _, runChild := range run.Children {
-				if text, ok := runChild.(*docx.Text); ok {
-					contentText += text.Text
-				} else {
-					// Any non-text element within a run (e.g., tab, image, line break)
-					// is considered visible content.
-					hasVisibleElement = true
-				}
-			}
-		} else {
-			// Any non-run element at the paragraph level (e.g., hyperlink) is content.
-			hasVisibleElement = true
-		}
-	}
-	return !hasVisibleElement && strings.TrimSpace(contentText) == ""
 }
 
 // writeHTMLNode recursively traverses the DOCX document tree and writes corresponding HTML to the builder.
@@ -747,47 +740,6 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 				}
 			}
 
-			// Heuristic 4: Check for short, fully-bolded lines that act as headings.
-			// This is for headings that don't use a named style and might not be large,
-			// like "Contacts:" in a CV.
-			if headingLevel == 0 {
-				var totalText string
-				allRunsAreBold := true
-				isSimpleTextParagraph := true
-
-				if len(v.Children) == 0 {
-					isSimpleTextParagraph = false
-				}
-
-				for _, child := range v.Children {
-					if run, ok := child.(*docx.Run); ok {
-						hasTextInRun := false
-						for _, runChild := range run.Children {
-							if text, ok := runChild.(*docx.Text); ok {
-								totalText += text.Text
-								hasTextInRun = true
-							}
-						}
-						// Only check for boldness if the run actually contains text.
-						if hasTextInRun {
-							finalRunProps := mergeRunProperties(directRPr, run.RunProperties)
-							if finalRunProps == nil || finalRunProps.Bold == nil || finalRunProps.Bold.Val == "0" || finalRunProps.Bold.Val == "false" {
-								allRunsAreBold = false
-								break
-							}
-						}
-					} else {
-						// If there's anything other than a run (e.g., a hyperlink), it's not a simple heading.
-						isSimpleTextParagraph = false
-						break
-					}
-				}
-
-				trimmedText := strings.TrimSpace(totalText)
-				if isSimpleTextParagraph && allRunsAreBold && len(trimmedText) > 0 && len(trimmedText) < 60 && !strings.HasSuffix(trimmedText, ".") {
-					headingLevel = 4 // A good default for this kind of inferred heading.
-				}
-			}
 			// --- End of Improved Heading Detection ---
 
 			// A paragraph is only a list item if it has numbering properties AND it has not been identified as a heading.
@@ -913,9 +865,17 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 				// not just paragraphs. This ensures that nested tables and other elements
 				// are properly rendered.
 				for _, item := range cell.Items {
+					// A paragraph is a list item if it has numbering properties AND it is not a heading.
+					// This check is now consistent with the main body's list detection.
 					isListItem := false
 					if p, ok := item.(*docx.Paragraph); ok && p.Properties != nil && p.Properties.NumProperties != nil {
-						isListItem = true
+						isHeading := false
+						if p.Properties.Style != nil && strings.HasPrefix(p.Properties.Style.Val, "Heading") {
+							isHeading = true
+						}
+						if !isHeading {
+							isListItem = true
+						}
 					}
 
 					if isListItem {
@@ -947,6 +907,25 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 
 		if finalRunProps != nil {
 			styles = a.convertRPrToCSS(finalRunProps)
+		}
+
+		if v.RunProperties != nil {
+			// If a run has its own <w:rPr> block, it signifies a direct formatting override.
+			// This override should also reset any text decorations inherited from a paragraph's
+			// style, unless the run itself specifies a decoration.
+			hasTextDecoration := false
+			for _, s := range styles {
+				if strings.HasPrefix(s, "text-decoration:") {
+					hasTextDecoration = true
+					break
+				}
+			}
+
+			if !hasTextDecoration {
+				// Since no decoration (underline, strike, etc.) was specified in the run's
+				// own properties, we explicitly disable it to prevent inheritance.
+				styles = append(styles, "text-decoration: none")
+			}
 		}
 
 		if len(styles) > 0 {
