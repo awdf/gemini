@@ -170,7 +170,7 @@ func (a *DocxAgent) handleReadDocx(call *genai.FunctionCall) *genai.FunctionResp
 body{font-family: sans-serif; line-height: 1.4; }
 table{border-collapse: collapse; width: 100%; margin-bottom: 1em; border-spacing: 0;}
 td,th{padding: 8px; text-align: left; border: none;}
-tr:nth-child(even){background-color: #f2f2f2; }`)
+.banded-rows tr:nth-child(even){background-color: #f2f2f2; }`)
 	fullHTML.WriteString(cssStyles)
 	fullHTML.WriteString("</style></head><body>")
 	fullHTML.WriteString(htmlBody)
@@ -549,6 +549,59 @@ func (a *DocxAgent) getStyleChain(doc *docx.Docx, styleID string, visited map[st
 	return nil
 }
 
+// findStyleByID finds a style definition by its ID.
+func (a *DocxAgent) findStyleByID(doc *docx.Docx, styleID string) *docx.StyleDefinition {
+	if styleID == "" || doc == nil || doc.Styles.Styles == nil {
+		return nil
+	}
+	for i := range doc.Styles.Styles {
+		if strings.EqualFold(doc.Styles.Styles[i].StyleID, styleID) {
+			return &doc.Styles.Styles[i]
+		}
+	}
+	return nil
+}
+
+// mergeTableBorders combines two WTableBorders structs.
+// Properties from 'override' will take precedence over 'base'.
+func mergeTableBorders(base, override *docx.WTableBorders) *docx.WTableBorders {
+	if base == nil {
+		return override
+	}
+	if override == nil {
+		return base
+	}
+
+	merged := *base // Start with a shallow copy of the base.
+
+	if override.Top != nil {
+		merged.Top = override.Top
+	}
+	if override.Left != nil {
+		merged.Left = override.Left
+	}
+	if override.Bottom != nil {
+		merged.Bottom = override.Bottom
+	}
+	if override.Right != nil {
+		merged.Right = override.Right
+	}
+	if override.InsideH != nil {
+		merged.InsideH = override.InsideH
+	}
+	if override.InsideV != nil {
+		merged.InsideV = override.InsideV
+	}
+	if override.Start != nil {
+		merged.Start = override.Start
+	}
+	if override.End != nil {
+		merged.End = override.End
+	}
+
+	return &merged
+}
+
 // writeHTMLNode recursively traverses the DOCX document tree and writes corresponding HTML to the builder.
 // pRunProps represents the run properties inherited from the parent paragraph.
 func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, item interface{}, pRunProps *docx.RunProperties) {
@@ -670,10 +723,67 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		}
 		textBuilder.WriteString(closeTag)
 	case *docx.Table:
-		// Get table-wide border properties. These are the defaults.
-		tblBorders := v.TableProperties.TableBorders
+		var tblBorders *docx.WTableBorders
+		var tblLook *docx.WTableLook
+		var tblStyleClass string
 
-		textBuilder.WriteString("<table>\n")
+		if v.TableProperties != nil {
+			// Start with the table's direct border properties.
+			tblBorders = v.TableProperties.TableBorders
+			tblLook = v.TableProperties.Look
+
+			// If the table has a style, find it and merge its properties.
+			if v.TableProperties.Style != nil && v.TableProperties.Style.Val != "" {
+				styleID := v.TableProperties.Style.Val
+				tblStyleClass = escapeCSSClassName(styleID)
+
+				styleDef := a.findStyleByID(doc, styleID)
+				if styleDef != nil && styleDef.TableProperties != nil {
+					stylePr := styleDef.TableProperties
+					// The style's properties are the base, and the table's direct
+					// properties are the override.
+					tblBorders = mergeTableBorders(stylePr.TableBorders, tblBorders)
+
+					// If the table doesn't have a direct Look property, use the one from the style.
+					if tblLook == nil {
+						tblLook = stylePr.Look
+					}
+				}
+			}
+		}
+
+		var allClasses []string
+		if tblStyleClass != "" {
+			allClasses = append(allClasses, tblStyleClass)
+		}
+
+		// Check for horizontal banding (alternating row colors).
+		// The NoHBand property being 0 means banding is ON.
+		var bandedRows bool
+		if tblLook != nil {
+			// The noHBand attribute is an explicit override. If it's present, it wins.
+			if tblLook.NoHBand != nil {
+				// Banding is ON if noHBand is explicitly set to 0 ("false" or "0").
+				bandedRows = (*tblLook.NoHBand == 0)
+			} else if tblLook.Val != "" {
+				// If noHBand is not present, fall back to the 'val' bitmask.
+				valInt, err := strconv.ParseInt(tblLook.Val, 16, 32)
+				if err == nil {
+					// Horizontal banding is controlled by bit 0x0200.
+					bandedRows = (valInt&0x0200 != 0)
+				}
+			}
+		}
+		if bandedRows {
+			allClasses = append(allClasses, "banded-rows")
+		}
+
+		classAttr := ""
+		if len(allClasses) > 0 {
+			classAttr = fmt.Sprintf(` class="%s"`, strings.Join(allClasses, " "))
+		}
+
+		textBuilder.WriteString(fmt.Sprintf("<table%s>\n", classAttr))
 		for i, row := range v.TableRows {
 			textBuilder.WriteString("  <tr>\n")
 			for j, cell := range row.TableCells {
