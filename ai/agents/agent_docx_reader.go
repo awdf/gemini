@@ -442,9 +442,21 @@ func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string,
 
 // escapeCSSClassName cleans a string to be used as a CSS class name.
 func escapeCSSClassName(name string) string {
-	// A simple implementation: replace invalid characters.
-	// A more robust one would handle more edge cases.
-	return strings.NewReplacer(" ", "_", "(", "", ")", "", ":", "").Replace(name)
+	// First, replace common invalid characters.
+	sanitized := strings.NewReplacer(" ", "_", "(", "", ")", "", ":", "").Replace(name)
+
+	if len(sanitized) == 0 {
+		return ""
+	}
+
+	// According to CSS spec, identifiers cannot start with a digit, or a hyphen
+	// followed by a digit. They also cannot be a single hyphen.
+	firstChar := sanitized[0]
+	if (firstChar >= '0' && firstChar <= '9') || (firstChar == '-' && (len(sanitized) == 1 || (sanitized[1] >= '0' && sanitized[1] <= '9'))) {
+		return "style-" + sanitized
+	}
+
+	return sanitized
 }
 
 // convertRPrToCSS converts docx.RunProperties to a slice of CSS style strings.

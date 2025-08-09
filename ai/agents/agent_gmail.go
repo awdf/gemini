@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"google.golang.org/api/gmail/v1"
+	"google.golang.org/api/oauth2/v2"
 	"google.golang.org/api/option"
 	"google.golang.org/genai"
 
@@ -47,6 +48,7 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 	scopes := []string{
 		gmail.GmailReadonlyScope,
 		gmail.GmailSendScope,
+		oauth2.UserinfoEmailScope, // Required to validate the token on startup.
 		// Add more scopes here if needed in the future, e.g., compose, send
 	}
 

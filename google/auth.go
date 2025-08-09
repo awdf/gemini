@@ -8,14 +8,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	oauth2api "google.golang.org/api/oauth2/v2"
+	"google.golang.org/api/option"
 
 	"gemini/config"
 )
 
 // GetClient uses a previously saved token or performs a new OAuth 2.0 flow.
+// It validates any existing token and triggers re-authentication if it's stale or revoked.
 func GetClient(ctx context.Context, scopes []string) (*http.Client, error) {
 	credentialsFile := config.C.Google.CredentialsFile
 	tokenFile := config.C.Google.TokenFile
@@ -25,26 +29,70 @@ func GetClient(ctx context.Context, scopes []string) (*http.Client, error) {
 		return nil, fmt.Errorf("unable to read client secret file (%s): %w", credentialsFile, err)
 	}
 
-	// For desktop apps, the redirect URI should be a loopback address.
-	// This must match what is configured in the Google Cloud Console for the Desktop App client ID.
-	config, err := google.ConfigFromJSON(b, scopes...)
+	// For desktop apps, the redirect URI must match what is configured in the Google Cloud Console.
+	oauthConfig, err := google.ConfigFromJSON(b, scopes...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse client secret file to config: %w", err)
 	}
-	config.RedirectURL = "http://localhost:8080/oauth2callback"
+	oauthConfig.RedirectURL = "http://localhost:8080/oauth2callback"
 
-	tok, err := tokenFromFile(tokenFile)
+	// First, try to get a validated client from a saved token.
+	client, err := getClientFromToken(ctx, oauthConfig, tokenFile)
 	if err == nil {
-		log.Println("Using existing token from file.")
-		return config.Client(ctx, tok), nil
+		return client, nil // Success!
 	}
 
-	log.Println("Performing new OAuth 2.0 authorization flow for Google services...")
+	// If getting client from token failed (e.g., no token, or token was stale),
+	// start the interactive auth flow to get a new one.
+	log.Printf("Could not use existing token (%v), performing new OAuth 2.0 authorization flow...", err)
+	return getClientFromWeb(ctx, oauthConfig, tokenFile)
+}
+
+// getClientFromToken attempts to create an http.Client from a saved token file.
+// It validates the token by making a simple API call. If the token is stale/revoked,
+// it deletes the token file and returns an error to trigger re-authentication.
+func getClientFromToken(ctx context.Context, config *oauth2.Config, tokenFile string) (*http.Client, error) {
+	tok, err := tokenFromFile(tokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read token from file: %w", err)
+	}
+
+	client := config.Client(ctx, tok)
+
+	// Validate the token by making a simple, low-scope API call.
+	oauth2Service, err := oauth2api.NewService(ctx, option.WithHTTPClient(client))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create oauth2 service for validation: %w", err)
+	}
+
+	_, err = oauth2Service.Userinfo.Get().Do()
+	if err != nil {
+		// If the error indicates an invalid grant, the token is stale or has been revoked.
+		if strings.Contains(err.Error(), "invalid_grant") {
+			log.Println("Stale or revoked token detected. Deleting token file and re-authenticating.")
+			_ = os.Remove(tokenFile) // Attempt to remove, ignore error if it fails.
+			return nil, fmt.Errorf("token is stale or revoked: %w", err)
+		}
+		// For other errors, we might still be able to proceed, but log it as a warning.
+		log.Printf("Warning: token validation call failed, but proceeding anyway: %v", err)
+	}
+
+	log.Println("Successfully validated and using existing token from file.")
+	return client, nil
+}
+
+// getClientFromWeb performs the interactive OAuth 2.0 flow to get a new token from the user.
+func getClientFromWeb(ctx context.Context, config *oauth2.Config, tokenFile string) (*http.Client, error) {
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 	fmt.Printf("Go to the following link in your browser to authorize the application: \n%v\n", authURL)
 
 	codeCh := make(chan string)
 	server := &http.Server{Addr: ":8080"}
+
+	// Temporarily replace the default ServeMux to handle only our callback.
+	originalMux := http.DefaultServeMux
+	http.DefaultServeMux = http.NewServeMux()
+	defer func() { http.DefaultServeMux = originalMux }()
 
 	http.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
@@ -75,7 +123,7 @@ func GetClient(ctx context.Context, scopes []string) (*http.Client, error) {
 		return nil, fmt.Errorf("authorization flow was canceled or failed")
 	}
 
-	tok, err = config.Exchange(ctx, authCode)
+	tok, err := config.Exchange(ctx, authCode)
 	if err != nil {
 		return nil, fmt.Errorf("unable to retrieve token from web: %w", err)
 	}

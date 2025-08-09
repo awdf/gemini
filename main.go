@@ -6,21 +6,18 @@ package main
 // DIRECTIVE: Inside module can be only one constructor and name must start from New prefix
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 
 	"gemini/ai"
-	"gemini/ai/agents"
 	"gemini/audio"
 	"gemini/config"
 	"gemini/flow"
+	"gemini/helpers"
 	"gemini/inout"
 	"gemini/pipeline"
 	"gemini/recorder"
@@ -29,7 +26,6 @@ import (
 
 	"github.com/asaskevich/EventBus"
 	"github.com/go-gst/go-gst/gst"
-	"google.golang.org/genai"
 )
 
 // CliFlags holds the parsed command-line flags for the application.
@@ -142,89 +138,6 @@ func parseFlags() *CliFlags {
 	return flags
 }
 
-func testDocxAgent(testFilePath string) {
-	log.Println("--- RUNNING DOCX AGENT TEST ---")
-	ctx := context.Background()
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  config.C.AI.APIKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		log.Fatalf("Failed to create genai client for test: %v", err)
-	}
-
-	// The agent factory needs a toolset to register its functions with.
-	toolset := agents.NewToolSet()
-
-	// Manually register the agent for this test run.
-	agents.Registerate(ctx, client, toolset, agents.AgentDocxReaderName)
-
-	agentCallable, ok := agents.AgentRegistry[agents.AgentDocxReaderName]
-	if !ok {
-		log.Fatalf("Failed to register or find DOCX reader agent in registry.")
-	}
-
-	docxAgent, ok := agentCallable.(interface {
-		Handle(*genai.FunctionCall) *genai.FunctionResponse
-	})
-	if !ok {
-		log.Fatalf("Agent does not implement the required Handle method.")
-	}
-
-	// handleAgentResponse is a helper to reduce code duplication for testing agent tool calls.
-	handleAgentResponse := func(call *genai.FunctionCall, toolName, contentKey, outputFileName string) {
-		log.Printf("\n--- Testing DOCX tool '%s' ---", toolName)
-
-		response := docxAgent.Handle(call)
-		if response == nil {
-			log.Fatalf("DOCX agent did not handle the '%s' call.", toolName)
-		}
-
-		if response.Response != nil {
-			if errVal, ok := response.Response["error"]; ok {
-				log.Fatalf("DOCX agent '%s' returned an error: %v", toolName, errVal)
-			}
-			if content, ok := response.Response[contentKey].(string); ok {
-				log.Printf("--- DOCX tool '%s' executed successfully ---", toolName)
-
-				err := os.WriteFile(outputFileName, []byte(content), 0o644)
-				if err != nil {
-					log.Fatalf("Failed to write test output to %s: %v", outputFileName, err)
-				}
-				outputType := strings.ToUpper(strings.TrimPrefix(filepath.Ext(outputFileName), "."))
-				log.Printf("%s content from DOCX saved to %s", outputType, outputFileName)
-			} else {
-				log.Printf("DOCX agent '%s' response did not contain key '%s': %+v", toolName, contentKey, response.Response)
-			}
-		} else {
-			log.Fatalf("DOCX agent '%s' returned a nil response map.", toolName)
-		}
-	}
-
-	// --- Test HTML Conversion ---
-	htmlTestCall := &genai.FunctionCall{
-		Name: "readDocx",
-		Args: map[string]any{"path": testFilePath},
-	}
-	handleAgentResponse(htmlTestCall, "readDocx", "html_content", "docx_test_output.html")
-
-	// --- Test XML Extraction ---
-	xmlTestCall := &genai.FunctionCall{
-		Name: "getDocxXML",
-		Args: map[string]any{"path": testFilePath},
-	}
-	handleAgentResponse(xmlTestCall, "getDocxXML", "xml_content", "docx_test_output.xml")
-
-	// --- Test Styles XML Extraction ---
-	stylesXMLTestCall := &genai.FunctionCall{
-		Name: "getDocxStylesXML",
-		Args: map[string]any{"path": testFilePath},
-	}
-	handleAgentResponse(stylesXMLTestCall, "getDocxStylesXML", "xml_content", "docx_styles.xml")
-
-	log.Println("--- FINISHED DOCX AGENT TEST ---")
-}
-
 func main() {
 	flags := parseFlags()
 	flow.EnableControl()
@@ -232,23 +145,6 @@ func main() {
 	config.Load(flags.ConfigPath)
 
 	// Command-line flags override config file settings for convenience.
-
-	// --- START OF USER REQUESTED TEST BLOCK ---
-	// This block is for development purposes to test the DOCX agent.
-	// It can be removed once testing is complete.
-
-	testFilePath := "/home/awdf/Workspace/portfolio/Dmytro Tarielkin Profile.docx"
-
-	if _, err := os.Stat(testFilePath); err == nil {
-		// Only run the test if the file exists to avoid crashing on other machines.
-		testDocxAgent(testFilePath)
-		// Exit after test to prevent running the full application.
-		os.Exit(0)
-	} else {
-		log.Printf("Skipping DOCX agent test: test file not found at %s.", testFilePath)
-	}
-	// --- END OF USER REQUESTED TEST BLOCK ---
-
 	if flags.Voice {
 		config.C.AI.VoiceEnabled = true
 	}
@@ -257,7 +153,7 @@ func main() {
 	}
 	gst.Init(nil)
 	wayland.DisableJoystick()
-	wayland.Init()
+	helpers.Verify(wayland.Init())
 	wayland.SetOffset(10)  // Default
 	wayland.SetAccuracy(2) // Default
 	defer wayland.Done()
