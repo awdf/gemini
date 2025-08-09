@@ -4,14 +4,11 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/base64"
-	"encoding/xml"
 	"fmt"
 	"html"
 	"io"
-	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,150 +22,42 @@ import (
 // AgentDocxReaderName is the name of the docx reader agent.
 const AgentDocxReaderName = "docxReaderAgent"
 
-type Style struct {
-	Type    string `xml:"type,attr"`
-	StyleID string `xml:"styleId,attr"`
-	Name    struct {
-		Val string `xml:"val,attr"`
-	} `xml:"name"`
-	RPr struct {
-		Color struct {
-			Val string `xml:"val,attr"`
-		} `xml:"color"`
-		Sz struct {
-			Val string `xml:"val,attr"`
-		} `xml:"sz"`
-		SzCs struct {
-			Val string `xml:"val,attr"`
-		} `xml:"szCs"`
-		B struct {
-			Val string `xml:"val,attr"`
-		} `xml:"b"`
-		I struct {
-			Val string `xml:"val,attr"`
-		} `xml:"i"`
-		U struct {
-			Val string `xml:"val,attr"`
-		} `xml:"u"`
-	} `xml:"rPr"`
-	PPr struct {
-		NumPr   *struct{} `xml:"numPr"`
-		Spacing struct {
-			Before string `xml:"before,attr"`
-			After  string `xml:"after,attr"`
-		} `xml:"spacing"`
-		Jc struct {
-			Val string `xml:"val,attr"`
-		} `xml:"jc"`
-		PBdr struct {
-			Bottom struct {
-				Val   string `xml:"val,attr"`
-				Sz    string `xml:"sz,attr"`
-				Space string `xml:"space,attr"`
-				Color string `xml:"color,attr"`
-			} `xml:"bottom"`
-		} `xml:"pBdr"`
-	}
-}
-
-type Styles struct {
-	XMLName xml.Name `xml:"styles"`
-	Styles  []Style  `xml:"style"`
-}
-
-func (a *DocxAgent) extractStyles(xmlContent string) string {
-	var styles Styles
-	err := xml.Unmarshal([]byte(xmlContent), &styles)
-	if err != nil {
-		log.Printf("Error unmarshalling styles XML: %v", err)
+func (a *DocxAgent) generateCSSFromStyles(styles *docx.Styles) string {
+	if styles == nil {
 		return ""
 	}
 
+	// This refactored implementation correctly uses the library's data structures
+	// and helper functions (convertPPrToCSS, convertRPrToCSS) to generate
+	// accurate CSS for all defined styles, including paragraph borders.
 	var css strings.Builder
-	for _, s := range styles.Styles {
+	for _, s := range styles.Styles { // s is a docx.StyleDefinition
 		if s.StyleID == "" {
 			continue
 		}
-		// Sanitize style ID for CSS class name
-		className := regexp.MustCompile("[^a-zA-Z0-9-]").ReplaceAllString(s.StyleID, "")
+		className := escapeCSSClassName(s.StyleID)
 		if className == "" {
 			continue
 		}
 
-		// Replacer for docx style names. Replsaces with HTML tag names
-		switch className {
-		case "Heading", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6":
-			// Skip numbering properties for headings to avoid list-like behavior.
-			if s.PPr.NumPr != nil {
-				s.PPr.NumPr = nil
-			}
-			className = strings.Replace(className, "Heading", "h", 1)
-			css.WriteString(fmt.Sprintf("%s {\n", className))
-		default:
-			css.WriteString(fmt.Sprintf(".%s {\n", className))
+		// All styles are rendered as classes. This is more robust and avoids conflicts.
+		finalSelector := "." + className
+
+		var styleRules []string
+		if s.ParagraphProperties != nil {
+			styleRules = append(styleRules, a.convertPPrToCSS(s.ParagraphProperties)...)
+		}
+		if s.RunProperties != nil {
+			styleRules = append(styleRules, a.convertRPrToCSS(s.RunProperties)...)
 		}
 
-		// Font size (w:sz is in half-points)
-		if s.RPr.Sz.Val != "" {
-			if sz, err := strconv.Atoi(s.RPr.Sz.Val); err == nil {
-				css.WriteString(fmt.Sprintf("  font-size: %dpt;\n", sz/2))
+		if len(styleRules) > 0 {
+			css.WriteString(fmt.Sprintf("%s {\n", finalSelector))
+			for _, rule := range styleRules {
+				css.WriteString(fmt.Sprintf("  %s;\n", rule))
 			}
+			css.WriteString("}\n")
 		}
-		// Color
-		if s.RPr.Color.Val != "" && s.RPr.Color.Val != "auto" {
-			css.WriteString(fmt.Sprintf("  color: #%s;\n", s.RPr.Color.Val))
-		}
-		// Bold
-		if s.RPr.B.Val != "" && s.RPr.B.Val != "0" {
-			css.WriteString("  font-weight: bold;\n")
-		}
-		// Italic
-		if s.RPr.I.Val != "" && s.RPr.I.Val != "0" {
-			css.WriteString("  font-style: italic;\n")
-		}
-		// Underline
-		if s.RPr.U.Val != "" && s.RPr.U.Val != "none" {
-			css.WriteString("  text-decoration: underline;\n")
-		}
-
-		// Paragraph alignment
-		if s.PPr.Jc.Val != "" {
-			css.WriteString(fmt.Sprintf("  text-align: %s;\n", s.PPr.Jc.Val))
-		}
-
-		// Spacing (w:spacing is in twentieths of a point)
-		if s.PPr.Spacing.Before != "" {
-			if val, err := strconv.Atoi(s.PPr.Spacing.Before); err == nil {
-				css.WriteString(fmt.Sprintf("  margin-top: %dpt;\n", val/20))
-			}
-		}
-		if s.PPr.Spacing.After != "" {
-			if val, err := strconv.Atoi(s.PPr.Spacing.After); err == nil {
-				css.WriteString(fmt.Sprintf("  margin-bottom: %dpt;\n", val/20))
-			}
-		}
-
-		// Border
-		if s.PPr.PBdr.Bottom.Val != "" && s.PPr.PBdr.Bottom.Val != "none" {
-			sz := "1"
-			if s.PPr.PBdr.Bottom.Sz != "" {
-				if val, err := strconv.Atoi(s.PPr.PBdr.Bottom.Sz); err == nil {
-					sz = fmt.Sprintf("%d", val/8) // Borders are in eighths of a point
-				}
-			}
-			color := "black"
-			if s.PPr.PBdr.Bottom.Color != "" && s.PPr.PBdr.Bottom.Color != "auto" {
-				color = "#" + s.PPr.PBdr.Bottom.Color
-			}
-			css.WriteString(fmt.Sprintf("  border-bottom: %spx solid %s;\n", sz, color))
-			if s.PPr.PBdr.Bottom.Space != "" {
-				if val, err := strconv.Atoi(s.PPr.PBdr.Bottom.Space); err == nil {
-					css.WriteString(fmt.Sprintf("  padding-bottom: %dpt;\n", val)) // Space is in points
-				}
-			}
-		}
-
-		css.WriteString("}\n")
 	}
 	return css.String()
 }
@@ -290,20 +179,6 @@ tr:nth-child(even){background-color: #f2f2f2; }`)
 	return a.CreateFunctionResponse(call, map[string]any{"html_content": fullHTML.String()}, nil)
 }
 
-func (a *DocxAgent) handleGetDocxXML(call *genai.FunctionCall) *genai.FunctionResponse {
-	path, ok := call.Args["path"].(string)
-	if !ok || path == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
-	}
-
-	xmlContent, err := a.getDocxMainXML(path)
-	if err != nil {
-		return a.CreateFunctionResponse(call, nil, err)
-	}
-
-	return a.CreateFunctionResponse(call, map[string]any{"xml_content": xmlContent}, nil)
-}
-
 func (a *DocxAgent) handleGetDocxStylesXML(call *genai.FunctionCall) *genai.FunctionResponse {
 	path, ok := call.Args["path"].(string)
 	if !ok || path == "" {
@@ -311,6 +186,20 @@ func (a *DocxAgent) handleGetDocxStylesXML(call *genai.FunctionCall) *genai.Func
 	}
 
 	xmlContent, err := a.getDocxStylesXML(path)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, err)
+	}
+
+	return a.CreateFunctionResponse(call, map[string]any{"xml_content": xmlContent}, nil)
+}
+
+func (a *DocxAgent) handleGetDocxXML(call *genai.FunctionCall) *genai.FunctionResponse {
+	path, ok := call.Args["path"].(string)
+	if !ok || path == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
+	}
+
+	xmlContent, err := a.getDocxMainXML(path)
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
@@ -430,16 +319,9 @@ func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string,
 	size := fileinfo.Size()
 
 	doc, err := docx.Parse(readFile, size)
+	css = a.generateCSSFromStyles(&doc.Styles)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to parse docx file at %s: %w", safePath, err)
-	}
-
-	// Generate all CSS classes from the styles defined in the document.
-	stylesXML, err := a.getDocxStylesXML(path)
-	if err != nil {
-		a.Printf("Warning: could not extract styles.xml from %s: %v. Proceeding without custom styles.", path, err)
-	} else {
-		css = a.extractStyles(stylesXML)
 	}
 
 	var textBuilder strings.Builder
@@ -556,7 +438,11 @@ func (a *DocxAgent) convertRPrToCSS(p *docx.RunProperties) []string {
 		styles = append(styles, "text-decoration: line-through")
 	}
 	if p.Color != nil {
-		styles = append(styles, "color: #"+p.Color.Val)
+		// The 'auto' color means it should inherit from its parent.
+		// We only set a color if it's a specific hex value.
+		if p.Color.Val != "auto" {
+			styles = append(styles, "color: #"+p.Color.Val)
+		}
 	}
 	if p.Fonts != nil && p.Fonts.ASCII != "" {
 		styles = append(styles, fmt.Sprintf("font-family: '%s'", p.Fonts.ASCII))
@@ -642,7 +528,10 @@ func (a *DocxAgent) getStyleChain(doc *docx.Docx, styleID string, visited map[st
 
 	var chain []string
 	for _, s := range doc.Styles.Styles {
-		if s.StyleID == styleID {
+		// Use a case-insensitive comparison to match the heading detection logic,
+		// which also uses ToLower. This prevents bugs where a style like "heading 2"
+		// is detected but the style definition "Heading 2" is not found.
+		if strings.EqualFold(s.StyleID, styleID) {
 			// 1. Get the chain from the base style first.
 			if s.BasedOn != nil && s.BasedOn.Val != "" {
 				chain = append(chain, a.getStyleChain(doc, s.BasedOn.Val, visited)...)
@@ -766,7 +655,7 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 			openTag = fmt.Sprintf("<li%s%s>", classAttr, styleAttr)
 			closeTag = "</li>\n"
 		} else if headingLevel > 0 {
-			openTag = fmt.Sprintf("<h%d%s>", headingLevel, styleAttr)
+			openTag = fmt.Sprintf("<h%d%s%s>", headingLevel, classAttr, styleAttr)
 			closeTag = fmt.Sprintf("</h%d>\n", headingLevel)
 		} else {
 			openTag = fmt.Sprintf("<p%s%s>", classAttr, styleAttr)
