@@ -170,6 +170,7 @@ func (a *DocxAgent) handleReadDocx(call *genai.FunctionCall) *genai.FunctionResp
 body{font-family: sans-serif; line-height: 1.4; }
 table{border-collapse: collapse; width: 100%; margin-bottom: 1em; border-spacing: 0;}
 td,th{padding: 8px; text-align: left; border: none;}
+footer{margin-top: 2em; padding-top: 1em; border-top: 1px solid #ccc; font-size: 0.9em; color: #666;}
 .banded-rows tr:nth-child(even){background-color: #f2f2f2; }`)
 	fullHTML.WriteString(cssStyles)
 	fullHTML.WriteString("</style></head><body>")
@@ -399,6 +400,29 @@ func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string,
 	}
 
 	textBuilder.WriteString(bodyWrapperClose)
+
+	// --- Render Footer ---
+	if sectPr != nil && len(sectPr.FooterRefs) > 0 {
+		// For simplicity, we'll render the 'default' footer if it exists.
+		// A more complex implementation could handle 'first' and 'even' page footers.
+		var footerID string
+		for _, ref := range sectPr.FooterRefs {
+			if ref.Type == "default" {
+				footerID = ref.ID
+				break
+			}
+		}
+
+		if footer, ok := doc.Footers[footerID]; ok {
+			textBuilder.WriteString("<footer>")
+			// The footer has its own content tree, so we render its nodes.
+			for _, item := range footer.Items {
+				a.writeHTMLNode(&textBuilder, doc, item, nil)
+			}
+			textBuilder.WriteString("</footer>")
+		}
+	}
+	// --- End of Footer Rendering ---
 
 	return textBuilder.String(), css, nil
 }
