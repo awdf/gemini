@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -158,17 +159,23 @@ func (a *DocxAgent) handleReadDocx(call *genai.FunctionCall) *genai.FunctionResp
 	}
 
 	// The conversion function now returns the body content as a fragment.
-	htmlBody, cssStyles, err := a.convertDocxToHTML(path)
+	htmlBody, cssStyles, bgColor, err := a.convertDocxToHTML(path)
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
-	// We wrap the fragment in a full HTML document here, making the conversion
-	// function more reusable.
+	// Dynamically build the body style.
+	bodyStyle := "font-family: sans-serif; line-height: 1.4;"
+	if bgColor != "" && bgColor != "auto" {
+		// The color value from DOCX is just the hex, e.g., "FFFFFF".
+		bodyStyle += fmt.Sprintf(" background-color: #%s;", bgColor)
+	}
+
+	// We wrap the fragment in a full HTML document here.
 	var fullHTML strings.Builder
-	fullHTML.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
-body{font-family: sans-serif; line-height: 1.4; }
-table{border-collapse: collapse; width: 100%; margin-bottom: 1em; border-spacing: 0;}
+	fullHTML.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>`)
+	fullHTML.WriteString(fmt.Sprintf("\nbody{%s}\n", bodyStyle))
+	fullHTML.WriteString(`table{border-collapse: collapse; width: 100%; margin-bottom: 1em; border-spacing: 0;}
 td,th{padding: 8px; text-align: left; border: none;}
 footer{margin-top: 2em; padding-top: 1em; border-top: 1px solid #ccc; font-size: 0.9em; color: #666;}
 .banded-rows tr:nth-child(even){background-color: #f2f2f2; }`)
@@ -299,30 +306,35 @@ func (a *DocxAgent) borderToCSS(b *docx.WTableBorder) string {
 // convertDocxToHTML reads a .docx file and converts its content to an HTML string.
 // It handles paragraphs, text formatting (bold, italic, etc.), hyperlinks, tables, and images.
 // DOCX Format Specification (ECMA-376): https://www.ecma-international.org/publications-and-standards/standards/ecma-376/
-func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string, err error) {
+func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string, backgroundColor string, err error) {
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	a.Printf("Reading .docx file: %s", safePath)
 
 	readFile, err := os.Open(safePath)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to open docx file at %s: %w", safePath, err)
+		return "", "", "", fmt.Errorf("failed to open docx file at %s: %w", safePath, err)
 	}
 	defer readFile.Close()
 
 	fileinfo, err := readFile.Stat()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get file info for %s: %w", safePath, err)
+		return "", "", "", fmt.Errorf("failed to get file info for %s: %w", safePath, err)
 	}
 	size := fileinfo.Size()
 
 	doc, err := docx.Parse(readFile, size)
-	css = a.generateCSSFromStyles(&doc.Styles)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to parse docx file at %s: %w", safePath, err)
+		return "", "", "", fmt.Errorf("failed to parse docx file at %s: %w", safePath, err)
+	}
+	css = a.generateCSSFromStyles(&doc.Styles)
+
+	// Extract background color if it exists.
+	if doc.Document.Background != nil {
+		backgroundColor = doc.Document.Background.Color
 	}
 
 	var textBuilder strings.Builder
@@ -383,7 +395,7 @@ func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string,
 		// Manage the opening and closing of the <ul> tag.
 		if isListItem {
 			if !isListActive {
-				textBuilder.WriteString("<ul>\n")
+				textBuilder.WriteString("\n<ul>\n")
 				isListActive = true
 			}
 		} else {
@@ -393,13 +405,11 @@ func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string,
 			}
 		}
 		// Top-level items have no inherited run properties.
-		a.writeHTMLNode(&textBuilder, doc, it, nil)
+		a.writeHTMLNode(&textBuilder, doc, it, nil, &doc.DocRelation)
 	}
 	if isListActive {
 		textBuilder.WriteString("</ul>\n")
 	}
-
-	textBuilder.WriteString(bodyWrapperClose)
 
 	// --- Render Footer ---
 	if sectPr != nil && len(sectPr.FooterRefs) > 0 {
@@ -414,17 +424,20 @@ func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string,
 		}
 
 		if footer, ok := doc.Footers[footerID]; ok {
+			footerRels := doc.FooterRels[footer.FileName]
 			textBuilder.WriteString("<footer>")
 			// The footer has its own content tree, so we render its nodes.
 			for _, item := range footer.Items {
-				a.writeHTMLNode(&textBuilder, doc, item, nil)
+				a.writeHTMLNode(&textBuilder, doc, item, nil, footerRels)
 			}
 			textBuilder.WriteString("</footer>")
 		}
 	}
 	// --- End of Footer Rendering ---
 
-	return textBuilder.String(), css, nil
+	textBuilder.WriteString(bodyWrapperClose)
+
+	return textBuilder.String(), css, backgroundColor, nil
 }
 
 // escapeCSSClassName cleans a string to be used as a CSS class name.
@@ -508,10 +521,10 @@ func (a *DocxAgent) convertPPrToCSS(p *docx.ParagraphProperties) []string {
 
 	// Spacing (in twips, 20 twips = 1 point)
 	if p.Spacing != nil {
-		if p.Spacing.Before > 0 {
+		if p.Spacing.Before >= 0 {
 			styles = append(styles, fmt.Sprintf("margin-top: %.1fpt", float64(p.Spacing.Before)/20.0))
 		}
-		if p.Spacing.AfterSpace > 0 {
+		if p.Spacing.AfterSpace >= 0 {
 			styles = append(styles, fmt.Sprintf("margin-bottom: %.1fpt", float64(p.Spacing.AfterSpace)/20.0))
 		}
 		// The 'line' attribute is in 240ths of a line. 240 is single spacing.
@@ -626,9 +639,53 @@ func mergeTableBorders(base, override *docx.WTableBorders) *docx.WTableBorders {
 	return &merged
 }
 
+// isParagraphEmpty checks if a paragraph contains any renderable content.
+// It is considered empty if it has no children, or if its children are runs
+// that only contain empty or whitespace-only text nodes.
+func (a *DocxAgent) isParagraphEmpty(p *docx.Paragraph) bool {
+	if len(p.Children) == 0 {
+		return true
+	}
+
+	for _, child := range p.Children {
+		switch c := child.(type) {
+		case *docx.Run:
+			for _, runChild := range c.Children {
+				if text, ok := runChild.(*docx.Text); ok {
+					if strings.TrimSpace(text.Text) != "" {
+						return false // Found non-whitespace text.
+					}
+				} else {
+					// Any other element (tab, image, break) is renderable content.
+					return false
+				}
+			}
+		default:
+			// Any non-run element (like a hyperlink) is renderable content.
+			return false
+		}
+	}
+
+	// If we've gone through all children and only found empty/whitespace text, it's empty.
+	return true
+}
+
+// referTargetFromRels finds a relationship target from a given set of relationships.
+func referTargetFromRels(rels *docx.Relationships, id string) (string, error) {
+	if rels == nil {
+		return "", errors.New("relationships context is nil")
+	}
+	for _, r := range rels.Relationship {
+		if r.ID == id {
+			return r.Target, nil
+		}
+	}
+	return "", fmt.Errorf("relationship ID %s not found", id)
+}
+
 // writeHTMLNode recursively traverses the DOCX document tree and writes corresponding HTML to the builder.
 // pRunProps represents the run properties inherited from the parent paragraph.
-func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, item interface{}, pRunProps *docx.RunProperties) {
+func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, item interface{}, pRunProps *docx.RunProperties, rels *docx.Relationships) {
 	switch v := item.(type) {
 	case *docx.Paragraph:
 		var pStyles []string
@@ -638,12 +695,17 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		headingLevel := 0
 
 		if p := v.Properties; p != nil {
+			// Determine the style ID. If a paragraph has no explicit style, it uses the
+			// document's default, which is implicitly "Normal".
+			styleID := "Normal"
+			if p.Style != nil && p.Style.Val != "" {
+				styleID = p.Style.Val
+			}
+
 			// Get the full inheritance chain of style names to use as CSS classes.
-			if p.Style != nil {
-				chain := a.getStyleChain(doc, p.Style.Val, make(map[string]bool))
-				for _, styleName := range chain {
-					classNames = append(classNames, escapeCSSClassName(styleName))
-				}
+			chain := a.getStyleChain(doc, styleID, make(map[string]bool))
+			for _, styleName := range chain {
+				classNames = append(classNames, escapeCSSClassName(styleName))
 			}
 
 			// The paragraph's own run properties are treated as a direct override.
@@ -653,55 +715,29 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 
 			// --- Start of Improved Heading Detection ---
 
-			// Heuristic 1: Check for a style name that indicates a heading (e.g., "Heading1", "heading 2")
-			// or if the style ID is a number between 1 and 6.
+			// A paragraph is a heading if its style ID indicates it. This is the most reliable method.
+			// We no longer use heuristics based on spacing or font size, as they can be inaccurate
+			// and lead to mis-styled paragraphs.
 			if p.Style != nil {
 				styleVal := strings.ToLower(p.Style.Val)
 				if strings.HasPrefix(styleVal, "heading") {
-					// Attempt to parse the level from the style name, e.g., "Heading3" -> 3
+					// Extract trailing digits for level. "Heading2" -> "2", "heading 3" -> "3"
 					levelStr := ""
-					for _, char := range p.Style.Val {
+					for i := len(p.Style.Val) - 1; i >= 0; i-- {
+						char := p.Style.Val[i]
 						if char >= '0' && char <= '9' {
-							levelStr += string(char)
+							levelStr = string(char) + levelStr
+						} else {
+							// Stop when we hit a non-digit.
+							break
 						}
 					}
 
 					if level, err := strconv.Atoi(levelStr); err == nil && level > 0 && level < 7 {
 						headingLevel = level
-					} else {
-						// If parsing fails (e.g., "Heading" with no number), default to h1.
+					} else if styleVal == "heading" {
+						// If no number, but style is exactly "Heading", default to h1.
 						headingLevel = 1
-					}
-				} else {
-					// Also check if the style ID itself is a number from 1 to 6, which can indicate a heading level.
-					if level, err := strconv.Atoi(p.Style.Val); err == nil && level > 0 && level < 7 {
-						headingLevel = level
-					}
-				}
-			}
-
-			// Heuristic 2: If not identified by style ID, check for significant spacing before the paragraph.
-			// This is a good general heuristic for titles or headings that don't use a named style.
-			if headingLevel == 0 && p.Spacing != nil && p.Spacing.Before >= 240 {
-				// This is a strong indicator of a heading. We'll default to <h3>
-				// as it's a common level for subheadings in a CV.
-				headingLevel = 3
-			}
-
-			// Heuristic 3: If still not found, check for formatting cues.
-			// A paragraph with a single, large, bold run is likely a heading.
-			// This is kept as a fallback for unusually formatted documents.
-			if headingLevel == 0 && len(v.Children) == 1 {
-				if run, ok := v.Children[0].(*docx.Run); ok {
-					// Merge paragraph-level default properties with the run's specific properties
-					// to get the final, effective style of the text. This is more accurate than
-					// just checking the run's direct properties. We pass nil for the base style here.
-					finalRunProps := mergeRunProperties(directRPr, run.RunProperties)
-					if finalRunProps != nil && finalRunProps.Bold != nil && finalRunProps.Size != nil {
-						// Check for bold text that is at least 16pt (32 half-points).
-						if size, err := strconv.Atoi(finalRunProps.Size.Val); err == nil && size >= 32 {
-							headingLevel = 2 // Treat as H2
-						}
 					}
 				}
 			}
@@ -740,10 +776,16 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		}
 
 		textBuilder.WriteString(openTag)
-		for _, pItem := range v.Children {
-			// Pass down only the direct run properties from the paragraph.
-			// The class attributes on the parent element handle the main styling.
-			a.writeHTMLNode(textBuilder, doc, pItem, directRPr)
+		if a.isParagraphEmpty(v) {
+			// Render a non-breaking space to prevent empty paragraphs from collapsing,
+			// while still respecting the paragraph's styles (margins, etc.).
+			textBuilder.WriteString("&nbsp;")
+		} else {
+			for _, pItem := range v.Children {
+				// Pass down only the direct run properties from the paragraph.
+				// The class attributes on the parent element handle the main styling.
+				a.writeHTMLNode(textBuilder, doc, pItem, directRPr, rels)
+			}
 		}
 		textBuilder.WriteString(closeTag)
 	case *docx.Table:
@@ -912,7 +954,7 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 							isListInCellActive = false
 						}
 					}
-					a.writeHTMLNode(textBuilder, doc, item, nil)
+					a.writeHTMLNode(textBuilder, doc, item, nil, rels)
 				}
 				if isListInCellActive {
 					textBuilder.WriteString("</ul>\n")
@@ -957,26 +999,26 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 
 		for _, child := range v.Children {
 			// Children of a run (like Text or Tab) don't have their own properties,
-			// but we pass pRunProps down in case of nested structures.
-			a.writeHTMLNode(textBuilder, doc, child, pRunProps)
+			// but we pass down the inherited properties and the relationship context.
+			a.writeHTMLNode(textBuilder, doc, child, pRunProps, rels)
 		}
 
 		if len(styles) > 0 {
 			textBuilder.WriteString("</span>")
 		}
 	case *docx.Hyperlink:
-		link, err := doc.ReferTarget(v.ID)
+		link, err := referTargetFromRels(rels, v.ID)
 		if err == nil {
 			textBuilder.WriteString(fmt.Sprintf(`<a href="%s" target="_blank">`, html.EscapeString(link)))
 		}
-		a.writeHTMLNode(textBuilder, doc, &v.Run, pRunProps)
+		a.writeHTMLNode(textBuilder, doc, &v.Run, pRunProps, rels)
 		if err == nil {
 			textBuilder.WriteString("</a>")
 		}
 	case *docx.Text:
 		textBuilder.WriteString(html.EscapeString(v.Text))
 	case *docx.Tab:
-		textBuilder.WriteString("&emsp;")
+		textBuilder.WriteString("&emsp;") // Use a non-breaking space for tabs
 	case *docx.BarterRabbet:
 		if v.Type == "page" {
 			textBuilder.WriteString(`<hr style="page-break-after:always; visibility:hidden;">`)
@@ -984,7 +1026,7 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 			textBuilder.WriteString("<br>")
 		}
 	case *docx.Drawing:
-		a.writeImage(textBuilder, doc, v) // Images don't inherit text run properties.
+		a.writeImage(textBuilder, doc, v, rels) // Images don't inherit text run properties.
 	default:
 		// For unhandled types, we can log them for future development.
 		a.Printf("Unhandled DOCX node type: %T", v)
@@ -1036,26 +1078,26 @@ func mergeRunProperties(base, override *docx.RunProperties) *docx.RunProperties 
 }
 
 // writeImage extracts image data from the DOCX package and writes an <img> tag.
-func (a *DocxAgent) writeImage(textBuilder *strings.Builder, doc *docx.Docx, drawing *docx.Drawing) {
-	var relID string
-	var descr string
+func (a *DocxAgent) writeImage(textBuilder *strings.Builder, doc *docx.Docx, drawing *docx.Drawing, rels *docx.Relationships) {
+	var relID, descr string
+	var extent *docx.WPExtent
 
-	// Extract relationship ID and description from either inline or anchor drawings.
-	if drawing.Inline != nil && drawing.Inline.Graphic != nil && drawing.Inline.Graphic.GraphicData != nil && drawing.Inline.Graphic.GraphicData.Pic != nil {
-		pic := drawing.Inline.Graphic.GraphicData.Pic
-		if pic.BlipFill != nil && pic.BlipFill.Blip.Embed != "" {
-			relID = pic.BlipFill.Blip.Embed
-		}
+	// Extract common properties from either inline or anchor drawings.
+	if drawing.Inline != nil {
+		extent = drawing.Inline.Extent
 		if drawing.Inline.DocPr != nil {
 			descr = drawing.Inline.DocPr.Name
 		}
-	} else if drawing.Anchor != nil && drawing.Anchor.Graphic != nil && drawing.Anchor.Graphic.GraphicData != nil && drawing.Anchor.Graphic.GraphicData.Pic != nil {
-		pic := drawing.Anchor.Graphic.GraphicData.Pic
-		if pic.BlipFill != nil && pic.BlipFill.Blip.Embed != "" {
-			relID = pic.BlipFill.Blip.Embed
+		if drawing.Inline.Graphic != nil && drawing.Inline.Graphic.GraphicData != nil && drawing.Inline.Graphic.GraphicData.Pic != nil && drawing.Inline.Graphic.GraphicData.Pic.BlipFill != nil {
+			relID = drawing.Inline.Graphic.GraphicData.Pic.BlipFill.Blip.Embed
 		}
+	} else if drawing.Anchor != nil {
+		extent = drawing.Anchor.Extent
 		if drawing.Anchor.DocPr != nil {
 			descr = drawing.Anchor.DocPr.Name
+		}
+		if drawing.Anchor.Graphic != nil && drawing.Anchor.Graphic.GraphicData != nil && drawing.Anchor.Graphic.GraphicData.Pic != nil && drawing.Anchor.Graphic.GraphicData.Pic.BlipFill != nil {
+			relID = drawing.Anchor.Graphic.GraphicData.Pic.BlipFill.Blip.Embed
 		}
 	}
 
@@ -1064,22 +1106,31 @@ func (a *DocxAgent) writeImage(textBuilder *strings.Builder, doc *docx.Docx, dra
 		return
 	}
 
-	// Find the relationship target (e.g., "media/image1.png") using the library's helper.
-	imgTarget, err := doc.ReferTarget(relID)
+	imgTarget, err := referTargetFromRels(rels, relID)
 	if err != nil {
 		textBuilder.WriteString(fmt.Sprintf("[Image not found for relID: %s]", relID))
 		return
 	}
 
-	// The library provides a direct way to access media data.
-	// The target is usually prefixed with "media/", which we need to strip.
 	media := doc.Media(strings.TrimPrefix(imgTarget, "media/"))
 	if media != nil && len(media.Data) > 0 {
 		encoded := base64.StdEncoding.EncodeToString(media.Data)
 		mimeType := http.DetectContentType(media.Data)
 		src := fmt.Sprintf("data:%s;base64,%s", mimeType, encoded)
 		alt := html.EscapeString(descr)
-		textBuilder.WriteString(fmt.Sprintf(`<img src="%s" alt="%s" style="max-width:100%%; height:auto;" />`, src, alt))
+
+		var styleAttr string
+		if extent != nil && extent.CX > 0 && extent.CY > 0 {
+			// Convert EMUs to points for CSS. 1 point = 12700 EMU.
+			widthPt := float64(extent.CX) / 12700.0
+			heightPt := float64(extent.CY) / 12700.0
+			styleAttr = fmt.Sprintf(`style="width:%.2fpt; height:%.2fpt;"`, widthPt, heightPt)
+		} else {
+			// Fallback for when dimensions are not specified.
+			styleAttr = `style="max-width:100%; height:auto;"`
+		}
+
+		textBuilder.WriteString(fmt.Sprintf(`<img src="%s" alt="%s" %s />`, src, alt, styleAttr))
 		return // Success
 	}
 
