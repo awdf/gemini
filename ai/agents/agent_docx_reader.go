@@ -52,6 +52,7 @@ type Style struct {
 		} `xml:"u"`
 	} `xml:"rPr"`
 	PPr struct {
+		NumPr   *struct{} `xml:"numPr"`
 		Spacing struct {
 			Before string `xml:"before,attr"`
 			After  string `xml:"after,attr"`
@@ -67,7 +68,7 @@ type Style struct {
 				Color string `xml:"color,attr"`
 			} `xml:"bottom"`
 		} `xml:"pBdr"`
-	} `xml:"pPr"`
+	}
 }
 
 type Styles struct {
@@ -97,6 +98,10 @@ func (a *DocxAgent) extractStyles(xmlContent string) string {
 		// Replacer for docx style names. Replsaces with HTML tag names
 		switch className {
 		case "Heading", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6":
+			// Skip numbering properties for headings to avoid list-like behavior.
+			if s.PPr.NumPr != nil {
+				s.PPr.NumPr = nil
+			}
 			className = strings.Replace(className, "Heading", "h", 1)
 			css.WriteString(fmt.Sprintf("%s {\n", className))
 		default:
@@ -273,10 +278,10 @@ func (a *DocxAgent) handleReadDocx(call *genai.FunctionCall) *genai.FunctionResp
 	// function more reusable.
 	var fullHTML strings.Builder
 	fullHTML.WriteString(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
-body{font-family: sans-serif; line-height: 1.4;}
-table{border-collapse: collapse; width: 100%; margin-bottom: 1em;}
-td,th{border: 1px solid #dddddd; text-align: left; padding: 8px;}
-tr:nth-child(even){background-color: #f2f2f2;}`)
+body{font-family: sans-serif; line-height: 1.4; }
+table{border-collapse: collapse; width: 100%; margin-bottom: 1em; border-spacing: 0;}
+td,th{padding: 8px; text-align: left; border: none;}
+tr:nth-child(even){background-color: #f2f2f2; }`)
 	fullHTML.WriteString(cssStyles)
 	fullHTML.WriteString("</style></head><body>")
 	fullHTML.WriteString(htmlBody)
@@ -365,6 +370,42 @@ func (a *DocxAgent) extractXMLFileFromDocx(path, xmlFileToExtract string) (strin
 	return string(xmlBytes), nil
 }
 
+// borderToCSS converts a WTableBorder to a CSS border string.
+func (a *DocxAgent) borderToCSS(b *docx.WTableBorder) string {
+	if b == nil || b.Val == "nil" || b.Val == "none" {
+		return "none"
+	}
+	// Default values
+	style := "solid"
+	// Size is in eighths of a point. Default to 1px if not specified or zero.
+	width := "1px"
+	color := "#000000"
+
+	// Map docx border styles to CSS border styles
+	switch b.Val {
+	case "single":
+		style = "solid"
+	case "double":
+		style = "double"
+	case "dotted":
+		style = "dotted"
+	case "dashed":
+		style = "dashed"
+	default:
+		if b.Val != "" {
+			style = b.Val
+		}
+	}
+
+	if b.Size > 0 {
+		width = fmt.Sprintf("%.2fpt", float64(b.Size)/8.0)
+	}
+	if b.Color != "" && b.Color != "auto" {
+		color = "#" + b.Color
+	}
+	return fmt.Sprintf("%s %s %s", width, style, color)
+}
+
 // convertDocxToHTML reads a .docx file and converts its content to an HTML string.
 // It handles paragraphs, text formatting (bold, italic, etc.), hyperlinks, tables, and images.
 // DOCX Format Specification (ECMA-376): https://www.ecma-international.org/publications-and-standards/standards/ecma-376/
@@ -437,12 +478,6 @@ func (a *DocxAgent) convertDocxToHTML(path string) (htmlBody string, css string,
 
 	var isListActive bool
 	for _, it := range doc.Document.Body.Items {
-		// Do not remove tis test block
-		switch it.(type) {
-		case *docx.Paragraph, *docx.Table: // printable
-			fmt.Println(it)
-		}
-
 		// SectPr is for page layout and is handled above; skip it for content rendering.
 		if _, ok := it.(*docx.SectPr); ok {
 			continue
@@ -794,21 +829,79 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		}
 		textBuilder.WriteString(closeTag)
 	case *docx.Table:
-		// The library's String() method provides a plain-text representation.
-		// We can now render it properly as HTML.
+		// Get table-wide border properties. These are the defaults.
+		tblBorders := v.TableProperties.TableBorders
+
 		textBuilder.WriteString("<table>\n")
-		for _, row := range v.TableRows {
+		for i, row := range v.TableRows {
 			textBuilder.WriteString("  <tr>\n")
-			for _, cell := range row.TableCells {
+			for j, cell := range row.TableCells {
 				var cellStyles []string
-				// Check for cell properties, specifically shading for background color.
-				// The underlying library must support parsing the Shade element.
 				if cell.TableCellProperties != nil && cell.TableCellProperties.Shade != nil {
-					// A fill color of "auto" means no background color.
 					if fill := cell.TableCellProperties.Shade.Fill; fill != "" && fill != "auto" {
 						cellStyles = append(cellStyles, "background-color:#"+fill)
 					}
 				}
+
+				// --- New Border Logic ---
+				tcBorders := cell.TableCellProperties.TableBorders
+
+				// Determine each border side, prioritizing cell-specific borders.
+				// Top border
+				var topBorder *docx.WTableBorder
+				if tcBorders != nil && tcBorders.Top != nil {
+					topBorder = tcBorders.Top
+				} else if i == 0 && tblBorders != nil { // First row uses table's top border
+					topBorder = tblBorders.Top
+				} else if tblBorders != nil { // Other rows use table's horizontal interior border
+					topBorder = tblBorders.InsideH
+				}
+				cellStyles = append(cellStyles, "border-top: "+a.borderToCSS(topBorder))
+
+				// Bottom border
+				var bottomBorder *docx.WTableBorder
+				if tcBorders != nil && tcBorders.Bottom != nil {
+					bottomBorder = tcBorders.Bottom
+				} else if i == len(v.TableRows)-1 && tblBorders != nil { // Last row
+					bottomBorder = tblBorders.Bottom
+				} else if tblBorders != nil {
+					bottomBorder = tblBorders.InsideH
+				}
+				cellStyles = append(cellStyles, "border-bottom: "+a.borderToCSS(bottomBorder))
+
+				// Left border (handles start/left)
+				var leftBorder *docx.WTableBorder
+				if tcBorders != nil && (tcBorders.Start != nil || tcBorders.Left != nil) {
+					leftBorder = tcBorders.Start
+					if leftBorder == nil {
+						leftBorder = tcBorders.Left
+					}
+				} else if j == 0 && tblBorders != nil { // First column
+					leftBorder = tblBorders.Start
+					if leftBorder == nil {
+						leftBorder = tblBorders.Left
+					}
+				} else if tblBorders != nil {
+					leftBorder = tblBorders.InsideV
+				}
+				cellStyles = append(cellStyles, "border-left: "+a.borderToCSS(leftBorder))
+
+				// Right border (handles end/right)
+				var rightBorder *docx.WTableBorder
+				if tcBorders != nil && (tcBorders.End != nil || tcBorders.Right != nil) {
+					rightBorder = tcBorders.End
+					if rightBorder == nil {
+						rightBorder = tcBorders.Right
+					}
+				} else if j == len(row.TableCells)-1 && tblBorders != nil { // Last column
+					rightBorder = tblBorders.End
+					if rightBorder == nil {
+						rightBorder = tblBorders.Right
+					}
+				} else if tblBorders != nil {
+					rightBorder = tblBorders.InsideV
+				}
+				cellStyles = append(cellStyles, "border-right: "+a.borderToCSS(rightBorder))
 
 				styleAttr := ""
 				if len(cellStyles) > 0 {
@@ -816,15 +909,15 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 				}
 				textBuilder.WriteString(fmt.Sprintf("    <td%s>", styleAttr))
 				var isListInCellActive bool
-				// We need to iterate over this slice to render all content within the cell.
+				// When converting a table, we must iterate over all items in a cell,
+				// not just paragraphs. This ensures that nested tables and other elements
+				// are properly rendered.
 				for _, item := range cell.Items {
-					// Check if the current item is a paragraph that's part of a list.
 					isListItem := false
 					if p, ok := item.(*docx.Paragraph); ok && p.Properties != nil && p.Properties.NumProperties != nil {
 						isListItem = true
 					}
 
-					// Manage the opening and closing of the <ul> tag.
 					if isListItem {
 						if !isListInCellActive {
 							textBuilder.WriteString("<ul>\n")
@@ -836,7 +929,6 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 							isListInCellActive = false
 						}
 					}
-					// Recursively call writeHTMLNode for any type of item inside the cell.
 					a.writeHTMLNode(textBuilder, doc, item, nil)
 				}
 				if isListInCellActive {
@@ -870,7 +962,6 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		if len(styles) > 0 {
 			textBuilder.WriteString("</span>")
 		}
-
 	case *docx.Hyperlink:
 		link, err := doc.ReferTarget(v.ID)
 		if err == nil {
@@ -880,7 +971,6 @@ func (a *DocxAgent) writeHTMLNode(textBuilder *strings.Builder, doc *docx.Docx, 
 		if err == nil {
 			textBuilder.WriteString("</a>")
 		}
-
 	case *docx.Text:
 		textBuilder.WriteString(html.EscapeString(v.Text))
 	case *docx.Tab:
