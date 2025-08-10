@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/mail"
+	"os"
 	"strings"
 	"time"
 
@@ -101,7 +102,7 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 		},
 		{
 			Name:        "readEmail",
-			Description: "GMAIL: Reads the full content of a specific email using its message ID.",
+			Description: "GMAIL: Reads the full content of a specific email, including its body and a list of attachments, using its message ID.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
@@ -137,6 +138,25 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 			},
 			Behavior: genai.BehaviorBlocking,
 		},
+		{
+			Name:        "downloadAttachment",
+			Description: "GMAIL: Downloads a specific email attachment to the workspace directory.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"message_id": {
+						Type:        genai.TypeString,
+						Description: "The ID of the message containing the attachment.",
+					},
+					"filename": {
+						Type:        genai.TypeString,
+						Description: "The desired filename for the downloaded attachment, obtained from 'readEmail'.",
+					},
+				},
+				Required: []string{"message_id", "filename"},
+			},
+			Behavior: genai.BehaviorBlocking,
+		},
 	}
 
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, functions...)
@@ -165,6 +185,20 @@ type EmailSummary struct {
 	Subject string `json:"subject"`
 	Snippet string `json:"snippet"`
 	Date    string `json:"date"`
+}
+
+// AttachmentSummary holds metadata about an email attachment.
+type AttachmentSummary struct {
+	PartID   string `json:"part_id"`
+	Filename string `json:"filename"`
+	MIMEType string `json:"mime_type"`
+	Size     int64  `json:"size"`
+}
+
+// EmailContent holds the body and attachment details of an email.
+type EmailContent struct {
+	Body        string              `json:"body"`
+	Attachments []AttachmentSummary `json:"attachments"`
 }
 
 // ListEmails retrieves a list of emails matching a query.
@@ -249,69 +283,81 @@ func (a *GmailAgent) ListEmails(query string, maxResults int64) ([]EmailSummary,
 	return summaries, nil
 }
 
-// findBodyPart recursively searches for a part with a specific MIME type.
-func (a *GmailAgent) findBodyPart(part *gmail.MessagePart, mimeType string) string {
+// extractParts recursively traverses the message parts to find the body and attachments.
+func (a *GmailAgent) extractParts(part *gmail.MessagePart, content *EmailContent) {
 	if part == nil {
-		return ""
-	}
-
-	var bodyBuilder strings.Builder
-
-	// If the current part matches the desired MIME type, decode and append its body.
-	if part.MimeType == mimeType && part.Body != nil && part.Body.Data != "" {
-		data, err := base64.URLEncoding.DecodeString(part.Body.Data)
-		if err == nil {
-			bodyBuilder.WriteString(string(data))
-		}
+		return
 	}
 
 	// If the part is multipart, recurse into its sub-parts.
 	if strings.HasPrefix(part.MimeType, "multipart/") {
 		for _, subPart := range part.Parts {
-			// Append the result of the recursive call.
-			bodyBuilder.WriteString(a.findBodyPart(subPart, mimeType))
+			a.extractParts(subPart, content)
 		}
+		return
 	}
 
-	return bodyBuilder.String()
+	// Check for text body parts.
+	if part.MimeType == "text/plain" || part.MimeType == "text/html" {
+		if part.Body != nil && part.Body.Data != "" {
+			// Prioritize plain text. Only take HTML if plain text is not yet found.
+			isPlainText := part.MimeType == "text/plain"
+			if isPlainText || content.Body == "" {
+				data, err := base64.URLEncoding.DecodeString(part.Body.Data)
+				if err == nil {
+					content.Body = string(data)
+				}
+			}
+		}
+		return
+	}
+
+	// Check for attachments. An attachment has a filename and is not an inline part.
+	// Crucially, it must have a Body.AttachmentId to be downloadable with the Attachments.Get endpoint.
+	if part.Filename != "" && part.Body != nil && part.Body.AttachmentId != "" {
+		attachment := AttachmentSummary{
+			// The PartID for the download tool is the AttachmentId from the body, not the PartId of the MIME part.
+			PartID:   part.Body.AttachmentId,
+			Filename: part.Filename,
+			MIMEType: part.MimeType,
+			Size:     part.Body.Size,
+		}
+		content.Attachments = append(content.Attachments, attachment)
+	}
 }
 
-// ReadEmail retrieves the full content of a specific email.
-func (a *GmailAgent) ReadEmail(messageID string) (string, error) {
+// ReadEmail retrieves the full content of a specific email, including body and attachments.
+func (a *GmailAgent) ReadEmail(messageID string) (EmailContent, error) {
+	content := EmailContent{}
 	if a.service == nil {
-		return "", fmt.Errorf("gmail agent not initialized")
+		return content, fmt.Errorf("gmail agent not initialized")
 	}
 
-	msg, err := a.service.Users.Messages.Get("me", messageID).Format("full").Do() // Use "full" to get all parts
+	msg, err := a.service.Users.Messages.Get("me", messageID).Format("full").Do()
 	if err != nil {
-		return "", fmt.Errorf("unable to retrieve message %s: %w", messageID, err)
+		return content, fmt.Errorf("unable to retrieve message %s: %w", messageID, err)
 	}
 
 	if msg.Payload == nil {
-		return "[Email has no content]", nil
+		content.Body = "[Email has no content]"
+		return content, nil
 	}
 
-	// 1. Prioritize finding the 'text/plain' part.
-	body := a.findBodyPart(msg.Payload, "text/plain")
-	if body != "" {
-		return body, nil
-	}
+	a.extractParts(msg.Payload, &content)
 
-	// 2. If no 'text/plain', fall back to 'text/html'. The AI can often parse this.
-	body = a.findBodyPart(msg.Payload, "text/html")
-	if body != "" {
-		return body, nil
-	}
-
-	// 3. As a last resort for very simple emails, check the top-level body directly.
-	if msg.Payload.Body != nil && msg.Payload.Body.Data != "" {
+	// As a last resort for very simple emails that are not multipart.
+	if content.Body == "" && msg.Payload.Body != nil && msg.Payload.Body.Data != "" {
 		data, err := base64.URLEncoding.DecodeString(msg.Payload.Body.Data)
 		if err == nil {
-			return string(data), nil
+			content.Body = string(data)
 		}
 	}
 
-	return "[Could not decode email body]", nil
+	if content.Body == "" && len(content.Attachments) == 0 {
+		content.Body = "[Could not decode email body or find attachments]"
+	}
+
+	return content, nil
 }
 
 // SendEmail sends an email on behalf of the user.
@@ -339,6 +385,76 @@ func (a *GmailAgent) SendEmail(to, subject, body string) (string, error) {
 	return fmt.Sprintf("Email sent successfully. Message ID: %s", sentMsg.Id), nil
 }
 
+// findAttachmentPart recursively searches for a message part that corresponds to an attachment with the given filename.
+func (a *GmailAgent) findAttachmentPart(part *gmail.MessagePart, filename string) *gmail.MessagePart {
+	if part == nil {
+		return nil
+	}
+
+	// If the current part matches the filename and has an attachment ID, we've found it.
+	if strings.EqualFold(part.Filename, filename) && part.Body != nil && part.Body.AttachmentId != "" {
+		return part
+	}
+
+	// If the part is multipart, recurse into its sub-parts.
+	if strings.HasPrefix(part.MimeType, "multipart/") {
+		for _, subPart := range part.Parts {
+			if foundPart := a.findAttachmentPart(subPart, filename); foundPart != nil {
+				return foundPart
+			}
+		}
+	}
+
+	return nil
+}
+
+// DownloadAttachment retrieves a specific attachment and saves it to the workspace.
+func (a *GmailAgent) DownloadAttachment(messageID, filename string) (string, error) {
+	if a.service == nil {
+		return "", fmt.Errorf("gmail agent not initialized")
+	}
+
+	// To download an attachment, we need its AttachmentID. We find this by re-fetching
+	// the message and searching for the part with the matching filename. This is more
+	// robust than relying on the model to pass the correct ID.
+	msg, err := a.service.Users.Messages.Get("me", messageID).Format("full").Do()
+	if err != nil {
+		return "", fmt.Errorf("unable to retrieve message %s to find attachment: %w", messageID, err)
+	}
+
+	attachmentPart := a.findAttachmentPart(msg.Payload, filename)
+	if attachmentPart == nil || attachmentPart.Body == nil || attachmentPart.Body.AttachmentId == "" {
+		return "", fmt.Errorf("could not find an attachment named '%s' with a downloadable ID in message %s", filename, messageID)
+	}
+
+	attachmentID := attachmentPart.Body.AttachmentId
+
+	// Get the safe path within the workspace.
+	safePath, err := config.GetSafePath(filename)
+	if err != nil {
+		return "", err // The error from GetSafePath is already descriptive.
+	}
+
+	// Retrieve the attachment data from the Gmail API using the found AttachmentID.
+	attachment, err := a.service.Users.Messages.Attachments.Get("me", messageID, attachmentID).Do()
+	if err != nil {
+		return "", fmt.Errorf("unable to retrieve attachment with ID %s: %w", attachmentID, err)
+	}
+
+	// The data is base64url encoded.
+	decodedData, err := base64.URLEncoding.DecodeString(attachment.Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode attachment data: %w", err)
+	}
+
+	// Write the decoded data to the file.
+	if err := os.WriteFile(safePath, decodedData, 0o644); err != nil {
+		return "", fmt.Errorf("failed to write attachment to file '%s': %w", safePath, err)
+	}
+
+	return fmt.Sprintf("Attachment '%s' downloaded successfully to workspace.", filename), nil
+}
+
 func (a *GmailAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
 	case "sendEmail":
@@ -347,6 +463,8 @@ func (a *GmailAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		return a.handleGmailListEmailsTool(call)
 	case "readEmail":
 		return a.handleGmailReadEmailTool(call)
+	case "downloadAttachment":
+		return a.handleDownloadAttachmentTool(call)
 	default:
 		return a.Agent.Handle(call)
 	}
@@ -357,79 +475,78 @@ func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.F
 
 	var result any
 	var err error
-
-	if a == nil {
-		err = fmt.Errorf("gmail agent not initialized or enabled")
+	to, toOK := call.Args["to"].(string)
+	subject, subjectOK := call.Args["subject"].(string)
+	body, bodyOK := call.Args["body"].(string)
+	if !toOK || !subjectOK || !bodyOK {
+		err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
 	} else {
-		to, toOK := call.Args["to"].(string)
-		subject, subjectOK := call.Args["subject"].(string)
-		body, bodyOK := call.Args["body"].(string)
-		if !toOK || !subjectOK || !bodyOK {
-			err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
+		status, sendErr := a.SendEmail(to, subject, body)
+		if sendErr != nil {
+			err = fmt.Errorf("failed to send email: %w", sendErr)
 		} else {
-			status, sendErr := a.SendEmail(to, subject, body)
-			if sendErr != nil {
-				err = fmt.Errorf("failed to send email: %w", sendErr)
-			} else {
-				a.Printf("Successfully sent email to: '%s'", to)
-				result = map[string]any{"status": status}
-			}
+			a.Printf("Successfully sent email to: '%s'", to)
+			result = map[string]any{"status": status}
 		}
 	}
+	return a.CreateFunctionResponse(call, result, err)
+}
 
+func (a *GmailAgent) handleDownloadAttachmentTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	var result any
+	var err error
+	messageID, msgOk := call.Args["message_id"].(string)
+	filename, fileOk := call.Args["filename"].(string)
+	if !msgOk || !fileOk || messageID == "" || filename == "" {
+		err = fmt.Errorf("'message_id' and 'filename' arguments are required and must be non-empty strings")
+	} else {
+		status, downloadErr := a.DownloadAttachment(messageID, filename)
+		if downloadErr != nil {
+			err = fmt.Errorf("failed to download attachment: %w", downloadErr)
+		} else {
+			a.Printf("Successfully downloaded attachment: '%s'", filename)
+			result = map[string]any{"status": status}
+		}
+	}
 	return a.CreateFunctionResponse(call, result, err)
 }
 
 func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
-
 	var result any
 	var err error
-
-	if a == nil {
-		err = fmt.Errorf("gmail agent not initialized or enabled")
-	} else {
-		query, _ := call.Args["query"].(string)
-		maxResultsFloat, _ := call.Args["max_results"].(float64)
-		maxResults := int64(maxResultsFloat)
-		if maxResults <= 0 {
-			maxResults = 10 // Default value
-		}
-
-		emails, listErr := a.ListEmails(query, maxResults)
-		if listErr != nil {
-			err = fmt.Errorf("failed to list emails: %w", listErr)
-		} else {
-			a.Printf("Successfully listed %d emails for query: '%s'", len(emails), query)
-			result = map[string]any{"emails": emails}
-		}
+	query, _ := call.Args["query"].(string)
+	maxResultsFloat, _ := call.Args["max_results"].(float64)
+	maxResults := int64(maxResultsFloat)
+	if maxResults <= 0 {
+		maxResults = 10 // Default value
 	}
-
+	emails, listErr := a.ListEmails(query, maxResults)
+	if listErr != nil {
+		err = fmt.Errorf("failed to list emails: %w", listErr)
+	} else {
+		a.Printf("Successfully listed %d emails for query: '%s'", len(emails), query)
+		result = map[string]any{"emails": emails}
+	}
 	return a.CreateFunctionResponse(call, result, err)
 }
 
 func (a *GmailAgent) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
-
 	var result any
 	var err error
-
-	if a == nil {
-		err = fmt.Errorf("gmail agent not initialized or enabled")
+	messageID, ok := call.Args["message_id"].(string)
+	if !ok || messageID == "" {
+		err = fmt.Errorf("'message_id' argument is required and must be a non-empty string")
 	} else {
-		messageID, ok := call.Args["message_id"].(string)
-		if !ok || messageID == "" {
-			err = fmt.Errorf("'message_id' argument is required and must be a non-empty string")
+		content, readErr := a.ReadEmail(messageID)
+		if readErr != nil {
+			err = fmt.Errorf("failed to read email with ID '%s': %w", messageID, readErr)
 		} else {
-			content, readErr := a.ReadEmail(messageID)
-			if readErr != nil {
-				err = fmt.Errorf("failed to read email with ID '%s': %w", messageID, readErr)
-			} else {
-				a.Printf("Successfully read email with ID: '%s'", messageID)
-				result = map[string]any{"content": content}
-			}
+			a.Printf("Successfully read email with ID: '%s'", messageID)
+			result = map[string]any{"content": content}
 		}
 	}
-
 	return a.CreateFunctionResponse(call, result, err)
 }

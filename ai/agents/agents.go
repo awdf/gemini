@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -110,8 +111,12 @@ func Registerate(ctx context.Context, client *genai.Client, toolset *genai.Tool,
 	}
 
 	agent := factory(ctx, client, toolset)
-	if agent == nil {
-		// The factory can return nil if the agent is disabled (e.g., GmailAgent)
+	// An interface is only nil if both its type and value are nil.
+	// A nil pointer of a concrete type (e.g., (*GmailAgent)(nil)) assigned to an
+	// interface results in a non-nil interface. We must use reflection
+	// to check if the underlying value of the interface is nil.
+	if agent == nil || (reflect.ValueOf(agent).Kind() == reflect.Ptr && reflect.ValueOf(agent).IsNil()) {
+		// The factory can return a nil agent if it's disabled or fails to initialize.
 		return
 	}
 

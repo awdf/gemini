@@ -549,6 +549,7 @@ func (l *LiveAI) handleResponses() {
 			}
 		case msg.ToolCall != nil:
 			go func(request *genai.LiveServerToolCall) {
+				log.Println("Live stream received tool call request.")
 				responses := l.executeToolCalls(request)
 
 				// Send the results back to the model using the dedicated tool response message.
@@ -942,6 +943,7 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
+		log.Printf("Executing tool call: '%s'", call.Name)
 		// Add the current image buffer to any tool call that might need it.
 		// The tool itself is responsible for using or ignoring this argument.
 		l.mu.RLock()
