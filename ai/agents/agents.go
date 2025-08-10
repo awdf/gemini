@@ -26,6 +26,7 @@ const (
 	AgentWebScraperName      = "webScraperAgent"
 	AgentDesktopName         = "desktopAgent"
 	AgentGmailName           = "gmailAgent"
+	AgentCalendarName        = "calendarAgent"
 )
 
 type Callable interface {

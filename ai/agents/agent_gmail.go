@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"google.golang.org/api/gmail/v1"
-	"google.golang.org/api/oauth2/v2"
 	"google.golang.org/api/option"
 	"google.golang.org/genai"
 
@@ -46,14 +45,7 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 		return nil
 	}
 
-	scopes := []string{
-		gmail.GmailReadonlyScope,
-		gmail.GmailSendScope,
-		oauth2.UserinfoEmailScope, // Required to validate the token on startup.
-		// Add more scopes here if needed in the future, e.g., compose, send
-	}
-
-	gClient, err := google.GetClient(ctx, scopes)
+	gClient, err := google.GetClient(ctx)
 	if err != nil {
 		log.Printf("unable to get Google OAuth2 client: %v", err)
 		return nil

@@ -9,18 +9,47 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/gmail/v1"
 	oauth2api "google.golang.org/api/oauth2/v2"
 	"google.golang.org/api/option"
 
 	"gemini/config"
 )
 
-// GetClient uses a previously saved token or performs a new OAuth 2.0 flow.
-// It validates any existing token and triggers re-authentication if it's stale or revoked.
-func GetClient(ctx context.Context, scopes []string) (*http.Client, error) {
+var (
+	googleClientOnce sync.Once
+	googleClient     *http.Client
+	googleClientErr  error
+)
+
+// getAllScopes defines all possible Google API scopes the application might need across all agents.
+// This ensures a single token is requested with all necessary permissions.
+func getAllScopes() []string {
+	return []string{
+		gmail.GmailReadonlyScope,
+		gmail.GmailSendScope,
+		calendar.CalendarEventsScope,
+		oauth2api.UserinfoEmailScope, // Required to validate the token and get user email.
+	}
+}
+
+// GetClient uses a singleton pattern to create and return a single, shared http.Client
+// for all Google API interactions. It requests all necessary scopes upfront.
+func GetClient(ctx context.Context) (*http.Client, error) {
+	googleClientOnce.Do(func() {
+		googleClient, googleClientErr = createGoogleClient(ctx)
+	})
+	return googleClient, googleClientErr
+}
+
+// createGoogleClient contains the logic to perform the OAuth2 flow.
+// It's called only once by the GetClient singleton.
+func createGoogleClient(ctx context.Context) (*http.Client, error) {
 	credentialsFile := config.C.Google.CredentialsFile
 	tokenFile := config.C.Google.TokenFile
 
@@ -30,7 +59,7 @@ func GetClient(ctx context.Context, scopes []string) (*http.Client, error) {
 	}
 
 	// For desktop apps, the redirect URI must match what is configured in the Google Cloud Console.
-	oauthConfig, err := google.ConfigFromJSON(b, scopes...)
+	oauthConfig, err := google.ConfigFromJSON(b, getAllScopes()...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse client secret file to config: %w", err)
 	}

@@ -99,6 +99,7 @@ func NewAI(
 		agents.Registerate(ctx, client, toolset, agents.AgentFileName)
 		agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
 		agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
+		agents.Registerate(ctx, client, toolset, agents.AgentCalendarName)
 		agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
 		agents.Registerate(ctx, client, toolset, agents.AgentRtfReaderName)
 		agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
