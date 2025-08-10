@@ -18,6 +18,7 @@ import (
 	"gemini/ai/agents"
 	"gemini/audio"
 	"gemini/config"
+	"gemini/desktop"
 	"gemini/flow"
 	"gemini/helpers"
 	"gemini/images"
@@ -396,7 +397,7 @@ func (l *LiveAI) Run() {
 					}
 					log.Println("Taking live screenshot for AI response...")
 					var err error
-					l.imageBuffer, err = images.TakeScreenshot()
+					l.imageBuffer, err = desktop.C.CaptureScreen()
 					// TODO: Remove after live testing
 					go helpers.Verify(images.SaveImage("Screenshot.png", l.imageBuffer.Bytes()))
 					l.mu.Unlock() // Unlock before logging and sending to avoid holding lock during I/O
@@ -794,13 +795,14 @@ func (l *LiveAI) sendTextPrompt(prompt string) error {
 			l.imageBuffer.Release()
 		}
 		log.Println("Taking screenshot for AI response...")
-		var err error
-		l.imageBuffer, err = images.TakeScreenshot()
+		screenshotBuf, err := desktop.C.CaptureScreen()
 		l.mu.Unlock()
-		if err != nil {
-			return fmt.Errorf("failed to take screenshot: %w", err)
+		if err == nil {
+			l.imageBuffer = screenshotBuf
+		} else {
+			log.Printf("failed to take screenshot: %v", err)
 		}
-		parts = append(parts, genai.NewPartFromBytes(l.imageBuffer.Bytes(), "image/png"))
+		parts = append(parts, genai.NewPartFromBytes(l.imageBuffer.Bytes(), "image/png")) // The buffer now holds PNG data
 	}
 
 	turn := genai.NewContentFromParts(parts, genai.RoleUser)

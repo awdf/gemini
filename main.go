@@ -16,13 +16,12 @@ import (
 	"gemini/ai"
 	"gemini/audio"
 	"gemini/config"
+	"gemini/desktop"
 	"gemini/flow"
-	"gemini/helpers"
 	"gemini/inout"
 	"gemini/pipeline"
 	"gemini/recorder"
 	"gemini/vad"
-	"gemini/wayland"
 
 	"github.com/asaskevich/EventBus"
 	"github.com/go-gst/go-gst/gst"
@@ -152,11 +151,14 @@ func main() {
 		config.C.AI.Transcript = true
 	}
 	gst.Init(nil)
-	wayland.DisableJoystick()
-	helpers.Verify(wayland.Init())
-	wayland.SetOffset(10)  // Default
-	wayland.SetAccuracy(2) // Default
-	defer wayland.Done()
+
+	// Initialize the platform-specific desktop controller.
+	desktopController, err := desktop.NewWaylandController()
+	if err != nil {
+		log.Fatalf("Failed to initialize desktop controller: %v", err)
+	}
+	desktop.SetController(desktopController)
+	defer desktop.C.Close()
 
 	// TODO: Remove after object detection live testing
 	// wayland.MoveMouseToPosition(72, 303)

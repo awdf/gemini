@@ -35,18 +35,17 @@ func (sb *ScreenshotBuffer) Release() {
 	sb.pool.Put(sb.Buffer)
 }
 
-func DisplayBounds() (*image.Rectangle, error) {
-	n := screenshot.NumActiveDisplays()
-	if n <= 0 {
-		return nil, errors.New("no active monitors found")
-	}
+// NewScreenshotBuffer creates a new ScreenshotBuffer from a byte slice,
+// using a buffer from the pool.
+func NewScreenshotBuffer(data []byte) *ScreenshotBuffer {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	buf.Write(data) // Write the initial data to the buffer.
 
-	bounds := screenshot.GetDisplayBounds(0)
-	if bounds.Dx() == 0 || bounds.Dy() == 0 {
-		return nil, fmt.Errorf("invalid display bounds: %+v", bounds)
+	return &ScreenshotBuffer{
+		Buffer: buf,
+		pool:   &bufferPool,
 	}
-
-	return &bounds, nil
 }
 
 // DrawRectangle draws a rectangle with a specified thickness on the given image.
@@ -78,6 +77,20 @@ func DrawRectangle(img image.Image, rect image.Rectangle, thickness int, col col
 	}
 
 	return newImg
+}
+
+func DisplayBounds() (*image.Rectangle, error) {
+	n := screenshot.NumActiveDisplays()
+	if n <= 0 {
+		return nil, errors.New("no active monitors found")
+	}
+
+	bounds := screenshot.GetDisplayBounds(0)
+	if bounds.Dx() == 0 || bounds.Dy() == 0 {
+		return nil, fmt.Errorf("invalid display bounds: %+v", bounds)
+	}
+
+	return &bounds, nil
 }
 
 // TakeScreenshot captures a screenshot and returns it as a ScreenshotBuffer.

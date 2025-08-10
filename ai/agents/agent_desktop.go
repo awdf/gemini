@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/genai"
 
+	"gemini/desktop"
 	"gemini/wayland"
 )
 
@@ -197,7 +198,7 @@ func (a *DesktopAgent) handleTypeTextTool(call *genai.FunctionCall) *genai.Funct
 	if !ok || text == "" {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("argument 'text' is required and must be a non-empty string"))
 	}
-	wayland.Type(text)
+	desktop.C.TypeText(text)
 	result := map[string]any{"status": "text typed successfully"}
 	return a.CreateFunctionResponse(call, result, nil)
 }
@@ -218,9 +219,9 @@ func (a *DesktopAgent) handleKeyActionTool(call *genai.FunctionCall) *genai.Func
 		}
 	}
 
-	wayland.KeyAction(keyCodes, wayland.BTN_PRESSED)
+	desktop.C.KeyAction(keyCodes, wayland.BTN_PRESSED)
 	time.Sleep(50 * time.Millisecond)
-	wayland.KeyAction(keyCodes, wayland.BTN_RELEASED)
+	desktop.C.KeyAction(keyCodes, wayland.BTN_RELEASED)
 
 	keyNames := make([]string, len(keyCodes))
 	for i, code := range keyCodes {

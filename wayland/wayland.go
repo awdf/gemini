@@ -17,7 +17,6 @@ import "C"
 
 import (
 	"fmt"
-	"image"
 	"time"
 	"unsafe"
 )
@@ -164,6 +163,7 @@ func ReadKey() (*KeyEvent, error) {
 		Value: int(cKey.value),
 	}, nil
 }
+
 func DisableJoystick() {
 	C.disableJoystick()
 }
@@ -228,24 +228,4 @@ func CalcScaleOffset(scaleMax int, ev *JEvent) int {
 
 func CalcTrigerScaleOffset(scaleMax int, ev *JEvent) int {
 	return scaleMax * (32767 + int(ev.Value)) / 65535
-}
-
-func GrabFrame() (image.Image, error) {
-	// Works with active frame buffer device
-	frame := C.mapScreen()
-	defer C.unmapScreen(frame)
-
-	if frame == nil {
-		return nil, fmt.Errorf("failed to grab frame")
-	}
-	width := int(frame.width)
-	height := int(frame.height)
-	stride := int(frame.stride)
-	data := C.GoBytes(unsafe.Pointer(frame.data), C.int(frame.size))
-	img := &image.RGBA{
-		Pix:    data,
-		Stride: stride,
-		Rect:   image.Rect(0, 0, width, height),
-	}
-	return img, nil
 }

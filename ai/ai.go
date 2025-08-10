@@ -25,6 +25,7 @@ import (
 	"gemini/ai/agents"
 	"gemini/audio"
 	"gemini/config"
+	"gemini/desktop"
 	"gemini/helpers"
 	"gemini/images"
 	"gemini/inout"
@@ -605,15 +606,14 @@ func (a *AI) withScreenshotIfImageMode(action func(imageBuffer *images.Screensho
 	}
 
 	log.Println("Taking screenshot for AI response...")
-	// Take screenshot on Wayland is 500ms or more
-	buffer, err := images.TakeScreenshot()
+	screenshotBuffer, err := desktop.C.CaptureScreen()
 	if err != nil {
 		log.Printf("ERROR: AI processing failed for screenshot capture: %v", err)
 		return
 	}
-	defer buffer.Release()
+	defer screenshotBuffer.Release()
 
-	action(buffer)
+	action(screenshotBuffer)
 }
 
 // generateAndProcessContent is a universal method to generate content from a set of parts,

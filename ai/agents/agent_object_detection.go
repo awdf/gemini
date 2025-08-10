@@ -13,9 +13,9 @@ import (
 	"google.golang.org/genai"
 
 	"gemini/config"
+	"gemini/desktop"
 	"gemini/helpers"
 	"gemini/images"
-	"gemini/wayland"
 )
 
 func init() {
@@ -34,7 +34,7 @@ type ObjectDetectionAgent struct {
 
 // NewObjectDetectionAgent creates a specialized agent for detecting objects in an image.
 func NewObjectDetectionAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *ObjectDetectionAgent {
-	bounds := helpers.Check(images.DisplayBounds())
+	bounds := helpers.Check(desktop.C.ScreenSize()) // If it still fails after retries, it's a fatal error.
 	grid := ObjectDetectionNormalizationGrid
 	halfGrid := grid / 2
 	systemInstruction := fmt.Sprintf(`You are an object detection specialist. 
@@ -178,8 +178,8 @@ func (a *ObjectDetectionAgent) handleDetectObjectsTool(call *genai.FunctionCall)
 			if !ok || imageBuf == nil || imageBuf.Len() == 0 {
 				err = fmt.Errorf("no image found in the current session context to detect objects from")
 			} else {
-				// Get screen dimensions to provide context to the model.
-				bounds, boundsErr := images.DisplayBounds()
+				// Get screen dimensions from the desktop controller to provide context to the model.
+				bounds, boundsErr := desktop.C.ScreenSize()
 				if boundsErr != nil {
 					err = fmt.Errorf("failed to get display bounds for object detection context: %w", boundsErr)
 				} else {
@@ -326,9 +326,9 @@ func (a *ObjectDetectionAgent) handleMouseClickTool(call *genai.FunctionCall) *g
 					a.Printf("Performing %d mouse click(s) at absolute pixel coordinates (%d, %d)", clicks, absX, absY)
 
 					// 5. Execute the desktop automation.
-					wayland.MoveMouseToPosition(absX, absY)
+					desktop.C.MoveMouse(absX, absY)
 					time.Sleep(100 * time.Millisecond)
-					wayland.MouseLeftClick(clicks)
+					desktop.C.MouseClick(clicks)
 
 					result = map[string]any{"status": fmt.Sprintf("%d mouse click(s) performed at (%d, %d)", clicks, absX, absY)}
 				}
