@@ -517,7 +517,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 					thoughtStarted, answerStarted = true, false // Reset answer flag
 				}
 				// We can format the function call to be readable.
-				thoughtText := fmt.Sprintf("Tool Call: %s(%v)\n", fc.Name, fc.Args)
+				thoughtText := fmt.Sprintf("TOOL CALL: %s(%v)\n", fc.Name, fc.Args)
 				a.formatter.Print(thoughtText)
 				functionCalls = append(functionCalls, fc)
 			} else if part.Text != "" { // A part is part of the answer if it has text.

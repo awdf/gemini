@@ -33,6 +33,7 @@ type LiveAI struct {
 	liveSink         *app.Sink
 	Element          *gst.Element
 	wg               *sync.WaitGroup
+	flags            *Flags
 	controlChan      <-chan string
 	textCmdChan      <-chan string
 	bus              *EventBus.Bus
@@ -62,13 +63,13 @@ func NewLiveSink(
 	controlChan <-chan string,
 	textCmdChan <-chan string,
 	bus *EventBus.Bus,
+	flags *Flags,
 ) *LiveAI {
 	ctx := context.Background()
 	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  config.C.AI.APIKey,
 		Backend: genai.BackendGeminiAPI,
 	}))
-
 	// --- AppSink Initialization ---
 	sink := helpers.Check(app.NewAppSink())
 	helpers.Verify(sink.SetProperty("sync", false))
@@ -112,6 +113,7 @@ func NewLiveSink(
 	return &LiveAI{
 		wg:               wg,
 		ctx:              ctx,
+		flags:            flags,
 		client:           client,
 		agents:           agents.AgentRegistry,
 		formatter:        inout.NewFormatter(),
@@ -171,7 +173,10 @@ func (l *LiveAI) OpenSession() {
 		},
 	}
 	// Input audio transcript
-	liveConfig.InputAudioTranscription = &genai.AudioTranscriptionConfig{}
+	if config.C.AI.Transcript {
+		liveConfig.InputAudioTranscription = &genai.AudioTranscriptionConfig{}
+	}
+
 	if config.C.AI.VoiceEnabled {
 		modelName = config.C.AI.ModelLiveTTS
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityAudio}
@@ -517,6 +522,10 @@ func (l *LiveAI) handleResponses() {
 					inModelTurn = true
 					turnGroundingChunks = nil
 					(*l.bus).Publish("main:topic", "mute:ai.handleResponses")
+					if !config.C.AI.Transcript {
+						// Usuely transcript clear screen.
+						l.formatter.Clear()
+					}
 					l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
 				}
 				// Do on each turn for text or voice data

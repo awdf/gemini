@@ -90,7 +90,7 @@ func NewApp(flags *CliFlags) *App {
 	// Create the main components with Dependency Injection.
 	// 2 modes: PostAI and LiveAI
 	if flags.Live { // LiveAI init
-		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus)
+		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus, aiFlags)
 		// The Live API requires 16kHz mono audio.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.LiveChannels, audio.LiveSampleRate)
 	} else { // PostAI init
