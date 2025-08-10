@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/genai"
 
 	"gemini/config"
@@ -22,11 +23,13 @@ const (
 	AgentFileName            = "FileAgent"
 	AgentPdfReaderName       = "pdfReaderAgent"
 	AgentRtfReaderName       = "rtfReaderAgent"
+	AgentDocxReaderName      = "docxReaderAgent"
 	AgentYoutubeName         = "youtubeAgent"
 	AgentWebScraperName      = "webScraperAgent"
 	AgentDesktopName         = "desktopAgent"
 	AgentGmailName           = "gmailAgent"
 	AgentCalendarName        = "calendarAgent"
+	AgentCronName            = "cronAgent"
 )
 
 type Callable interface {
@@ -38,7 +41,7 @@ type Callable interface {
 }
 
 // AgentFactory is a function type for creating new agents.
-type AgentFactory func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable
+type AgentFactory func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable
 
 // Agent is a specialized, self-contained AI processor for specific tasks.
 // It operates without the main application's event bus or pipeline, making it
@@ -104,14 +107,14 @@ func RegisterFactory(name string, factory AgentFactory) {
 
 // Registerate acts as a factory and registry for agents. It centralizes the
 // creation, registration, and post-initialization (e.g., WarmUp) of all agents.
-func Registerate(ctx context.Context, client *genai.Client, toolset *genai.Tool, agentName string) {
+func Registerate(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus, agentName string) {
 	factory, ok := agentFactories[agentName]
 	if !ok {
 		log.Printf("WARNING: Attempted to register an unknown agent: '%s'", agentName)
 		return
 	}
 
-	agent := factory(ctx, client, toolset)
+	agent := factory(ctx, client, toolset, bus)
 	// An interface is only nil if both its type and value are nil.
 	// A nil pointer of a concrete type (e.g., (*GmailAgent)(nil)) assigned to an
 	// interface results in a non-nil interface. We must use reflection

@@ -14,14 +14,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asaskevich/EventBus"
+
 	"gemini/config"
 
 	"github.com/fumiama/go-docx"
 	"google.golang.org/genai"
 )
-
-// AgentDocxReaderName is the name of the docx reader agent.
-const AgentDocxReaderName = "docxReaderAgent"
 
 func (a *DocxAgent) generateCSSFromStyles(styles *docx.Styles) string {
 	if styles == nil {
@@ -64,7 +63,7 @@ func (a *DocxAgent) generateCSSFromStyles(styles *docx.Styles) string {
 }
 
 func init() {
-	RegisterFactory(AgentDocxReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentDocxReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewDocxAgent(ctx, client, toolset)
 	})
 }

@@ -8,7 +8,9 @@ require (
 	github.com/fumiama/go-docx v0.0.0
 	github.com/go-gst/go-glib v1.4.0
 	github.com/go-gst/go-gst v1.4.0
+	github.com/google/uuid v1.6.0
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
+	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/oauth2 v0.28.0
 	google.golang.org/api v0.197.0
 	google.golang.org/genai v1.13.0
@@ -22,7 +24,6 @@ require (
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/gax-go/v2 v2.13.0 // indirect
 	github.com/jezek/xgb v1.1.1 // indirect
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e // indirect

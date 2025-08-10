@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/genai"
 
 	"gemini/config"
@@ -16,7 +17,7 @@ import (
 )
 
 func init() {
-	RegisterFactory(AgentFileName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentFileName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewFileAgent(ctx, client, toolset)
 	})
 }

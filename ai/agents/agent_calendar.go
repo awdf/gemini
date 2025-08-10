@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
 	"google.golang.org/genai"
@@ -15,7 +16,7 @@ import (
 )
 
 func init() {
-	RegisterFactory(AgentCalendarName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentCalendarName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewCalendarAgent(ctx, client, toolset)
 	})
 }

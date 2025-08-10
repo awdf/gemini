@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
 	"google.golang.org/genai"
@@ -19,7 +20,7 @@ import (
 )
 
 func init() {
-	RegisterFactory(AgentGmailName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentGmailName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		// NewGmailAgent can return nil, which is a valid nil interface value.
 		return NewGmailAgent(ctx, client, toolset)
 	})

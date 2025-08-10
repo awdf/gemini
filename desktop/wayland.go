@@ -23,15 +23,14 @@ func NewWaylandController() (*WaylandController, error) {
 	wayland.SetOffset(10)
 	wayland.SetAccuracy(2)
 
-	// Grab the screen once to cache its dimensions. This is much more efficient
-	// than grabbing a full frame every time ScreenSize() is called.
-	img, err := images.DisplayBounds()
+	// This is much more efficient than grabbing a full frame every time ScreenSize() is called.
+	rect, err := images.DisplayBounds()
 	if err != nil {
 		wayland.Done() // Clean up on failure
 		return nil, fmt.Errorf("failed to get screen size on init: %w", err)
 	}
 
-	return &WaylandController{screenBounds: img.Bounds()}, nil
+	return &WaylandController{screenBounds: rect.Bounds()}, nil
 }
 
 // MoveMouse moves the mouse cursor to an absolute position.

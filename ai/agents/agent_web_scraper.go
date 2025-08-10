@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/genai"
 
 	"gemini/config"
@@ -12,7 +13,7 @@ import (
 )
 
 func init() {
-	RegisterFactory(AgentWebScraperName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentWebScraperName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewWebScraperAgent(ctx, client, toolset)
 	})
 }

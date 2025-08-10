@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/genai"
 
 	"gemini/config"
@@ -19,7 +20,7 @@ import (
 )
 
 func init() {
-	RegisterFactory(AgentObjectDetectionName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentObjectDetectionName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewObjectDetectionAgent(ctx, client, toolset)
 	})
 }

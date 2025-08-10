@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/genai"
 
 	"gemini/desktop"
@@ -13,7 +14,7 @@ import (
 )
 
 func init() {
-	RegisterFactory(AgentDesktopName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentDesktopName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewDesktopAgent(ctx, client, toolset)
 	})
 }

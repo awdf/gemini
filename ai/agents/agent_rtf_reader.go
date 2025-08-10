@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/aiq/go-rtf"
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/genai"
 
 	"gemini/config"
 )
 
 func init() {
-	RegisterFactory(AgentRtfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentRtfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewRtfReaderAgent(ctx, client, toolset)
 	})
 }

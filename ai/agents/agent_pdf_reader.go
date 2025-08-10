@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/asaskevich/EventBus"
 	"google.golang.org/genai"
 
 	"gemini/config"
@@ -14,7 +15,7 @@ import (
 )
 
 func init() {
-	RegisterFactory(AgentPdfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool) Callable {
+	RegisterFactory(AgentPdfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewPdfReaderAgent(ctx, client, toolset)
 	})
 }

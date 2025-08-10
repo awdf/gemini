@@ -97,14 +97,15 @@ func NewAI(
 	// --- Agent Initialization ---
 	toolset := agents.NewToolSet()
 	if config.C.AI.EnableTools && config.C.AI.EnableFunctionCalling {
-		agents.Registerate(ctx, client, toolset, agents.AgentFileName)
-		agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
-		agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
-		agents.Registerate(ctx, client, toolset, agents.AgentCalendarName)
-		agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
-		agents.Registerate(ctx, client, toolset, agents.AgentRtfReaderName)
-		agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
-		agents.Registerate(ctx, client, toolset, agents.AgentDocxReaderName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentFileName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentObjectDetectionName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentGmailName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentCalendarName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentPdfReaderName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentRtfReaderName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
 	}
 
 	ai := &AI{
@@ -153,6 +154,7 @@ func (a *AI) Run() {
 	}
 
 	helpers.Verify((*a.bus).Subscribe("ai:topic", a.handleEvents))
+	helpers.Verify((*a.bus).SubscribeAsync("cron:trigger", a.handleCronEvent, false))
 
 	for a.fileChan != nil || a.textCmdChan != nil {
 		select {
@@ -226,6 +228,28 @@ func (a *AI) passiveRun() {
 		}
 	}
 	log.Println("AI Chat work finished (disabled).")
+}
+
+// handleCronEvent processes proactive events triggered by the CronAgent.
+func (a *AI) handleCronEvent(event agents.CronTriggerEvent) {
+	log.Printf("Cron event received: %+v", event)
+	prompt := fmt.Sprintf("The following scheduled event is now due: %s. Please acknowledge it and inform the user.", event.Message)
+
+	// This needs to be non-blocking.
+	go func() {
+		a.withPipelinePausedIfVoice(a.pipeline, func() {
+			a.withScreenshotIfImageMode(func(buffer *images.ScreenshotBuffer) {
+				action := func() error {
+					return a.TextQuestion(prompt, buffer)
+				}
+
+				err := a.retryWithBackoff(action)
+				if err != nil {
+					log.Printf("ERROR: AI processing failed for cron event after all retries: %v", err)
+				}
+			})
+		})
+	}()
 }
 
 // handleEvents processes commands sent to the AI component via the event bus.

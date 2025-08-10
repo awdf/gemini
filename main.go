@@ -2,8 +2,8 @@
 package main
 
 // DIRECTIVE: Chosen OOP approach for application development
-// DIRECTIVE: Each scope of logic should be placed in dedicated module
-// DIRECTIVE: Inside module can be only one constructor and name must start from New prefix
+// DIRECTIVE: Each scope of logic should be placed in dedicated module (<componentName>.go)
+// DIRECTIVE: Inside module can be only one constructor and name must start from New prefix and component name
 
 import (
 	"flag"
@@ -161,8 +161,11 @@ func main() {
 	defer desktop.C.Close()
 
 	// TODO: Remove after object detection live testing
-	// wayland.MoveMouseToPosition(72, 303)
-	// wayland.MouseLeftClick(2)
+	// desktop.C.MoveMouse(72, 303)
+	// desktop.C.MouseClick(2)
+	// desktop.C.Close()
+	// return
+
 	NewApp(flags).run()
 }
 

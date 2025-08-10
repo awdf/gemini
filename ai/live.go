@@ -101,17 +101,18 @@ func NewLiveSink(
 	// Initialize each agent, passing the toolset to them.
 	// Each agent's constructor will add its functions to the toolset and
 	// register its handler in the AgentRegistry via the Registerate function.
-	agents.Registerate(ctx, client, toolset, agents.AgentYoutubeName)
-	agents.Registerate(ctx, client, toolset, agents.AgentWebScraperName)
-	agents.Registerate(ctx, client, toolset, agents.AgentFileName)
-	agents.Registerate(ctx, client, toolset, agents.AgentObjectDetectionName)
-	agents.Registerate(ctx, client, toolset, agents.AgentGmailName)
-	agents.Registerate(ctx, client, toolset, agents.AgentCalendarName)
-	agents.Registerate(ctx, client, toolset, agents.AgentPdfReaderName)
-	agents.Registerate(ctx, client, toolset, agents.AgentRtfReaderName)
-	agents.Registerate(ctx, client, toolset, agents.AgentDesktopName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentYoutubeName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentWebScraperName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentFileName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentObjectDetectionName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentGmailName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentCalendarName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentPdfReaderName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentRtfReaderName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
 
-	agents.Registerate(ctx, client, toolset, agents.AgentDocxReaderName)
 	return &LiveAI{
 		wg:               wg,
 		ctx:              ctx,
@@ -324,6 +325,7 @@ func (l *LiveAI) Run() {
 		}
 	}, false))
 	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
+	helpers.Verify((*l.bus).SubscribeAsync("cron:trigger", l.handleCronEvent, false))
 
 	l.OpenSession()
 	// Start a dedicated goroutine to handle all incoming server messages.
@@ -439,6 +441,19 @@ func (l *LiveAI) Run() {
 			l.pullAndSendSamples()
 		}
 	}
+}
+
+// handleCronEvent processes proactive events triggered by the CronAgent.
+func (l *LiveAI) handleCronEvent(event agents.CronTriggerEvent) {
+	log.Printf("Live AI Cron event received: %+v", event)
+	prompt := fmt.Sprintf("The following scheduled event is now due: %s. Please acknowledge it and inform the user.", event.Message)
+
+	// This needs to be non-blocking.
+	go func() {
+		if err := l.sendTextPrompt(prompt); err != nil {
+			log.Printf("ERROR: failed to process cron event prompt: %v", err)
+		}
+	}()
 }
 
 // handleResponses runs in a dedicated goroutine, processing all messages from the server.
