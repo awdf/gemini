@@ -5,12 +5,15 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"mime"
 	"net/mail"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/asaskevich/EventBus"
+	"github.com/google/uuid"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
 	"google.golang.org/genai"
@@ -110,7 +113,7 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 		},
 		{
 			Name:        "sendEmail",
-			Description: "GMAIL: Sends an email from the user's Gmail account.",
+			Description: "GMAIL: Sends an email from the user's Gmail account. Can include an attachment from the workspace.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
@@ -125,6 +128,10 @@ func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Too
 					"body": {
 						Type:        genai.TypeString,
 						Description: "The plain text body of the email.",
+					},
+					"attachment_path": {
+						Type:        genai.TypeString,
+						Description: "Optional. The path to a file in the workspace to attach to the email.",
 					},
 				},
 				Required: []string{"to", "subject", "body"},
@@ -354,17 +361,66 @@ func (a *GmailAgent) ReadEmail(messageID string) (EmailContent, error) {
 }
 
 // SendEmail sends an email on behalf of the user.
-func (a *GmailAgent) SendEmail(to, subject, body string) (string, error) {
+func (a *GmailAgent) SendEmail(to, subject, body, attachmentPath string) (string, error) {
 	if a.service == nil {
 		return "", fmt.Errorf("gmail agent not initialized")
 	}
 
-	// Construct the email message headers in RFC 2822 format.
-	messageStr := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s",
-		a.userEmail, to, subject, body)
+	var messageBytes []byte
+	if attachmentPath == "" {
+		// No attachment, send a simple text email.
+		// The message needs to be in RFC 2822 format.
+		// We should specify Content-Type for clarity.
+		messageBytes = []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s",
+			a.userEmail, to, subject, body))
+	} else {
+		// Attachment present, construct a multipart message.
+		safePath, err := config.GetSafePath(attachmentPath)
+		if err != nil {
+			return "", err // GetSafePath provides a good error message.
+		}
 
-	// Base64-encode the message for the Gmail API.
-	rawMessage := base64.URLEncoding.EncodeToString([]byte(messageStr))
+		fileBytes, err := os.ReadFile(safePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read attachment file '%s': %w", attachmentPath, err)
+		}
+
+		mimeType := mime.TypeByExtension(filepath.Ext(safePath))
+		if mimeType == "" {
+			mimeType = "application/octet-stream" // Default MIME type
+		}
+
+		boundary := uuid.New().String()
+		var mailBuilder strings.Builder
+
+		// Headers for the multipart message
+		mailBuilder.WriteString(fmt.Sprintf("From: %s\r\n", a.userEmail))
+		mailBuilder.WriteString(fmt.Sprintf("To: %s\r\n", to))
+		mailBuilder.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+		mailBuilder.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", boundary))
+
+		// Text part
+		mailBuilder.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		mailBuilder.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n")
+		mailBuilder.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
+		mailBuilder.WriteString(body + "\r\n")
+
+		// Attachment part
+		mailBuilder.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		mailBuilder.WriteString(fmt.Sprintf("Content-Type: %s\r\n", mimeType))
+		mailBuilder.WriteString("Content-Transfer-Encoding: base64\r\n")
+		mailBuilder.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", filepath.Base(safePath)))
+		mailBuilder.WriteString(base64.StdEncoding.EncodeToString(fileBytes))
+		mailBuilder.WriteString("\r\n")
+
+		// Closing boundary
+		mailBuilder.WriteString(fmt.Sprintf("--%s--", boundary))
+
+		messageBytes = []byte(mailBuilder.String())
+	}
+
+	// Base64-encode the entire message for the Gmail API.
+	rawMessage := base64.URLEncoding.EncodeToString(messageBytes)
 
 	message := &gmail.Message{
 		Raw: rawMessage,
@@ -471,10 +527,11 @@ func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.F
 	to, toOK := call.Args["to"].(string)
 	subject, subjectOK := call.Args["subject"].(string)
 	body, bodyOK := call.Args["body"].(string)
+	attachmentPath, _ := call.Args["attachment_path"].(string) // It's optional
 	if !toOK || !subjectOK || !bodyOK {
 		err = fmt.Errorf("'to', 'subject', and 'body' arguments are required and must be strings")
 	} else {
-		status, sendErr := a.SendEmail(to, subject, body)
+		status, sendErr := a.SendEmail(to, subject, body, attachmentPath)
 		if sendErr != nil {
 			err = fmt.Errorf("failed to send email: %w", sendErr)
 		} else {
