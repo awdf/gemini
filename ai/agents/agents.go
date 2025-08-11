@@ -63,6 +63,7 @@ type AgentConfig struct {
 	Name                string
 	Model               string
 	RPM                 int
+	AgentInstructions   string
 	SystemInstruction   string
 	Temperature         *float32
 	EnableGoogleSearch  bool
@@ -178,6 +179,15 @@ func NewAgent(ctx context.Context, client *genai.Client, agentConfig AgentConfig
 	}
 
 	agent.Printf("Creating new agent with model: %s", agent.modelName)
+
+	// Add agent-specific instructions to the global config.
+	if agentConfig.AgentInstructions != "" {
+		if config.C.AI.AgentInstructions == nil {
+			config.C.AI.AgentInstructions = make(map[string]string)
+		}
+		config.C.AI.AgentInstructions[agentConfig.Name] = agentConfig.AgentInstructions
+		agent.Printf("Registered instructions for agent.")
+	}
 
 	if agentConfig.SystemInstruction != "" {
 		agent.systemInstruction = genai.NewContentFromParts([]*genai.Part{genai.NewPartFromText(agentConfig.SystemInstruction)}, "")
@@ -333,7 +343,7 @@ func (a *Agent) CreateFunctionResponse(call *genai.FunctionCall, result any, err
 
 	responseMap, ok := result.(map[string]any)
 	if !ok {
-		a.Printf("NOTICE: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
+		config.DebugPrintf("NOTICE: tool call result for '%s' is not a map[string]any, wrapping it. Type: %T", call.Name, result)
 		responseMap = map[string]any{"output": result}
 	}
 

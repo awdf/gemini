@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"gemini/helpers"
-
 	"github.com/BurntSushi/toml"
 )
 
@@ -53,6 +51,7 @@ type AIConfig struct {
 	VoicePrompt              string                         `toml:"VoicePrompt"`
 	SystemPrompt             string                         `toml:"SystemPrompt"`
 	DirectivesPrompt         string                         `toml:"DirectivesPrompt"`
+	AgentInstructions        map[string]string              `toml:"-"` // Agent-specific instructions, not loaded from toml.
 	Thinking                 int32                          `toml:"Thinking"`
 	Thoughts                 bool                           `toml:"Thoughts"`
 	EnableTools              bool                           `toml:"EnableTools"`
@@ -162,6 +161,7 @@ func createDefaultConfig(path string) {
 	// Populate with default values
 	defaultConfig.Debug = false
 	defaultConfig.Trace = false
+	defaultConfig.AI.AgentInstructions = make(map[string]string)
 	defaultConfig.Mode = "mix"
 	defaultConfig.AI.Timezone = "UTC"
 	defaultConfig.LogFile = "app.log"
@@ -261,27 +261,12 @@ func (a *AIConfig) GetSystemInstruction() string {
 		sb.WriteString(a.DirectivesPrompt)
 	}
 
-	// If function calling is enabled, inform the model about its workspace constraints.
-	// This helps it generate correct, relative paths for file system tools.
-	if a.EnableFunctionCalling {
-		if a.WorkspaceDir != "" {
-			safePathToWorkspace := helpers.Check(GetSafePath(a.WorkspaceDir))
-			sb.WriteString(fmt.Sprintf(`
-Function calling:
-You have access to a file system toolset.
-All file operations are restricted to the "%s" directory. 
-All paths provided to tools like "listFiles","readFile", "createFile", etc., must be relative to this workspace.`,
-				safePathToWorkspace))
+	// Append agent-specific instructions.
+	if len(a.AgentInstructions) > 0 {
+		sb.WriteString("\n\nAgent-Specific Instructions:")
+		for agentName, instructions := range a.AgentInstructions {
+			sb.WriteString(fmt.Sprintf("\n--- %s ---\n%s", agentName, instructions))
 		}
-		// Add explicit instructions for the desktop automation tool workflow.
-		sb.WriteString(`
-
-When using DESKTOP AUTOMATION tools ('detectObjects', 'verifyObjectDetection', 'mouseClick'):
-1. Your goal is to interact with a graphical user interface based on both the image in context and the user requests.
-2. Start by using 'detectObjects' to locate UI elements. Provide a highly descriptive 'query' to this tool. For example, instead of "button", use "the blue 'Login' button under the password field".
-3. After getting a list of objects, you MUST confirm your choice using the 'verifyObjectDetection' tool. This tool will draw a red box on the object you selected and show you the result.
-4. Examine the image with the red box in context with your vision ability. If the requested object is correctly highlighted, proceed to use 'mouseClick'.
-5. If 'verifyObjectDetection' shows the wrong object, or if 'detectObjects' found nothing, DO NOT repeat the same 'detectObjects' call. Re-analyze the screen and create a new, more specific query. If "icon" failed, try like "the green video camera icon in the toolbar". This is critical to avoid loops.`)
 	}
 
 	return sb.String()

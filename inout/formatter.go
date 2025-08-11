@@ -1,6 +1,7 @@
 package inout
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -113,24 +114,43 @@ func LogToolResult(callName string, result any) {
 	log.Printf("Tool call '%s' result:", callName)
 	if resultMap, ok := result.(map[string]any); ok {
 		for key, value := range resultMap {
-			// Special handling for file list to make it more readable
+			// Special handling for file list to make it more readable and less verbose.
 			if key == "files" {
 				if fileList, ok := value.([]map[string]any); ok {
 					log.Printf("  %s: [%d files]", key, len(fileList))
 					for _, fileInfo := range fileList {
 						log.Printf("    - %v", fileInfo)
 					}
-					continue // Skip the generic print below
+					continue
+				}
+				if fileList, ok := value.([]string); ok {
+					log.Printf("  %s: [%d files]", key, len(fileList))
+					for _, fileName := range fileList {
+						log.Printf("    - %s", fileName)
+					}
+					continue
 				}
 			}
-			// Generic print for other keys, with truncation for long values
-			valueStr := fmt.Sprintf("%v", value)
-			if len(valueStr) > 512 {
-				valueStr = fmt.Sprintf("%.512s...", valueStr)
+			// For other keys, pretty-print the value as JSON.
+			jsonData, err := json.MarshalIndent(value, "    ", "  ")
+			if err != nil {
+				// Fallback for non-serializable values, with truncation.
+				valueStr := fmt.Sprintf("%v", value)
+				if len(valueStr) > 512 {
+					valueStr = fmt.Sprintf("%.512s...", valueStr)
+				}
+				log.Printf("  %s: %s", key, valueStr)
+			} else {
+				log.Printf("  %s:\n%s", key, string(jsonData))
 			}
-			log.Printf("  %s: %s", key, valueStr)
 		}
 	} else {
-		log.Printf("  Result (not a map): %v", result)
+		// If the result is not a map, pretty-print the whole thing as JSON.
+		jsonData, err := json.MarshalIndent(result, "  ", "  ")
+		if err != nil {
+			log.Printf("  Result (could not marshal to JSON, falling back to default format): %v", result)
+		} else {
+			log.Printf("  Result:\n%s", string(jsonData))
+		}
 	}
 }

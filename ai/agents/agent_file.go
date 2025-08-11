@@ -13,6 +13,7 @@ import (
 	"google.golang.org/genai"
 
 	"gemini/config"
+	"gemini/helpers"
 	"gemini/tools"
 )
 
@@ -122,8 +123,15 @@ func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 	// Append the function to the shared toolset.
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, functions...)
 
+	safePathToWorkspace := helpers.Check(config.GetSafePath(config.C.AI.WorkspaceDir))
+	agentInstructions := fmt.Sprintf(`You have access to a file system toolset.
+All file operations are restricted to the "%s" directory. 
+All paths provided to tools like "listFiles","readFile", "createFile", etc., must be relative to this workspace.`,
+		safePathToWorkspace)
+
 	agentConfig := AgentConfig{
-		Name: AgentFileName,
+		Name:              AgentFileName,
+		AgentInstructions: agentInstructions,
 		// This agent only executes tools, it does not generate creative responses,
 		// so a response schema is not needed.
 	}
