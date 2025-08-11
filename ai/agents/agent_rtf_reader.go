@@ -20,7 +20,7 @@ import (
 
 func init() {
 	RegisterFactory(AgentRtfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewRtfReaderAgent(ctx, client, toolset)
+		return NewRtfReaderAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -29,7 +29,7 @@ type RtfReaderAgent struct {
 }
 
 // NewRtfReaderAgent creates a specialized agent for converting RTF documents to HTML.
-func NewRtfReaderAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *RtfReaderAgent {
+func NewRtfReaderAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *RtfReaderAgent {
 	functions := genai.FunctionDeclaration{
 		Name:        "readRtf",
 		Description: "RTF Reader: Read an RTF file and return its contents as HTML. You MUST use this tool to read the content of any RTF file before you can analyze or summarize it.",

@@ -323,7 +323,7 @@ func (a *Agent) Handle(_ *genai.FunctionCall) *genai.FunctionResponse {
 }
 
 // CreateFunctionResponse is a method to standardize the creation of FunctionResponse objects for an agent.
-func (a *Agent) CreateFunctionResponse(call *genai.FunctionCall, result any, err error) *genai.FunctionResponse {
+func (a *Agent) CreateFunctionResponse(call *genai.FunctionCall, result any, err error, flags ...bool) *genai.FunctionResponse {
 	if err != nil {
 		a.Printf("ERROR executing tool call '%s': %v", call.Name, err)
 		result = map[string]any{"error": err.Error()}
@@ -337,11 +337,17 @@ func (a *Agent) CreateFunctionResponse(call *genai.FunctionCall, result any, err
 		responseMap = map[string]any{"output": result}
 	}
 
+	willContinue := false
+	if len(flags) > 0 {
+		willContinue = flags[0]
+	}
+
 	return &genai.FunctionResponse{
-		ID:         call.ID,
-		Name:       call.Name,
-		Response:   responseMap,
-		Scheduling: genai.FunctionResponseSchedulingWhenIdle,
+		ID:           call.ID,
+		Name:         call.Name,
+		Response:     responseMap,
+		Scheduling:   genai.FunctionResponseSchedulingWhenIdle,
+		WillContinue: helpers.Ptr(willContinue),
 	}
 }
 

@@ -154,7 +154,6 @@ func (a *AI) Run() {
 	}
 
 	helpers.Verify((*a.bus).Subscribe("ai:topic", a.handleEvents))
-	helpers.Verify((*a.bus).SubscribeAsync("cron:trigger", a.handleCronEvent, false))
 
 	for a.fileChan != nil || a.textCmdChan != nil {
 		select {
@@ -228,28 +227,6 @@ func (a *AI) passiveRun() {
 		}
 	}
 	log.Println("AI Chat work finished (disabled).")
-}
-
-// handleCronEvent processes proactive events triggered by the CronAgent.
-func (a *AI) handleCronEvent(event agents.CronTriggerEvent) {
-	log.Printf("Cron event received: %+v", event)
-	prompt := fmt.Sprintf("The following scheduled event is now due: %s. Please acknowledge it and inform the user.", event.Message)
-
-	// This needs to be non-blocking.
-	go func() {
-		a.withPipelinePausedIfVoice(a.pipeline, func() {
-			a.withScreenshotIfImageMode(func(buffer *images.ScreenshotBuffer) {
-				action := func() error {
-					return a.TextQuestion(prompt, buffer)
-				}
-
-				err := a.retryWithBackoff(action)
-				if err != nil {
-					log.Printf("ERROR: AI processing failed for cron event after all retries: %v", err)
-				}
-			})
-		})
-	}()
 }
 
 // handleEvents processes commands sent to the AI component via the event bus.

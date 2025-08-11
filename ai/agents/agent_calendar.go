@@ -17,7 +17,7 @@ import (
 
 func init() {
 	RegisterFactory(AgentCalendarName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewCalendarAgent(ctx, client, toolset)
+		return NewCalendarAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -28,7 +28,7 @@ type CalendarAgent struct {
 }
 
 // NewCalendarAgent creates and initializes the Calendar agent.
-func NewCalendarAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *CalendarAgent {
+func NewCalendarAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *CalendarAgent {
 	if !config.C.Google.Enabled {
 		log.Println("WARNING: Could not create Calendar agent, Google integration is disabled.")
 		return nil

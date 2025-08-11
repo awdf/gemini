@@ -325,7 +325,7 @@ func (l *LiveAI) Run() {
 		}
 	}, false))
 	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
-	helpers.Verify((*l.bus).SubscribeAsync("cron:trigger", l.handleCronEvent, false))
+	helpers.Verify((*l.bus).SubscribeAsync("agent:tool_response", l.handleAgentToolResponse, false))
 
 	l.OpenSession()
 	// Start a dedicated goroutine to handle all incoming server messages.
@@ -443,17 +443,28 @@ func (l *LiveAI) Run() {
 	}
 }
 
-// handleCronEvent processes proactive events triggered by the CronAgent.
-func (l *LiveAI) handleCronEvent(event agents.CronTriggerEvent) {
-	log.Printf("Live AI Cron event received: %+v", event)
-	prompt := fmt.Sprintf("The following scheduled event is now due: %s. Please acknowledge it and inform the user.", event.Message)
+// handleAgentToolResponse handles delayed/asynchronous tool responses published by agents.
+func (l *LiveAI) handleAgentToolResponse(response *genai.FunctionResponse) {
+	log.Printf("Received delayed tool response for call ID %s", response.ID)
 
-	// This needs to be non-blocking.
-	go func() {
-		if err := l.sendTextPrompt(prompt); err != nil {
-			log.Printf("ERROR: failed to process cron event prompt: %v", err)
-		}
-	}()
+	// Lock the session for reading.
+	l.mu.RLock()
+	session := l.session
+	l.mu.RUnlock()
+
+	if session == nil {
+		log.Printf("WARNING: Session is nil, cannot send delayed tool response for call ID %s", response.ID)
+		return
+	}
+
+	toolInput := genai.LiveToolResponseInput{FunctionResponses: []*genai.FunctionResponse{response}}
+
+	// Lock for writing to the session.
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+	if err := session.SendToolResponse(toolInput); err != nil {
+		log.Printf("ERROR: failed to send delayed tool response: %v", err)
+	}
 }
 
 // handleResponses runs in a dedicated goroutine, processing all messages from the server.

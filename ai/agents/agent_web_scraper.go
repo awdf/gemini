@@ -14,7 +14,7 @@ import (
 
 func init() {
 	RegisterFactory(AgentWebScraperName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewWebScraperAgent(ctx, client, toolset)
+		return NewWebScraperAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -23,7 +23,7 @@ type WebScraperAgent struct {
 }
 
 // NewWebScraperAgent creates a specialized agent for scraping and analyzing web pages.
-func NewWebScraperAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *WebScraperAgent {
+func NewWebScraperAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *WebScraperAgent {
 	systemInstruction := `You are a web page analysis expert with vision capabilities. 
 Your goal is to extract as much meaningful information as possible from the provided web page URL. 
 Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report. 

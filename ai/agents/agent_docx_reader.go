@@ -64,7 +64,7 @@ func (a *DocxAgent) generateCSSFromStyles(styles *docx.Styles) string {
 
 func init() {
 	RegisterFactory(AgentDocxReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewDocxAgent(ctx, client, toolset)
+		return NewDocxAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -74,7 +74,7 @@ type DocxAgent struct {
 }
 
 // NewDocxAgent creates a new DocxAgent and registers its function with the toolset.
-func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *DocxAgent {
+func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *DocxAgent {
 	readDocxFunc := &genai.FunctionDeclaration{
 		Name:        "readDocx",
 		Description: "DOCX Reader: Reads the content of a .docx file from the workspace and returns it as HTML. You MUST use this tool to read the content of any DOCX file before you can analyze or summarize it.",

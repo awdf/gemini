@@ -14,16 +14,23 @@ import (
 
 func init() {
 	RegisterFactory(AgentYoutubeName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewYoutubeAgent(ctx, client, toolset)
+		return NewYoutubeAgent(ctx, client, toolset, bus)
 	})
 }
 
 type YoutubeAgent struct {
 	*Agent
+	bus *EventBus.Bus
 }
 
 // NewYoutubeAgent creates a specialized agent for analyzing YouTube videos.
-func NewYoutubeAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *YoutubeAgent {
+func NewYoutubeAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *YoutubeAgent {
+	// This agent is designed for asynchronous, non-blocking operation in LiveAI mode,
+	// which requires the event bus. PostAI mode handles YouTube URLs directly.
+	if bus == nil {
+		return nil
+	}
+
 	systemInstruction := `You are a comprehensive YouTube video analysis expert. Your goal is to extract as much meaningful information as possible from the provided video. Analyze both the audio and visual components to generate a detailed report.
 
 Your response MUST be a single block of text and should be structured using Markdown headings for the following sections:
@@ -80,7 +87,10 @@ Analyze the video thoroughly to provide a rich and informative response.`
 	baseAgent := NewAgent(ctx, client, agentConfig)
 
 	// Create the specialized agent by embedding the base agent.
-	youtubeAgent := &YoutubeAgent{Agent: baseAgent}
+	youtubeAgent := &YoutubeAgent{
+		Agent: baseAgent,
+		bus:   bus,
+	}
 
 	// Overwrite the registration in the registry with the specialized agent.
 	// This ensures that when tool calls are dispatched, the correct Handle method is called.
@@ -101,26 +111,29 @@ func (a *YoutubeAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse 
 }
 
 func (a *YoutubeAgent) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	var result any
-	var err error
-
-	// 1. Parse arguments
 	url, urlOK := call.Args["url"].(string)
-	query := "Please analyze the provided video and generate a comprehensive report based on your instructions."
-
 	if !urlOK || url == "" {
-		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
-	} else {
-		// 3. Process with the agent. The Gemini API accepts various video MIME types,
-		// but "video/mp4" is recommended in documentation for YouTube URLs.
-		resultText, processErr := a.Agent.Process(query, genai.NewPartFromURI(url, "video/mp4"))
-		if processErr != nil {
-			err = fmt.Errorf("YouTube video processing failed: %w", processErr)
-		} else {
-			a.Printf("YouTube video analysis successful for url: '%s'", url)
-			result = map[string]any{"result": resultText}
-		}
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
 	}
 
-	return a.CreateFunctionResponse(call, result, err)
+	// Start the long-running analysis in a goroutine.
+	go func() {
+		a.Printf("Starting background analysis for YouTube URL: %s", url)
+		query := "Please analyze the provided video and generate a comprehensive report based on your instructions."
+		resultText, processErr := a.Agent.Process(query, genai.NewPartFromURI(url, "video/mp4"))
+
+		var finalResponse *genai.FunctionResponse
+		if processErr != nil {
+			a.Printf("ERROR: YouTube video processing failed: %v", processErr)
+			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("YouTube video processing failed: %w", processErr))
+		} else {
+			a.Printf("YouTube video analysis successful for url: '%s'", url)
+			finalResponse = a.CreateFunctionResponse(call, map[string]any{"result": resultText}, nil)
+		}
+		(*a.bus).Publish("agent:tool_response", finalResponse)
+	}()
+
+	// Immediately return the initial response to acknowledge the request.
+	a.Printf("Acknowledging YouTube analysis request. Will report back when complete.")
+	return a.CreateFunctionResponse(call, map[string]any{"status": "YouTube analysis started."}, nil, true)
 }

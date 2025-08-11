@@ -18,7 +18,7 @@ import (
 
 func init() {
 	RegisterFactory(AgentFileName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewFileAgent(ctx, client, toolset)
+		return NewFileAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -28,7 +28,7 @@ type FileAgent struct {
 }
 
 // NewFileAgent creates a specialized agent for reading local files.
-func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *FileAgent {
+func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *FileAgent {
 	// Define the function declarations for all file system tools.
 	functions := []*genai.FunctionDeclaration{
 		{

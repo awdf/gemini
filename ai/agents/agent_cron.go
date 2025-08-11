@@ -15,50 +15,38 @@ import (
 	"gemini/config"
 )
 
-// CronTriggerEvent is the event payload published when a cron job fires.
-type CronTriggerEvent struct {
-	ID      string
-	Message string
-}
-
 func init() {
 	RegisterFactory(AgentCronName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewCronAgent(ctx, client, toolset, bus)
 	})
 }
 
-// CronEvent holds information about a scheduled event.
-type CronEvent struct {
-	ID      string       `json:"id"`
-	Pattern string       `json:"pattern"` // Cron pattern or duration string
-	Message string       `json:"message"`
-	IsCron  bool         `json:"is_cron"`
-	EntryID cron.EntryID `json:"-"` // Internal cron job ID, only if IsCron is true
-	Timer   *time.Timer  `json:"-"` // Timer for one-time events, only if IsCron is false
+// ScheduledEvent holds information about a scheduled event.
+type ScheduledEvent struct {
+	ID       string       `json:"id"`
+	Pattern  string       `json:"pattern"`
+	Prompt   string       `json:"prompt"`
+	EntryID  cron.EntryID `json:"-"`
+	CallID   string       `json:"-"` // ID of the original tool call
+	CallName string       `json:"-"` // Name of the original tool call
 }
 
 // CronAgent handles scheduling and triggering time-based events.
 type CronAgent struct {
 	*Agent
-	cronScheduler *cron.Cron
-	events        map[string]*CronEvent
 	bus           *EventBus.Bus
+	cronScheduler *cron.Cron
+	events        map[string]*ScheduledEvent
 	mu            sync.Mutex
 }
 
 // NewCronAgent creates a new CronAgent.
 func NewCronAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *CronAgent {
-	if bus == nil {
-		// This agent is useless without the event bus.
-		return nil
-	}
-
 	agentConfig := AgentConfig{
 		Name: AgentCronName,
 	}
 	baseAgent := NewAgent(ctx, client, agentConfig)
 
-	// Load timezone from config to ensure cron jobs fire at the correct local time.
 	loc, err := time.LoadLocation(config.C.AI.Timezone)
 	if err != nil {
 		log.Printf("WARNING: [cronAgent] Invalid timezone '%s' in config, falling back to UTC. Error: %v", config.C.AI.Timezone, err)
@@ -67,66 +55,65 @@ func NewCronAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 
 	agent := &CronAgent{
 		Agent:         baseAgent,
-		cronScheduler: cron.New(cron.WithLocation(loc)),
-		events:        make(map[string]*CronEvent),
 		bus:           bus,
+		cronScheduler: cron.New(cron.WithLocation(loc), cron.WithSeconds()),
+		events:        make(map[string]*ScheduledEvent),
 	}
 
 	agent.cronScheduler.Start()
-	agent.Printf("Initialized and cron scheduler started in timezone: %s.", loc.String())
+	agent.Printf("Initialized with cron scheduler in timezone: %s.", loc.String())
 
 	functions := []*genai.FunctionDeclaration{
 		{
-			Name:        "scheduleRecurringEvent",
-			Description: "CRON: Schedules a recurring event or a reminder. After a successful call, you MUST confirm to the user that the event has been scheduled and state the pattern. This function returns immediately. The model will be proactively notified in a new turn when the event is due.",
+			Name:        "scheduleDelayedAction",
+			Description: "CRON: Schedules an action to be performed once after a specified delay.",
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"delay": {
+						Type:        genai.TypeString,
+						Description: "For a one-time action, the duration to wait before performing the action (e.g., '5m', '1h30s').",
+					},
+					"action_prompt": {
+						Type:        genai.TypeString,
+						Description: "The prompt or command that the model should execute after the delay.",
+					},
+				},
+				Required: []string{"delay", "action_prompt"},
+			},
+			Behavior: genai.BehaviorNonBlocking,
+		},
+		{
+			Name:        "scheduleRecuringAction",
+			Description: "CRON: Schedules an action to be performed on a recurring basis.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
 					"pattern": {
 						Type:        genai.TypeString,
-						Description: "The cron pattern for the schedule (e.g., '0 9 * * MON' for 9 AM every Monday, or '@every 5m' for every 5 minutes).",
+						Description: "The cron pattern for the schedule (e.g., '0 9 * * MON', '@every 5m').",
 					},
-					"message": {
+					"action_prompt": {
 						Type:        genai.TypeString,
-						Description: "The reminder message for the event.",
+						Description: "The prompt or command that the model should execute on schedule.",
 					},
 				},
-				Required: []string{"pattern", "message"},
+				Required: []string{"pattern", "action_prompt"},
 			},
+			Behavior: genai.BehaviorNonBlocking,
 		},
 		{
-			Name:        "scheduleOneTimeReminder",
-			Description: "CRON: Schedules a single, non-recurring reminder for a future time. Use this for simple delays like 'in 5 minutes'. After a successful call, you MUST confirm to the user that the reminder has been set and state when it will trigger (e.g., 'in 5 minutes').",
-			Parameters: &genai.Schema{
-				Type: genai.TypeObject,
-				Properties: map[string]*genai.Schema{
-					"duration": {
-						Type:        genai.TypeString,
-						Description: "The duration from now to wait before sending the reminder, in a format like '5m', '1h30s', '2h'.",
-					},
-					"message": {
-						Type:        genai.TypeString,
-						Description: "The reminder message for the event.",
-					},
-				},
-				Required: []string{"duration", "message"},
-			},
-		},
-		{
-			Name:        "listEvents",
-			Description: "CRON: Lists all currently scheduled events.",
+			Name:        "listScheduledActions",
+			Description: "CRON: Lists all currently scheduled actions.",
 			Parameters:  &genai.Schema{Type: genai.TypeObject},
 		},
 		{
-			Name:        "deleteEvent",
-			Description: "CRON: Deletes a scheduled event by its ID.",
+			Name:        "deleteScheduledAction",
+			Description: "CRON: Deletes a scheduled action by its ID.",
 			Parameters: &genai.Schema{
 				Type: genai.TypeObject,
 				Properties: map[string]*genai.Schema{
-					"id": {
-						Type:        genai.TypeString,
-						Description: "The ID of the event to delete, obtained from 'listEvents'.",
-					},
+					"id": {Type: genai.TypeString, Description: "The ID of the scheduled action to delete, obtained from 'listScheduledActions'."},
 				},
 				Required: []string{"id"},
 			},
@@ -146,129 +133,128 @@ func (a *CronAgent) WarmUp() time.Duration {
 // Handle processes tool calls for the cron agent.
 func (a *CronAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
-	case "scheduleRecurringEvent":
-		return a.handleScheduleRecurringEvent(call)
-	case "scheduleOneTimeReminder":
-		return a.handleScheduleOneTimeReminder(call)
-	case "listEvents":
-		return a.handleListEvents(call)
-	case "deleteEvent":
-		return a.handleDeleteEvent(call)
+	case "scheduleDelayedAction":
+		return a.handleScheduleAction(call)
+	case "scheduleRecuringAction":
+		return a.handleScheduleAction(call)
+	case "listScheduledActions":
+		return a.handleScheduledActionsList(call)
+	case "deleteScheduledAction":
+		return a.handleDeleteScheduledAction(call)
 	default:
 		return nil
 	}
 }
 
-func (a *CronAgent) handleScheduleRecurringEvent(call *genai.FunctionCall) *genai.FunctionResponse {
+func (a *CronAgent) parseAndValidateScheduleArgs(args map[string]any) (cronSpec, actionPrompt string, isRecurring bool, err error) {
+	var delayOK, patternOK, promptOK bool
+	delayStr, delayOK := args["delay"].(string)
+	pattern, patternOK := args["pattern"].(string)
+	actionPrompt, promptOK = args["action_prompt"].(string)
+
+	if !promptOK || actionPrompt == "" {
+		err = fmt.Errorf("'action_prompt' is a required non-empty string")
+		return
+	}
+	if (!delayOK || delayStr == "") && (!patternOK || pattern == "") {
+		err = fmt.Errorf("one of 'delay' or 'pattern' must be provided")
+		return
+	}
+	if (delayOK && delayStr != "") && (patternOK && pattern != "") {
+		err = fmt.Errorf("only one of 'delay' or 'pattern' can be provided")
+		return
+	}
+
+	if delayOK && delayStr != "" {
+		isRecurring = false
+		duration, parseErr := time.ParseDuration(delayStr)
+		if parseErr != nil {
+			err = fmt.Errorf("invalid delay format '%s': %w", delayStr, parseErr)
+			return
+		}
+		t := time.Now().Add(duration)
+		cronSpec = fmt.Sprintf("%d %d %d %d %d *", t.Second(), t.Minute(), t.Hour(), t.Day(), t.Month())
+	}
+
+	if patternOK && pattern != "" {
+		isRecurring = true
+		cronSpec = pattern
+	}
+
+	return
+}
+
+func (a *CronAgent) handleScheduleAction(call *genai.FunctionCall) *genai.FunctionResponse {
+	// 1. Parse and validate arguments
+	cronSpec, actionPrompt, isRecurring, err := a.parseAndValidateScheduleArgs(call.Args)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, err)
+	}
+
+	// Both delayed and recurring actions require the event bus for async responses.
+	if a.bus == nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("scheduled actions are not supported in this mode"))
+	}
+
+	if cronSpec != "" {
+		return a.scheduleCronExpression(call, cronSpec, actionPrompt, isRecurring)
+	}
+
+	// Should not be reached due to validation above, but as a fallback.
+	return a.CreateFunctionResponse(call, nil, fmt.Errorf("internal error: no valid scheduling parameter found"))
+}
+
+// Field name   | Mandatory? | Allowed values  | Allowed special characters
+// ----------   | ---------- | --------------  | --------------------------
+// Seconds      | Yes        | 0-59            | * / , -
+// Minutes      | Yes        | 0-59            | * / , -
+// Hours        | Yes        | 0-23            | * / , -
+// Day of month | Yes        | 1-31            | * / , - ?
+// Month        | Yes        | 1-12 or JAN-DEC | * / , -
+// Day of week  | Yes        | 0-6 or SUN-SAT  | * / , - ?
+func (a *CronAgent) scheduleCronExpression(call *genai.FunctionCall, cronSpec, actionPrompt string, isRecurring bool) *genai.FunctionResponse {
+	// Handle scheduled action
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	pattern, patOK := call.Args["pattern"].(string)
-	message, msgOK := call.Args["message"].(string)
-
-	if !patOK || !msgOK || pattern == "" || message == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'pattern' and 'message' are required non-empty strings"))
-	}
-
 	eventID := uuid.New().String()
-	event := &CronEvent{
-		ID:      eventID,
-		Pattern: pattern,
-		Message: message,
-		IsCron:  true,
+	event := &ScheduledEvent{
+		ID:       eventID,
+		Pattern:  cronSpec,
+		Prompt:   actionPrompt,
+		CallID:   call.ID,
+		CallName: call.Name,
 	}
 
-	entryID, err := a.cronScheduler.AddFunc(pattern, func() {
-		// This function runs when the cron job fires.
-		// We publish an event to the main bus.
-		triggerEvent := CronTriggerEvent{
-			ID:      event.ID,
-			Message: event.Message,
-		}
-		a.Printf("Cron event triggered: %+v. Publishing to topic 'cron:trigger'", triggerEvent)
-		(*a.bus).Publish("cron:trigger", triggerEvent)
+	entryID, err := a.cronScheduler.AddFunc(cronSpec, func() {
+		a.Printf("Scheduled action triggered for event ID %s. Sending FunctionResponse to model.", event.ID)
+		response := a.CreateFunctionResponse(call, map[string]any{"status": event.Prompt}, nil, isRecurring)
+		(*a.bus).Publish("agent:tool_response", response)
 	})
 	if err != nil {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid cron pattern '%s': %w", pattern, err))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid cron pattern '%s': %w", cronSpec, err))
 	}
 
 	event.EntryID = entryID
 	a.events[eventID] = event
 
-	a.Printf("Scheduled event '%s' with ID %s", message, eventID)
-	result := map[string]any{
-		"status":   "Event scheduled successfully.",
-		"event_id": eventID,
-	}
-	return a.CreateFunctionResponse(call, result, nil)
+	a.Printf("Scheduled new action '%s' with ID %s", actionPrompt, eventID)
+	return a.CreateFunctionResponse(call, map[string]any{"status": "New action scheduled successfully.", "event_id": eventID}, nil, true)
 }
 
-func (a *CronAgent) handleScheduleOneTimeReminder(call *genai.FunctionCall) *genai.FunctionResponse {
+func (a *CronAgent) handleScheduledActionsList(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	durationStr, durOK := call.Args["duration"].(string)
-	message, msgOK := call.Args["message"].(string)
-
-	if !durOK || !msgOK || durationStr == "" || message == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'duration' and 'message' are required non-empty strings"))
-	}
-
-	duration, err := time.ParseDuration(durationStr)
-	if err != nil {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid duration format '%s': %w", durationStr, err))
-	}
-
-	eventID := uuid.New().String()
-	event := &CronEvent{
-		ID:      eventID,
-		Pattern: durationStr, // Store the original duration string
-		Message: message,
-		IsCron:  false,
-	}
-
-	timer := time.AfterFunc(duration, func() {
-		// This function runs when the timer fires.
-		triggerEvent := CronTriggerEvent{
-			ID:      event.ID,
-			Message: event.Message,
-		}
-		a.Printf("One-time event triggered: %+v. Publishing to topic 'cron:trigger'", triggerEvent)
-		(*a.bus).Publish("cron:trigger", triggerEvent)
-
-		// Clean up the event from the map after it has fired.
-		a.mu.Lock()
-		delete(a.events, event.ID)
-		a.mu.Unlock()
-	})
-
-	event.Timer = timer
-	a.events[eventID] = event
-
-	a.Printf("Scheduled one-time event '%s' with ID %s", message, eventID)
-	result := map[string]any{"status": "One-time event scheduled successfully.", "event_id": eventID}
-	return a.CreateFunctionResponse(call, result, nil)
-}
-
-func (a *CronAgent) handleListEvents(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Create a copy of the events to return, without the internal EntryID.
-	eventList := make([]CronEvent, 0, len(a.events))
+	eventList := make([]ScheduledEvent, 0, len(a.events))
 	for _, event := range a.events {
-		eventList = append(eventList, CronEvent{
-			ID:      event.ID,
-			Pattern: event.Pattern,
-			Message: event.Message,
-			IsCron:  event.IsCron,
-		})
+		eventList = append(eventList, *event)
 	}
 
-	return a.CreateFunctionResponse(call, map[string]any{"events": eventList}, nil)
+	return a.CreateFunctionResponse(call, map[string]any{"scheduled_actions": eventList}, nil)
 }
 
-func (a *CronAgent) handleDeleteEvent(call *genai.FunctionCall) *genai.FunctionResponse {
+func (a *CronAgent) handleDeleteScheduledAction(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -279,17 +265,25 @@ func (a *CronAgent) handleDeleteEvent(call *genai.FunctionCall) *genai.FunctionR
 
 	event, exists := a.events[eventID]
 	if !exists {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("event with ID '%s' not found", eventID))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("scheduled action with ID '%s' not found", eventID))
 	}
 
-	if event.IsCron {
-		a.cronScheduler.Remove(event.EntryID)
-	} else if event.Timer != nil {
-		event.Timer.Stop()
-	}
+	a.cronScheduler.Remove(event.EntryID)
 	delete(a.events, eventID)
 
-	a.Printf("Deleted scheduled event with ID %s", eventID)
-	result := map[string]any{"status": "Event deleted successfully."}
+	// Send a final response to the model to close the tool call transaction.
+	if a.bus != nil {
+		a.Printf("Closing tool call transaction for deleted scheduled action ID %s (Call ID: %s)", eventID, event.CallID)
+		finalResponse := a.CreateFunctionResponse(
+			&genai.FunctionCall{ID: event.CallID, Name: event.CallName},
+			map[string]any{"status": "Scheduled action has been deleted and the task is now complete."},
+			nil,
+			false, // This is the final response for this tool call ID.
+		)
+		(*a.bus).Publish("agent:tool_response", finalResponse)
+	}
+
+	a.Printf("Deleted scheduled action with ID %s", eventID)
+	result := map[string]any{"status": "Scheduled action deleted successfully."}
 	return a.CreateFunctionResponse(call, result, nil)
 }

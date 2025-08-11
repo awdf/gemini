@@ -21,7 +21,7 @@ import (
 
 func init() {
 	RegisterFactory(AgentObjectDetectionName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewObjectDetectionAgent(ctx, client, toolset)
+		return NewObjectDetectionAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -34,7 +34,7 @@ type ObjectDetectionAgent struct {
 }
 
 // NewObjectDetectionAgent creates a specialized agent for detecting objects in an image.
-func NewObjectDetectionAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *ObjectDetectionAgent {
+func NewObjectDetectionAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *ObjectDetectionAgent {
 	bounds := helpers.Check(desktop.C.ScreenSize()) // If it still fails after retries, it's a fatal error.
 	grid := ObjectDetectionNormalizationGrid
 	halfGrid := grid / 2

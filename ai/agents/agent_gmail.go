@@ -22,7 +22,7 @@ import (
 func init() {
 	RegisterFactory(AgentGmailName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		// NewGmailAgent can return nil, which is a valid nil interface value.
-		return NewGmailAgent(ctx, client, toolset)
+		return NewGmailAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -35,7 +35,7 @@ type GmailAgent struct {
 
 // NewGmailAgent creates and initializes the Gmail agent.
 // It handles the OAuth2 flow to get an authenticated client.
-func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *GmailAgent {
+func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *GmailAgent {
 	if !config.C.Google.Enabled {
 		log.Println("WARNING: Could not create Gmail agent, Gmail tools is disabled.")
 		return nil

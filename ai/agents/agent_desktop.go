@@ -15,7 +15,7 @@ import (
 
 func init() {
 	RegisterFactory(AgentDesktopName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewDesktopAgent(ctx, client, toolset)
+		return NewDesktopAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -134,7 +134,7 @@ var keyCodeToName = [maxKeyCode]string{
 }
 
 // NewDesktopAgent creates a specialized agent for desktop automation tasks.
-func NewDesktopAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool) *DesktopAgent {
+func NewDesktopAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *DesktopAgent {
 	functions := []*genai.FunctionDeclaration{
 		{
 			Name:        "typeText",
