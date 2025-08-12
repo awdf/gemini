@@ -51,9 +51,7 @@ func NewExecutor(bus *EventBus.Bus) (*Executor, error) {
 // and returning the captured output as a string.
 func (e *Executor) Execute(command string) (string, error) {
 	// Mute the CLI prompt and soundbar before executing the command.
-	// The defer ensures the prompt is redrawn even if the command fails.
 	(*e.bus).Publish("main:topic", "mute:shell.execute")
-	defer (*e.bus).Publish("main:topic", "draw:shell.execute")
 
 	// Use the system's default shell to interpret the command.
 	// This allows for shell features like pipes, redirection, etc.

@@ -174,7 +174,6 @@ func (c *CLI) Run() {
 				activeConfirmation.responseChan <- response
 				close(activeConfirmation.responseChan)
 				activeConfirmation = nil
-				(*c.bus).Publish("main:topic", "draw:cli.confirm.end")
 				continue // Skip normal processing.
 			}
 

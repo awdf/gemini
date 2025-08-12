@@ -13,7 +13,7 @@ import (
 	"gemini/shell"
 )
 
-const AgentSystemName = "system"
+const AgentSystemName = "systemAgent"
 
 // SystemAgent defines the tool for executing shell commands.
 type SystemAgent struct {
