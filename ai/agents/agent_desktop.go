@@ -13,6 +13,8 @@ import (
 	"gemini/wayland"
 )
 
+const AgentDesktopName = "desktopAgent"
+
 func init() {
 	RegisterFactory(AgentDesktopName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewDesktopAgent(ctx, client, toolset, bus)

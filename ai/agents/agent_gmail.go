@@ -22,6 +22,8 @@ import (
 	"gemini/google"
 )
 
+const AgentGmailName = "gmailAgent"
+
 func init() {
 	RegisterFactory(AgentGmailName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		// NewGmailAgent can return nil, which is a valid nil interface value.

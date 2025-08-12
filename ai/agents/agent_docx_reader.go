@@ -62,6 +62,8 @@ func (a *DocxAgent) generateCSSFromStyles(styles *docx.Styles) string {
 	return css.String()
 }
 
+const AgentDocxReaderName = "docxReaderAgent"
+
 func init() {
 	RegisterFactory(AgentDocxReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewDocxAgent(ctx, client, toolset, bus)

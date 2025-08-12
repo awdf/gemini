@@ -17,6 +17,8 @@ import (
 	"gemini/tools"
 )
 
+const AgentFileName = "FileAgent"
+
 func init() {
 	RegisterFactory(AgentFileName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewFileAgent(ctx, client, toolset, bus)

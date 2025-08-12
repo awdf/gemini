@@ -18,6 +18,8 @@ import (
 	"gemini/config"
 )
 
+const AgentRtfReaderName = "rtfReaderAgent"
+
 func init() {
 	RegisterFactory(AgentRtfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewRtfReaderAgent(ctx, client, toolset, bus)

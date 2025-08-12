@@ -15,6 +15,8 @@ import (
 	"gemini/config"
 )
 
+const AgentCronName = "cronAgent"
+
 func init() {
 	RegisterFactory(AgentCronName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewCronAgent(ctx, client, toolset, bus)

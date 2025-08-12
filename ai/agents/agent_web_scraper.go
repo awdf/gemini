@@ -12,7 +12,14 @@ import (
 	"gemini/helpers"
 )
 
+const AgentWebScraperName = "webScraperAgent"
+
 func init() {
+	// This agent redundant for Post AI with native URL understanding
+	if config.C.LiveAI {
+		return
+	}
+
 	RegisterFactory(AgentWebScraperName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewWebScraperAgent(ctx, client, toolset, bus)
 	})

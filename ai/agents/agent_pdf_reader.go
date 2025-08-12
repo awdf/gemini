@@ -14,7 +14,14 @@ import (
 	"gemini/helpers"
 )
 
+const AgentPdfReaderName = "pdfReaderAgent"
+
 func init() {
+	// This agent redundant for Post AI with native pdf understanding
+	if config.C.LiveAI {
+		return
+	}
+
 	RegisterFactory(AgentPdfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewPdfReaderAgent(ctx, client, toolset, bus)
 	})

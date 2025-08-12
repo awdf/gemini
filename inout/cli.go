@@ -197,6 +197,7 @@ func (c *CLI) Run() {
 					// The error is usually just the exit status, which can be non-zero.
 					log.Printf("Shell command finished with error: %v", err)
 				}
+				(*c.bus).Publish("main:topic", "draw:cli.run.system")
 				continue // Move to the next iteration of the loop.
 			}
 

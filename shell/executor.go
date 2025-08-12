@@ -108,8 +108,8 @@ func (e *Executor) ExecuteStream(command string, outputChan chan<- string) error
 
 	go func() {
 		defer func() { _ = ptmx.Close() }()
-		defer close(outputChan)
 		defer (*e.bus).Publish("main:topic", "draw:shell.execute.stream.done")
+		// The outputChan is closed by the scanner goroutine when it's done.
 
 		if err := pty.InheritSize(os.Stdin, ptmx); err != nil {
 			log.Printf("WARNING: could not set pty size: %v", err)
@@ -121,6 +121,7 @@ func (e *Executor) ExecuteStream(command string, outputChan chan<- string) error
 
 		// This goroutine reads from the pipe and sends line-by-line to the channel.
 		go func() {
+			defer close(outputChan)
 			scanner := bufio.NewScanner(pr)
 			for scanner.Scan() {
 				outputChan <- scanner.Text()
@@ -134,9 +135,11 @@ func (e *Executor) ExecuteStream(command string, outputChan chan<- string) error
 		multiWriter := io.MultiWriter(os.Stdout, pw)
 
 		// This will block until the command is done, copying output to both writers.
-		// When it finishes, the pipe writer (pw) will be closed by the io.Copy,
-		// which will cause the reader goroutine to exit.
 		_, _ = io.Copy(multiWriter, ptmx)
+
+		// After io.Copy returns, the command has finished. We must close the pipe
+		// writer to signal EOF to the scanner goroutine, allowing it to exit gracefully.
+		pw.Close()
 
 		if err := cmd.Wait(); err != nil {
 			log.Printf("Shell stream command finished with error: %v", err)

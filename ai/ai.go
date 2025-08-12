@@ -102,18 +102,7 @@ func NewAI(
 	// --- Agent Initialization ---
 	toolset := agents.NewToolSet()
 	if config.C.AI.EnableTools && config.C.AI.EnableFunctionCalling {
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentFileName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentObjectDetectionName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentGmailName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentCalendarName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentPdfReaderName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentRtfReaderName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
-		// SystemAgent has special dependencies (CLI, ShellExecutor) and is created manually.
-		systemAgent := agents.NewSystemAgent(ctx, client, toolset, bus, shellExecutor, cli)
-		agents.AgentRegistry[agents.AgentSystemName] = systemAgent
+		agents.BuildAgentNetwork(ctx, client, toolset, bus)
 	}
 
 	ai := &AI{
@@ -746,6 +735,13 @@ func (a *AI) generateAndProcessContent(
 
 // executeToolCalls handles a request from the model to execute one or more tool calls.
 func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResponseParts []*genai.Part) {
+	// In PostAI mode, we inject the necessary dependencies (CLI, ShellExecutor)
+	// into the arguments of each tool call. This is particularly important for
+	// the SystemAgent, which needs these components to perform its tasks like
+	// user confirmation and command execution. This approach keeps the agent's
+	// Handle method as the single point of entry for its dependencies, aligning
+	// with the pattern used in LiveAI mode and promoting consistency.
+
 	for _, call := range calls {
 		modelParts = append(modelParts, &genai.Part{FunctionCall: call})
 		var response *genai.FunctionResponse
@@ -753,6 +749,12 @@ func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResp
 		// Iterate through all registered agents, following a chain of responsibility pattern.
 		// The first agent that recognizes the tool call will handle it.
 		for _, agent := range a.agents {
+			// Inject dependencies required by agents like SystemAgent.
+			if call.Args == nil {
+				call.Args = make(map[string]any)
+			}
+			call.Args["cli_component"] = a.cli
+			call.Args["executor_component"] = a.shellExecutor
 			response = agent.Handle(call)
 			if response != nil {
 				break // An agent handled the call, so we can stop searching.

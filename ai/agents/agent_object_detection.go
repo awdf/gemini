@@ -19,6 +19,8 @@ import (
 	"gemini/images"
 )
 
+const AgentObjectDetectionName = "objectDetection"
+
 func init() {
 	RegisterFactory(AgentObjectDetectionName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewObjectDetectionAgent(ctx, client, toolset, bus)

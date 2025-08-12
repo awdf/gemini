@@ -106,18 +106,7 @@ func NewLiveSink(
 	// Initialize each agent, passing the toolset to them.
 	// Each agent's constructor will add its functions to the toolset and
 	// register its handler in the AgentRegistry via the Registerate function.
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentYoutubeName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentWebScraperName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentFileName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentObjectDetectionName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentGmailName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentCalendarName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentPdfReaderName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentRtfReaderName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentSystemName)
+	agents.BuildAgentNetwork(ctx, client, toolset, bus)
 
 	return &LiveAI{
 		wg:               wg,
@@ -991,12 +980,17 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 		// Add the current image buffer to any tool call that might need it.
 		// The tool itself is responsible for using or ignoring this argument.
 		l.mu.RLock()
+		if call.Args == nil {
+			call.Args = make(map[string]any)
+		}
+
 		if l.imageBuffer != nil {
-			if call.Args == nil {
-				call.Args = make(map[string]any)
-			}
 			call.Args["image_buffer"] = l.imageBuffer
 		}
+
+		call.Args["cli_component"] = l.cli
+		call.Args["executor_component"] = l.shellExecutor
+
 		l.mu.RUnlock()
 
 		var response *genai.FunctionResponse

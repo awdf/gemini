@@ -15,6 +15,8 @@ import (
 	"gemini/google"
 )
 
+const AgentCalendarName = "calendarAgent"
+
 func init() {
 	RegisterFactory(AgentCalendarName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewCalendarAgent(ctx, client, toolset, bus)

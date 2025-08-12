@@ -17,21 +17,6 @@ import (
 	"gemini/inout"
 )
 
-// Agent names used as keys in the agent map.
-const (
-	AgentObjectDetectionName = "objectDetection"
-	AgentFileName            = "FileAgent"
-	AgentPdfReaderName       = "pdfReaderAgent"
-	AgentRtfReaderName       = "rtfReaderAgent"
-	AgentDocxReaderName      = "docxReaderAgent"
-	AgentYoutubeName         = "youtubeAgent"
-	AgentWebScraperName      = "webScraperAgent"
-	AgentDesktopName         = "desktopAgent"
-	AgentGmailName           = "gmailAgent"
-	AgentCalendarName        = "calendarAgent"
-	AgentCronName            = "cronAgent"
-)
-
 type Callable interface {
 	ModelName() string
 	RPM() int
@@ -104,6 +89,12 @@ func RegisterFactory(name string, factory AgentFactory) {
 	}
 	log.Printf("Registering agent factory: %s", name)
 	agentFactories[name] = factory
+}
+
+func BuildAgentNetwork(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) {
+	for name := range agentFactories {
+		Registerate(ctx, client, toolset, bus, name)
+	}
 }
 
 // Registerate acts as a factory and registry for agents. It centralizes the
