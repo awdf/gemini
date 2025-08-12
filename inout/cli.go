@@ -214,12 +214,18 @@ func (c *CLI) command(cmd string) {
 	case "voice":
 		config.C.AI.VoiceEnabled = !config.C.AI.VoiceEnabled
 		log.Printf("Voice output set to: %t", config.C.AI.VoiceEnabled)
+		// In live mode, changing this requires a session restart.
+		(*c.bus).Publish("ai:topic", "restart_session:voice_toggle")
 	case "tools":
 		config.C.AI.EnableTools = !config.C.AI.EnableTools
 		log.Printf("AI tools enabled set to: %t", config.C.AI.EnableTools)
+		// In live mode, changing this requires a session restart.
+		(*c.bus).Publish("ai:topic", "restart_session:tools_toggle")
 	case "transcript":
 		config.C.AI.Transcript = !config.C.AI.Transcript
 		log.Printf("Separate transcription step set to: %t", config.C.AI.Transcript)
+		// In live mode, changing this requires a session restart.
+		(*c.bus).Publish("ai:topic", "restart_session:transcript_toggle")
 	case "history":
 		config.C.AI.VoiceHistory = !config.C.AI.VoiceHistory
 		log.Printf("Voice history set to: %t", config.C.AI.VoiceHistory)
@@ -268,18 +274,19 @@ func (c *CLI) command(cmd string) {
 		}
 	case "help":
 		fmt.Println("Available commands:")
-		fmt.Println("/exit       		- Exit the application")
 		fmt.Printf("/mode <name>		- Set AI mode (%s, %s, %s, %s)\n", MixMode, TextMode, VoiceMode, ImageMode)
-		fmt.Println("/save       		- Save conversation history to history.txt")
 		fmt.Println("/debug      		- Toggle debug mode")
 		fmt.Println("/voice      		- Toggle voice responses")
 		fmt.Println("/tools      		- Toggle AI tools (e.g., Google Search)")
 		fmt.Println("/transcript 		- Toggle separate transcription step for voice chat")
-		fmt.Println("/history    		- Toggle including voice prompts in conversation history")
-		fmt.Println("/cache      		- Toggle AI caching")
-		fmt.Println("/thoughts   		- Toggle AI thoughts visibility")
-		fmt.Printf("/thinking <level> 	- Set AI thinking budget (%s, %s, %s, %s, %s)\n", dynamic, none, low, medium, high)
 		fmt.Println("/help       		- Display this help message")
+		fmt.Println("/exit       		- Exit the application")
+		fmt.Println("\nPost AI Commands:")
+		fmt.Printf("/thinking <level> 	- Set AI thinking budget (%s, %s, %s, %s, %s)\n", dynamic, none, low, medium, high)
+		fmt.Println("/thoughts   		- Toggle AI thoughts visibility")
+		fmt.Println("/cache      		- Toggle AI caching")
+		fmt.Println("/save       		- Save conversation history to history.txt")
+		fmt.Println("/history    		- Toggle including voice prompts in conversation history")
 	default:
 		fmt.Printf("Unknown command: %s\n", commandName)
 	}

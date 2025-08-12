@@ -705,6 +705,10 @@ func (l *LiveAI) handleEvents(event string) {
 	case "mode":
 		l.mode = payload
 		log.Printf("LiveAI mode set to: %s", payload)
+	case "restart_session":
+		log.Printf("Restarting live session due to configuration change: %s", payload)
+		// The main Run loop will detect the closed session and reopen it with the new config.
+		l.CloseSession()
 	default:
 		// The "save" event is not handled here as LiveAI does not maintain history.
 		config.DebugPrintf("LiveAI component ignoring event: %s", event)
