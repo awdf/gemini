@@ -117,9 +117,7 @@ func NewLiveSink(
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
-	// SystemAgent has special dependencies (CLI, ShellExecutor) and is created manually.
-	systemAgent := agents.NewSystemAgent(ctx, client, toolset, bus, shellExecutor, cli)
-	agents.AgentRegistry[agents.AgentSystemName] = systemAgent
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentSystemName)
 
 	return &LiveAI{
 		wg:               wg,
@@ -335,6 +333,9 @@ func (l *LiveAI) Run() {
 		}
 	}, false))
 	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
+	helpers.Verify((*l.bus).SubscribeAsync("live:stream_text", func(text string) {
+		l.sendLiveMessage(text)
+	}, false))
 	helpers.Verify((*l.bus).SubscribeAsync("agent:tool_response", l.handleAgentToolResponse, false))
 
 	l.OpenSession()

@@ -155,6 +155,8 @@ func main() {
 	config.Load(flags.ConfigPath)
 
 	// Command-line flags override config file settings for convenience.
+	config.C.LiveAI = flags.Live
+
 	if flags.Voice {
 		config.C.AI.VoiceEnabled = true
 	}

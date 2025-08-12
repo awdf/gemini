@@ -22,6 +22,7 @@ const TimeFormat = time.RFC1123
 type Config struct {
 	Debug    bool           `toml:"Debug"`
 	Trace    bool           `toml:"Trace"`
+	LiveAI   bool           `toml:"LiveAI"`
 	Mode     string         `toml:"Mode"`
 	LogFile  string         `toml:"LogFile"`
 	AI       AIConfig       `toml:"ai"`
@@ -161,8 +162,9 @@ func createDefaultConfig(path string) {
 	// Populate with default values
 	defaultConfig.Debug = false
 	defaultConfig.Trace = false
+	defaultConfig.LiveAI = false
 	defaultConfig.AI.AgentInstructions = make(map[string]string)
-	defaultConfig.Mode = "mix"
+	defaultConfig.Mode = "prompt"
 	defaultConfig.AI.Timezone = "UTC"
 	defaultConfig.LogFile = "app.log"
 	defaultConfig.AI.Model = "gemini-2.5-flash"

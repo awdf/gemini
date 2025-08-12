@@ -9,6 +9,7 @@ import (
 	"github.com/asaskevich/EventBus"
 	"google.golang.org/genai"
 
+	"gemini/config"
 	"gemini/inout"
 	"gemini/shell"
 )
@@ -20,6 +21,7 @@ type SystemAgent struct {
 	*Agent
 	shellExecutor *shell.Executor
 	cli           *inout.CLI
+	bus           *EventBus.Bus
 }
 
 // NewSystemAgent creates a new agent and registers its tool definitions with the provided toolset.
@@ -57,6 +59,7 @@ func NewSystemAgent(
 		Agent:         baseAgent,
 		shellExecutor: shellExecutor,
 		cli:           cli,
+		bus:           bus,
 	}
 }
 
@@ -70,6 +73,14 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	if !ok {
 		err := fmt.Errorf("invalid 'command' argument, must be a string")
 		return a.CreateFunctionResponse(call, nil, err)
+	}
+
+	if config.C.LiveAI {
+		// In live mode, we start the command and stream its output via the event bus.
+		// The main LiveAI loop will pick up the text chunks and send them to the model.
+		go a.streamCommand(command)
+		// Return an immediate response to the model indicating the command is running.
+		return a.CreateFunctionResponse(call, map[string]any{"status": "executing", "output": "Command is executing, output is being streamed."}, nil)
 	}
 
 	prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
@@ -89,6 +100,29 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	// The CreateFunctionResponse helper will log the result and format the response correctly.
 	// We pass nil for the error because we've already packaged it into the response map.
 	return a.CreateFunctionResponse(call, responseMap, nil)
+}
+
+// streamCommand executes a command and publishes its output to the event bus.
+func (a *SystemAgent) streamCommand(command string) {
+	// We need user confirmation even for streaming.
+	prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
+	if !a.cli.Confirm(prompt) {
+		log.Println("User denied shell command execution.")
+		(*a.bus).Publish("live:stream_text", "[User denied execution]")
+		return
+	}
+
+	outputChan := make(chan string)
+	if err := a.shellExecutor.ExecuteStream(command, outputChan); err != nil {
+		log.Printf("ERROR starting shell stream: %v", err)
+		// Also send the error to the model via the stream.
+		(*a.bus).Publish("live:stream_text", fmt.Sprintf("[Error starting command: %v]", err))
+		return
+	}
+
+	for chunk := range outputChan {
+		(*a.bus).Publish("live:stream_text", chunk)
+	}
 }
 
 // The following methods satisfy the Callable interface but are no-ops for this agent

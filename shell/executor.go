@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -88,4 +89,59 @@ func (e *Executor) Execute(command string) (string, error) {
 	// Wait for the command to finish.
 	err = cmd.Wait()
 	return outputBuf.String(), err
+}
+
+// ExecuteStream runs a command and streams its output to the provided channel.
+// It returns immediately, with errors from command execution logged asynchronously.
+func (e *Executor) ExecuteStream(command string, outputChan chan<- string) error {
+	(*e.bus).Publish("main:topic", "mute:shell.execute.stream")
+
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Dir = e.workspaceDir
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		(*e.bus).Publish("main:topic", "draw:shell.execute.stream.fail")
+		close(outputChan)
+		return fmt.Errorf("failed to start pty: %w", err)
+	}
+
+	go func() {
+		defer func() { _ = ptmx.Close() }()
+		defer close(outputChan)
+		defer (*e.bus).Publish("main:topic", "draw:shell.execute.stream.done")
+
+		if err := pty.InheritSize(os.Stdin, ptmx); err != nil {
+			log.Printf("WARNING: could not set pty size: %v", err)
+		}
+
+		// Create a pipe. The pty output will be written to the pipe's writer.
+		// A goroutine will read from the pipe's reader and send to the channel.
+		pr, pw := io.Pipe()
+
+		// This goroutine reads from the pipe and sends line-by-line to the channel.
+		go func() {
+			scanner := bufio.NewScanner(pr)
+			for scanner.Scan() {
+				outputChan <- scanner.Text()
+			}
+			if err := scanner.Err(); err != nil {
+				log.Printf("Shell stream pipe scanner error: %v", err)
+			}
+		}()
+
+		// Create a MultiWriter to simultaneously write to the user's stdout and the pipe.
+		multiWriter := io.MultiWriter(os.Stdout, pw)
+
+		// This will block until the command is done, copying output to both writers.
+		// When it finishes, the pipe writer (pw) will be closed by the io.Copy,
+		// which will cause the reader goroutine to exit.
+		_, _ = io.Copy(multiWriter, ptmx)
+
+		if err := cmd.Wait(); err != nil {
+			log.Printf("Shell stream command finished with error: %v", err)
+		}
+	}()
+
+	return nil
 }
