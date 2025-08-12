@@ -4,7 +4,7 @@ LogFile = "gemini.log"
 # Enable or disable debug logging for all modules.
 Debug = false
 Trace = false
-Mode = "mix"
+Mode = "prompt"
 
 [ai]
 # The API Key for the AI service. Can be set directly or via an environment variable.

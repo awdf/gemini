@@ -14,31 +14,33 @@ import (
 	"gemini/config"
 	"gemini/flow"
 	"gemini/helpers"
+	"gemini/shell"
 )
 
 const (
-	MixMode   = "mix"
-	TextMode  = "text"
-	VoiceMode = "voice"
-	ImageMode = "image"
+	Prompt    = "prompt" // {Prompt} = Allow voice and txt prompts
+	VoiceMode = "voice"  // Allow voice output for AI and {Prompt}
+	ImageMode = "image"  // Allow send screenshot images with each {Prompt}
+	System    = "system" // System CLI integration mode. Allow execute system commands and stream output to AI
 )
 
 var modes = map[string]string{
-	MixMode:   MixMode,
-	TextMode:  TextMode,
+	Prompt:    Prompt,
+	System:    System,
 	VoiceMode: VoiceMode,
 	ImageMode: ImageMode,
 }
 
 // CLI handles reading user input from the command line.
 type CLI struct {
-	wg         *sync.WaitGroup
-	cmdChan    chan<- string
-	bus        *EventBus.Bus
-	muted      bool
-	aiEnabled  bool
-	warmUpDone bool
-	mode       string
+	wg            *sync.WaitGroup
+	cmdChan       chan<- string
+	bus           *EventBus.Bus
+	shellExecutor *shell.Executor
+	muted         bool
+	aiEnabled     bool
+	warmUpDone    bool
+	mode          string
 }
 
 const (
@@ -71,14 +73,20 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		fmt.Println("Use keyboard to send text prompts to the AI.")
 	}
 
+	shellExecutor, err := shell.NewExecutor(bus)
+	if err != nil {
+		log.Fatalf("Failed to initialize shell executor: %v", err)
+	}
+
 	return &CLI{
-		wg:         wg,
-		cmdChan:    cmdChan,
-		bus:        bus,
-		muted:      true,
-		aiEnabled:  aiEnabled,
-		warmUpDone: false,
-		mode:       config.C.Mode,
+		wg:            wg,
+		cmdChan:       cmdChan,
+		bus:           bus,
+		shellExecutor: shellExecutor,
+		muted:         true,
+		aiEnabled:     aiEnabled,
+		warmUpDone:    false,
+		mode:          config.C.Mode,
 	}
 }
 
@@ -143,16 +151,23 @@ func (c *CLI) Run() {
 				continue
 			}
 
-			// If the first line looks like a command, process it immediately
-			// and don't wait for more lines. This preserves the existing behavior
-			// for single-line commands and prevents multi-line pastes from being
-			// misinterpreted as a single, large command.
+			// Check if the input is a command (starts with '/'). This is common to all modes.
 			if strings.HasPrefix(firstLine, "/") {
 				c.command(firstLine[1:])
 				continue
 			}
 
-			// It's not a command, so it might be part of a multi-line paste.
+			// If it's not a command, handle it based on the mode.
+			if c.mode == System {
+				// In system mode, non-command input is a shell command.
+				if err := c.shellExecutor.Execute(firstLine); err != nil {
+					// The error is usually just the exit status, which can be non-zero.
+					log.Printf("Shell command finished with error: %v", err)
+				}
+				continue // Move to the next iteration of the loop.
+			}
+
+			// In other modes (prompt, voice, image), non-command input is a prompt for the AI.
 			// We'll collect subsequent lines that arrive in a very short window.
 			lines := []string{firstLine}
 			pasteTimeout := time.NewTimer(50 * time.Millisecond) // A small window to catch subsequent pasted lines.
@@ -201,6 +216,18 @@ func (c *CLI) command(cmd string) {
 	log.Println("CLI command received:", cmd)
 	parts := strings.Fields(cmd)
 	commandName := parts[0]
+
+	// The /prompt command is only active in system mode.
+	if c.mode == System && commandName == "prompt" {
+		promptText := strings.Join(parts[1:], " ")
+		if promptText != "" {
+			c.cmdChan <- promptText
+		} else {
+			fmt.Println("Usage: /prompt <text for AI>")
+			c.draw()
+		}
+		return // Command handled, exit the function.
+	}
 
 	switch commandName {
 	case "exit":
@@ -255,7 +282,7 @@ func (c *CLI) command(cmd string) {
 		}
 	case "mode":
 		hint := func() {
-			fmt.Printf("Available AI modes: %s, %s, %s, %s\n", MixMode, TextMode, VoiceMode, ImageMode)
+			fmt.Printf("Available AI modes: %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode)
 		}
 		if len(parts) != 2 {
 			fmt.Println("Usage: /mode <name>")
@@ -274,7 +301,8 @@ func (c *CLI) command(cmd string) {
 		}
 	case "help":
 		fmt.Println("Available commands:")
-		fmt.Printf("/mode <name>		- Set AI mode (%s, %s, %s, %s)\n", MixMode, TextMode, VoiceMode, ImageMode)
+		fmt.Printf("/mode <name>		- Set AI mode (%s, %s, %s, %s)\n", Prompt, System, VoiceMode, ImageMode)
+		fmt.Println("/prompt <text>		- Send a text prompt to the AI (only in 'system' mode)")
 		fmt.Println("/debug      		- Toggle debug mode")
 		fmt.Println("/voice      		- Toggle voice responses")
 		fmt.Println("/tools      		- Toggle AI tools (e.g., Google Search)")

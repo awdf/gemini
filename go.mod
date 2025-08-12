@@ -18,6 +18,7 @@ require (
 
 require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.4 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fumiama/imgsz v0.0.2 // indirect
 	github.com/gen2brain/shm v0.1.0 // indirect
