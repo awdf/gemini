@@ -111,7 +111,9 @@ func NewAI(
 		agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
 		agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
 		agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
-		agents.Registerate(ctx, client, toolset, bus, agents.AgentSystemName)
+		// SystemAgent has special dependencies (CLI, ShellExecutor) and is created manually.
+		systemAgent := agents.NewSystemAgent(ctx, client, toolset, bus, shellExecutor, cli)
+		agents.AgentRegistry[agents.AgentSystemName] = systemAgent
 	}
 
 	ai := &AI{
@@ -745,34 +747,6 @@ func (a *AI) generateAndProcessContent(
 // executeToolCalls handles a request from the model to execute one or more tool calls.
 func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResponseParts []*genai.Part) {
 	for _, call := range calls {
-		// Handle the shell command as a special case for security and direct implementation.
-		if call.Name == "execute_shell_command" {
-			command, ok := call.Args["command"].(string)
-			if !ok {
-				errResp := map[string]any{"error": "invalid 'command' argument, must be a string"}
-				toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(call.Name, errResp))
-			} else {
-				prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
-				if !a.cli.Confirm(prompt) {
-					log.Println("User denied shell command execution.")
-					errResp := map[string]any{"error": "user denied execution"}
-					toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(call.Name, errResp))
-					modelParts = append(modelParts, &genai.Part{FunctionCall: call})
-					continue
-				}
-				output, err := a.shellExecutor.Execute(command)
-				responseMap := map[string]any{"output": output}
-				if err != nil {
-					// Include the exit error in the response to the model.
-					responseMap["error"] = err.Error()
-				}
-				toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(call.Name, responseMap))
-			}
-			// Add the original function call to the model's part of the history.
-			modelParts = append(modelParts, &genai.Part{FunctionCall: call})
-			continue // Move to the next tool call.
-		}
-
 		modelParts = append(modelParts, &genai.Part{FunctionCall: call})
 		var response *genai.FunctionResponse
 

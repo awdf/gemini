@@ -117,7 +117,9 @@ func NewLiveSink(
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
-	agents.Registerate(ctx, client, toolset, bus, agents.AgentSystemName)
+	// SystemAgent has special dependencies (CLI, ShellExecutor) and is created manually.
+	systemAgent := agents.NewSystemAgent(ctx, client, toolset, bus, shellExecutor, cli)
+	agents.AgentRegistry[agents.AgentSystemName] = systemAgent
 
 	return &LiveAI{
 		wg:               wg,
@@ -984,32 +986,6 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
-		// Handle the shell command as a special case for security and direct implementation.
-		if call.Name == "execute_shell_command" {
-			command, ok := call.Args["command"].(string)
-			if !ok {
-				errResp := map[string]any{"error": "invalid 'command' argument, must be a string"}
-				responses = append(responses, &genai.FunctionResponse{Name: call.Name, Response: errResp})
-			} else {
-				prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
-				if !l.cli.Confirm(prompt) {
-					log.Println("User denied shell command execution.")
-					errResp := map[string]any{"error": "user denied execution"}
-					responses = append(responses, &genai.FunctionResponse{Name: call.Name, Response: errResp})
-					continue
-				}
-
-				output, err := l.shellExecutor.Execute(command)
-				responseMap := map[string]any{"output": output}
-				if err != nil {
-					// Include the exit error in the response to the model.
-					responseMap["error"] = err.Error()
-				}
-				responses = append(responses, &genai.FunctionResponse{Name: call.Name, Response: responseMap})
-			}
-			continue // Move to the next tool call.
-		}
-
 		log.Printf("Executing tool call: '%s'", call.Name)
 		// Add the current image buffer to any tool call that might need it.
 		// The tool itself is responsible for using or ignoring this argument.
