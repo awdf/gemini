@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -46,8 +47,9 @@ func NewExecutor(bus *EventBus.Bus) (*Executor, error) {
 	}, nil
 }
 
-// Execute runs a command in a pseudo-terminal, streaming its output to stdout.
-func (e *Executor) Execute(command string) error {
+// Execute runs a command in a pseudo-terminal, streaming its output to stdout
+// and returning the captured output as a string.
+func (e *Executor) Execute(command string) (string, error) {
 	// Mute the CLI prompt and soundbar before executing the command.
 	// The defer ensures the prompt is redrawn even if the command fails.
 	(*e.bus).Publish("main:topic", "mute:shell.execute")
@@ -61,7 +63,7 @@ func (e *Executor) Execute(command string) error {
 	// Start the command in a pseudo-terminal.
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to start pty: %w", err)
+		return "", fmt.Errorf("failed to start pty: %w", err)
 	}
 	// Make sure to close the pty at the end. This will terminate the goroutine.
 	defer func() { _ = ptmx.Close() }()
@@ -72,14 +74,20 @@ func (e *Executor) Execute(command string) error {
 		log.Printf("WARNING: could not set pty size: %v", err)
 	}
 
-	// In a goroutine, copy the pty's output to the application's stdout.
+	// Create a buffer to capture the command's output for the AI.
+	var outputBuf bytes.Buffer
+	// Create a MultiWriter to simultaneously write to the user's stdout and the AI's buffer.
+	multiWriter := io.MultiWriter(os.Stdout, &outputBuf)
+
+	// In a goroutine, copy the pty's output to the multi-writer.
 	// This runs until the pty is closed.
 	go func() {
 		// We can ignore the error, as it will be an expected one (EIO or EOF)
 		// when the pty is closed by the defer statement.
-		_, _ = io.Copy(os.Stdout, ptmx)
+		_, _ = io.Copy(multiWriter, ptmx)
 	}()
 
 	// Wait for the command to finish.
-	return cmd.Wait()
+	err = cmd.Wait()
+	return outputBuf.String(), err
 }

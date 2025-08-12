@@ -30,6 +30,7 @@ import (
 	"gemini/images"
 	"gemini/inout"
 	"gemini/pipeline"
+	"gemini/shell"
 )
 
 // Flags holds the command-line flags that control AI behavior.
@@ -54,6 +55,8 @@ type AI struct {
 	toolset             *genai.Tool
 	agents              map[string]agents.Callable
 	initialContextAdded bool
+	shellExecutor       *shell.Executor
+	cli                 *inout.CLI
 	mode                string
 }
 
@@ -87,6 +90,8 @@ func NewAI(
 	fileChan <-chan string,
 	textCmdChan <-chan string,
 	bus *EventBus.Bus,
+	shellExecutor *shell.Executor,
+	cli *inout.CLI,
 ) *AI {
 	ctx := context.Background()
 	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
@@ -106,6 +111,7 @@ func NewAI(
 		agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
 		agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
 		agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
+		agents.Registerate(ctx, client, toolset, bus, agents.AgentSystemName)
 	}
 
 	ai := &AI{
@@ -123,6 +129,8 @@ func NewAI(
 		mode:                config.C.Mode,
 		toolset:             toolset,
 		agents:              agents.AgentRegistry,
+		shellExecutor:       shellExecutor,
+		cli:                 cli,
 	}
 
 	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
@@ -737,6 +745,34 @@ func (a *AI) generateAndProcessContent(
 // executeToolCalls handles a request from the model to execute one or more tool calls.
 func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResponseParts []*genai.Part) {
 	for _, call := range calls {
+		// Handle the shell command as a special case for security and direct implementation.
+		if call.Name == "execute_shell_command" {
+			command, ok := call.Args["command"].(string)
+			if !ok {
+				errResp := map[string]any{"error": "invalid 'command' argument, must be a string"}
+				toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(call.Name, errResp))
+			} else {
+				prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
+				if !a.cli.Confirm(prompt) {
+					log.Println("User denied shell command execution.")
+					errResp := map[string]any{"error": "user denied execution"}
+					toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(call.Name, errResp))
+					modelParts = append(modelParts, &genai.Part{FunctionCall: call})
+					continue
+				}
+				output, err := a.shellExecutor.Execute(command)
+				responseMap := map[string]any{"output": output}
+				if err != nil {
+					// Include the exit error in the response to the model.
+					responseMap["error"] = err.Error()
+				}
+				toolResponseParts = append(toolResponseParts, genai.NewPartFromFunctionResponse(call.Name, responseMap))
+			}
+			// Add the original function call to the model's part of the history.
+			modelParts = append(modelParts, &genai.Part{FunctionCall: call})
+			continue // Move to the next tool call.
+		}
+
 		modelParts = append(modelParts, &genai.Part{FunctionCall: call})
 		var response *genai.FunctionResponse
 

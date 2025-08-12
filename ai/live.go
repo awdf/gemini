@@ -23,6 +23,7 @@ import (
 	"gemini/helpers"
 	"gemini/images"
 	"gemini/inout"
+	"gemini/shell"
 	"gemini/vad"
 )
 
@@ -40,6 +41,8 @@ type LiveAI struct {
 	bus              *EventBus.Bus
 	session          *genai.Session
 	imageBuffer      *images.ScreenshotBuffer
+	shellExecutor    *shell.Executor
+	cli              *inout.CLI
 	toolset          *genai.Tool
 	isStreaming      bool
 	streamPlayer     *audio.PCMStreamPlayer
@@ -65,6 +68,8 @@ func NewLiveSink(
 	textCmdChan <-chan string,
 	bus *EventBus.Bus,
 	flags *Flags,
+	shellExecutor *shell.Executor,
+	cli *inout.CLI,
 ) *LiveAI {
 	ctx := context.Background()
 	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
@@ -112,6 +117,7 @@ func NewLiveSink(
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentDocxReaderName)
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentDesktopName)
 	agents.Registerate(ctx, client, toolset, bus, agents.AgentCronName)
+	agents.Registerate(ctx, client, toolset, bus, agents.AgentSystemName)
 
 	return &LiveAI{
 		wg:               wg,
@@ -127,6 +133,8 @@ func NewLiveSink(
 		Element:          sink.Element,
 		streamPlayer:     streamPlayer,
 		toolset:          toolset,
+		shellExecutor:    shellExecutor,
+		cli:              cli,
 		isStreaming:      false,
 		mode:             config.C.Mode,
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
@@ -976,6 +984,32 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
+		// Handle the shell command as a special case for security and direct implementation.
+		if call.Name == "execute_shell_command" {
+			command, ok := call.Args["command"].(string)
+			if !ok {
+				errResp := map[string]any{"error": "invalid 'command' argument, must be a string"}
+				responses = append(responses, &genai.FunctionResponse{Name: call.Name, Response: errResp})
+			} else {
+				prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
+				if !l.cli.Confirm(prompt) {
+					log.Println("User denied shell command execution.")
+					errResp := map[string]any{"error": "user denied execution"}
+					responses = append(responses, &genai.FunctionResponse{Name: call.Name, Response: errResp})
+					continue
+				}
+
+				output, err := l.shellExecutor.Execute(command)
+				responseMap := map[string]any{"output": output}
+				if err != nil {
+					// Include the exit error in the response to the model.
+					responseMap["error"] = err.Error()
+				}
+				responses = append(responses, &genai.FunctionResponse{Name: call.Name, Response: responseMap})
+			}
+			continue // Move to the next tool call.
+		}
+
 		log.Printf("Executing tool call: '%s'", call.Name)
 		// Add the current image buffer to any tool call that might need it.
 		// The tool itself is responsible for using or ignoring this argument.

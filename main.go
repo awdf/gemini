@@ -21,6 +21,7 @@ import (
 	"gemini/inout"
 	"gemini/pipeline"
 	"gemini/recorder"
+	"gemini/shell"
 	"gemini/vad"
 
 	"github.com/asaskevich/EventBus"
@@ -73,6 +74,13 @@ func NewApp(flags *CliFlags) *App {
 	bus := EventBus.New()
 	app.bus = &bus
 
+	// The shell executor is a shared component used by the CLI (for direct user commands)
+	// and the AI (for tool-based command execution).
+	shellExecutor, err := shell.NewExecutor(app.bus)
+	if err != nil {
+		log.Fatalf("Failed to initialize shell executor: %v", err)
+	}
+
 	// Create buffered channels to decouple the "hot" GStreamer loop from other goroutines.
 	app.rmsDisplayChan = make(chan float64, 10) // For the RMS volume bar
 	app.vadControlChan = make(chan float64, 10) // For the VAD logic
@@ -86,23 +94,26 @@ func NewApp(flags *CliFlags) *App {
 		Enabled: flags.AIEnabled,
 	}
 
+	// The CLI must be created first, as it's a dependency for the AI components
+	// which need it for user confirmation prompts.
+	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus, flags.AIEnabled, shellExecutor)
+
 	// Create the main components with Dependency Injection.
 	// 2 modes: PostAI and LiveAI
-	if flags.Live { // LiveAI init
-		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus, aiFlags)
+	if flags.Live {
+		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus, aiFlags, shellExecutor, app.cli)
 		// The Live API requires 16kHz mono audio.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.LiveChannels, audio.LiveSampleRate)
-	} else { // PostAI init
+	} else {
 		// Initial message to AI. Build start context.
 		app.textCommandChan <- ai.CheckQuestion
 		app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
 		// For recording, we use the higher quality settings defined in the audio package.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.WavChannels, audio.WavSampleRate)
-		app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus)
+		app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus, shellExecutor, app.cli)
 	}
 	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan, app.bus)
 	app.display = inout.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
-	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus, flags.AIEnabled)
 
 	// Collect all runnable components. Some will be nil depending on the mode
 	// (e.g., app.live or app.recorder). The join() method safely handles nils.

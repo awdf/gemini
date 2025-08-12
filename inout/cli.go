@@ -31,6 +31,13 @@ var modes = map[string]string{
 	ImageMode: ImageMode,
 }
 
+// confirmRequest is used to pass a confirmation prompt and receive a response
+// between the blocking Confirm method and the non-blocking Run loop.
+type confirmRequest struct {
+	prompt       string
+	responseChan chan bool
+}
+
 // CLI handles reading user input from the command line.
 type CLI struct {
 	wg            *sync.WaitGroup
@@ -41,6 +48,7 @@ type CLI struct {
 	aiEnabled     bool
 	warmUpDone    bool
 	mode          string
+	confirmChan   chan confirmRequest
 }
 
 const (
@@ -68,14 +76,9 @@ var thinkingLevels = map[string]int32{
 }
 
 // NewCLI creates a new CLI instance.
-func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnabled bool) *CLI {
+func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnabled bool, shellExecutor *shell.Executor) *CLI {
 	if aiEnabled {
 		fmt.Println("Use keyboard to send text prompts to the AI.")
-	}
-
-	shellExecutor, err := shell.NewExecutor(bus)
-	if err != nil {
-		log.Fatalf("Failed to initialize shell executor: %v", err)
 	}
 
 	return &CLI{
@@ -87,7 +90,20 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		aiEnabled:     aiEnabled,
 		warmUpDone:    false,
 		mode:          config.C.Mode,
+		confirmChan:   make(chan confirmRequest),
 	}
+}
+
+// Confirm displays a prompt to the user and waits for a 'y' or 'n' response.
+// It's a blocking call that communicates with the main Run loop via a channel.
+func (c *CLI) Confirm(prompt string) bool {
+	req := confirmRequest{
+		prompt:       prompt,
+		responseChan: make(chan bool, 1), // Buffered to prevent blocking.
+	}
+	c.confirmChan <- req
+	log.Printf("Waiting for user confirmation for prompt: '%s'", prompt)
+	return <-req.responseChan
 }
 
 // Run starts the CLI input loop. It should be run in a goroutine.
@@ -133,15 +149,33 @@ func (c *CLI) Run() {
 	}()
 
 	shutdownChan := flow.GetListener()
+	var activeConfirmation *confirmRequest
+
 	for {
 		select {
 		case <-*shutdownChan: // Listens for Ctrl+C
 			log.Println("CLI input handler shutting down.")
 			return
+		case req := <-c.confirmChan:
+			activeConfirmation = &req
+			// Mute the regular prompt/soundbar display.
+			(*c.bus).Publish("main:topic", "mute:cli.confirm.start")
+			// Print the confirmation prompt. The newline handles cases where a prompt was already visible.
+			fmt.Printf("\n%s [y/N]: ", req.prompt)
+
 		case firstLine, ok := <-inputChan:
 			if !ok {
 				log.Println("Stdin closed, CLI input handler shutting down.")
 				return
+			}
+
+			if activeConfirmation != nil {
+				response := strings.ToLower(strings.TrimSpace(firstLine)) == "y"
+				activeConfirmation.responseChan <- response
+				close(activeConfirmation.responseChan)
+				activeConfirmation = nil
+				(*c.bus).Publish("main:topic", "draw:cli.confirm.end")
+				continue // Skip normal processing.
 			}
 
 			// Do not process any input until the VAD has signaled it's ready.
@@ -160,7 +194,7 @@ func (c *CLI) Run() {
 			// If it's not a command, handle it based on the mode.
 			if c.mode == System {
 				// In system mode, non-command input is a shell command.
-				if err := c.shellExecutor.Execute(firstLine); err != nil {
+				if _, err := c.shellExecutor.Execute(firstLine); err != nil {
 					// The error is usually just the exit status, which can be non-zero.
 					log.Printf("Shell command finished with error: %v", err)
 				}
