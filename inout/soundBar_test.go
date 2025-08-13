@@ -27,7 +27,7 @@ func TestRMSDisplay_PrintBar(t *testing.T) {
 		r, w, _ := os.Pipe()
 		os.Stdout = w
 
-		display.warmUpDone = false
+		display.ready = false
 		display.muted = false
 		display.currentRMS = 0.5
 		display.printBar()
@@ -45,7 +45,7 @@ func TestRMSDisplay_PrintBar(t *testing.T) {
 		r, w, _ := os.Pipe()
 		os.Stdout = w
 
-		display.warmUpDone = true
+		display.ready = true
 		display.muted = true
 		display.currentRMS = 0.5
 		display.printBar()
@@ -59,7 +59,7 @@ func TestRMSDisplay_PrintBar(t *testing.T) {
 	})
 
 	t.Run("prints correctly when active", func(t *testing.T) {
-		display.warmUpDone = true
+		display.ready = true
 		display.muted = false
 
 		// Test case: 50% volume
@@ -100,7 +100,7 @@ func TestRMSDisplay_PrintBar(t *testing.T) {
 	})
 
 	t.Run("does not reprint for same bar length", func(t *testing.T) {
-		display.warmUpDone = true
+		display.ready = true
 		display.muted = false
 		display.lastPrintedBarLength = -1 // Reset
 
@@ -163,7 +163,7 @@ func TestRMSDisplay_Run_EventHandling(t *testing.T) {
 		bus.Publish(config.MainTopic, "ready:app.run")
 		display.Mu.RLock()
 		defer display.Mu.RUnlock()
-		return !display.muted && display.warmUpDone
+		return !display.muted && display.ready
 	}, 1*time.Second, 10*time.Millisecond, "The display should become un-muted and warmed-up after the 'ready' event")
 
 	// Shutdown

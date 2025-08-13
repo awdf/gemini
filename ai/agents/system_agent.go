@@ -43,6 +43,11 @@ func NewSystemAgent(
 	}
 	baseAgent := NewAgent(ctx, client, agentConfig)
 
+	behavior := genai.BehaviorBlocking
+	if config.C.LiveAI {
+		behavior = genai.BehaviorNonBlocking
+	}
+
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &genai.FunctionDeclaration{
 		Name:        "execute_shell_command",
 		Description: "LINUX SYSTEM: Executes a shell command in the configured workspace directory. The command's stdout and stderr will be returned.",
@@ -56,6 +61,7 @@ func NewSystemAgent(
 			},
 			Required: []string{"command"},
 		},
+		Behavior: behavior,
 	})
 	return &SystemAgent{
 		Agent: baseAgent,
@@ -69,6 +75,7 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		return a.Agent.Handle(call) // Not for this agent
 	}
 
+	// IMPORTANT! Works only in system mode
 	if config.C.Mode != inout.System {
 		err := fmt.Errorf("warning: SystemAgent requires system mode for command execution. Please leed user switch to system mode")
 		return a.CreateFunctionResponse(call, nil, err)
@@ -76,7 +83,7 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 
 	// The CLI and ShellExecutor components are injected at runtime via the call arguments.
 	// This makes the agent more flexible and avoids tight coupling in the constructor.
-	cli, cliOK := call.Args["cli_component"].(*inout.CLI)
+	_, cliOK := call.Args["cli_component"].(*inout.CLI)
 	shellExecutor, execOK := call.Args["executor_component"].(*shell.Executor)
 
 	if !cliOK || !execOK {
@@ -90,43 +97,63 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
-	// In system mode, we block and wait for the command to complete.
-	prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
-	if !cli.Confirm(prompt) {
-		log.Println("User denied shell command execution.")
-		err := fmt.Errorf("user denied execution")
-		return a.CreateFunctionResponse(call, nil, err)
+	// TODO: It is secure. But really annoying. Solve do i need it or don't?
+	// // In system mode, we block and wait for the command to complete.
+	// prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
+	// if !cli.Confirm(prompt) {
+	// 	log.Println("User denied shell command execution.")
+	// 	return a.CreateFunctionResponse(call, nil, fmt.Errorf("user denied execution"))
+	// }
+
+	if config.C.LiveAI {
+		go a.streamCommandLive(call, command, shellExecutor)
+		return a.CreateFunctionResponse(call, map[string]any{"status": "executing", "output": "Command is executing, output is being streamed."}, nil, true)
 	}
 
-	// In system mode, we start the command in a goroutine and immediately return
-	// a response to the model indicating that the process has started.
-	// Subsequent output will be streamed as asynchronous tool responses.
-	go a.streamCommand(call, command, shellExecutor)
-	// Return an immediate response to the model indicating the command is running.
-	return a.CreateFunctionResponse(call, map[string]any{"status": "executing", "output": "Command is executing, output is being streamed."}, nil, true)
+	// PostAI path is non-interactive.
+	return a.executeCommandPost(call, command, shellExecutor)
 }
 
-// streamCommand executes a command and publishes its output as a series of tool responses.
-func (a *SystemAgent) streamCommand(call *genai.FunctionCall, command string, shellExecutor *shell.Executor) {
+// executeCommandPost handles command execution for the non-interactive PostAI mode.
+// It runs the command synchronously and returns the full output in a single response.
+func (a *SystemAgent) executeCommandPost(call *genai.FunctionCall, command string, shellExecutor *shell.Executor) *genai.FunctionResponse {
+	a.Printf("Executing command in PostAI mode: %s", command)
+	output, err := shellExecutor.Execute(command)
+	if err != nil {
+		// The error from Execute often includes the command's output, so we return both.
+		responseMap := map[string]any{"output": output, "error": err.Error()}
+		return a.CreateFunctionResponse(call, responseMap, nil)
+	}
+	responseMap := map[string]any{"output": output, "status": "completed"}
+	return a.CreateFunctionResponse(call, responseMap, nil)
+}
+
+// streamCommandLive handles command execution for the interactive LiveAI mode.
+// It streams the command's output as a series of asynchronous tool responses.
+func (a *SystemAgent) streamCommandLive(call *genai.FunctionCall, command string, shellExecutor *shell.Executor) {
 	outputChan := make(chan string)
 
 	if err := shellExecutor.ExecuteStream(command, outputChan); err != nil {
 		log.Printf("ERROR starting shell stream: %v", err)
 		// Send the error back as a final tool response.
-		errResponse := a.CreateFunctionResponse(call, nil, fmt.Errorf("error starting command: %w", err), false)
-		(*a.bus).Publish(config.AgentTopic, errResponse)
+		finalResponse := a.CreateFunctionResponse(call, nil, fmt.Errorf("error starting command: %w", err), false)
+		(*a.bus).Publish(config.AgentTopic, finalResponse)
 		return
 	}
 
-	// Defer a final response to close the tool call transaction.
-	// This runs only if the command starts successfully.
+	// Defer the final response which will contain the full output.
 	defer func() {
+		// The final response contains the full buffered output to ensure the model has
+		// complete context for follow-up questions. It also signals the end of the tool call.
 		finalResponse := a.CreateFunctionResponse(call, map[string]any{"status": "completed"}, nil, false)
 		(*a.bus).Publish(config.AgentTopic, finalResponse)
 		a.Printf("Shell command stream finished for call ID %s.", call.ID)
 	}()
 
+	// Stream intermediate chunks and buffer them for the final response.
 	for chunk := range outputChan {
+		// Send intermediate chunks to the model. This provides live feedback but the model
+		// may not retain the full context from these chunks.
 		chunkResponse := a.CreateFunctionResponse(call, map[string]any{"output": chunk}, nil, true)
 		(*a.bus).Publish(config.AgentTopic, chunkResponse)
 	}

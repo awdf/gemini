@@ -46,7 +46,7 @@ type CLI struct {
 	shellExecutor *shell.Executor
 	muted         bool
 	aiEnabled     bool
-	warmUpDone    bool
+	ready         bool
 	mode          string
 	confirmChan   chan confirmRequest
 }
@@ -88,7 +88,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		shellExecutor: shellExecutor,
 		muted:         true,
 		aiEnabled:     aiEnabled,
-		warmUpDone:    false,
+		ready:         false,
 		mode:          config.C.Mode,
 		confirmChan:   make(chan confirmRequest),
 	}
@@ -123,13 +123,16 @@ func (c *CLI) Run() {
 		config.DebugPrintf("CLI received event: %s\n", event)
 
 		switch {
-		case strings.HasPrefix(event, "mute:"):
+		case strings.HasPrefix(event, "mute:"): // Normal flow
 			c.muted = true
-		case strings.HasPrefix(event, "draw:"):
+		case strings.HasPrefix(event, "draw:"): // Normal flow
 			c.muted = false
 			c.draw() // Next prompts
-		case strings.HasPrefix(event, "ready:"):
-			c.warmUpDone = true
+		case strings.HasPrefix(event, "block:"): // Critical flow blocking
+			c.ready = false
+			c.muted = true
+		case strings.HasPrefix(event, "ready:"): // Critical flow unblocking
+			c.ready = true
 			c.muted = false
 			c.draw() // Initial prompt
 		default:
@@ -159,7 +162,7 @@ func (c *CLI) Run() {
 		case req := <-c.confirmChan:
 			activeConfirmation = &req
 			// Mute the regular prompt/soundbar display.
-			(*c.bus).Publish(config.MainTopic, "mute:cli.confirm.start")
+			(*c.bus).Publish(config.MainTopic, "block:cli.confirm.start")
 			// Print the confirmation prompt. The newline handles cases where a prompt was already visible.
 			fmt.Printf("\n%s [y/N]: ", req.prompt)
 
@@ -174,13 +177,15 @@ func (c *CLI) Run() {
 				activeConfirmation.responseChan <- response
 				close(activeConfirmation.responseChan)
 				activeConfirmation = nil
+				(*c.bus).Publish(config.MainTopic, "ready:cli.confirm.done")
 				continue // Skip normal processing.
 			}
 
-			// Do not process any input until the VAD has signaled it's ready.
-			// This prevents sending commands before the AI/LiveAI components are ready.
-			if !c.warmUpDone {
-				log.Println("CLI dropping input received during warm-up.")
+			// Case: Do not process any input until the VAD has signaled it's ready.
+			// 		 This prevents sending commands before the AI/LiveAI components are ready.
+			// Case: Do not process any input until modal question dialog.
+			if !c.ready {
+				log.Println("CLI dropping input received during blocked state.")
 				continue
 			}
 
@@ -236,7 +241,7 @@ func (c *CLI) Run() {
 }
 
 func (c *CLI) draw() {
-	if c.muted || !c.warmUpDone {
+	if c.muted || !c.ready {
 		return
 	}
 	fmt.Printf(promptPatern, c.mode) // Initial prompt
