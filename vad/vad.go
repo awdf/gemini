@@ -96,7 +96,7 @@ func (e *Engine) Run() {
 			}
 			// Warm-up has just completed.
 			log.Println("VAD warm-up complete. Now actively listening for speech.")
-			(*e.bus).Publish("main:topic", "ready:vad.run")
+			(*e.bus).Publish(config.MainTopic, "ready:vad.run")
 			warmupOver = true
 		}
 

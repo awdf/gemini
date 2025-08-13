@@ -119,7 +119,7 @@ func (c *CLI) Run() {
 		return
 	}
 
-	helpers.Verify((*c.bus).SubscribeAsync("main:topic", func(event string) {
+	helpers.Verify((*c.bus).SubscribeAsync(config.MainTopic, func(event string) {
 		config.DebugPrintf("CLI received event: %s\n", event)
 
 		switch {
@@ -159,7 +159,7 @@ func (c *CLI) Run() {
 		case req := <-c.confirmChan:
 			activeConfirmation = &req
 			// Mute the regular prompt/soundbar display.
-			(*c.bus).Publish("main:topic", "mute:cli.confirm.start")
+			(*c.bus).Publish(config.MainTopic, "mute:cli.confirm.start")
 			// Print the confirmation prompt. The newline handles cases where a prompt was already visible.
 			fmt.Printf("\n%s [y/N]: ", req.prompt)
 
@@ -197,7 +197,7 @@ func (c *CLI) Run() {
 					// The error is usually just the exit status, which can be non-zero.
 					log.Printf("Shell command finished with error: %v", err)
 				}
-				(*c.bus).Publish("main:topic", "draw:cli.run.system")
+				(*c.bus).Publish(config.MainTopic, "draw:cli.run.system")
 				continue // Move to the next iteration of the loop.
 			}
 
@@ -243,7 +243,7 @@ func (c *CLI) draw() {
 	// Publish a separate event for the sound bar AFTER the CLI prompt is printed.
 	// This creates a specific drawing order and prevents a race condition
 	// where the sound bar could be drawn before or over the prompt.
-	(*c.bus).Publish("main:topic", "show:cli.run")
+	(*c.bus).Publish(config.MainTopic, "show:cli.run")
 }
 
 func (c *CLI) command(cmd string) {
@@ -267,7 +267,7 @@ func (c *CLI) command(cmd string) {
 	case "exit":
 		flow.Quit()
 	case "save":
-		(*c.bus).Publish("ai:topic", "save:history.txt")
+		(*c.bus).Publish(config.AITopic, "save:history.txt")
 		fmt.Println("Conversation history save requested to history.txt.")
 	case "debug":
 		config.C.Debug = !config.C.Debug
@@ -276,17 +276,17 @@ func (c *CLI) command(cmd string) {
 		config.C.AI.VoiceEnabled = !config.C.AI.VoiceEnabled
 		log.Printf("Voice output set to: %t", config.C.AI.VoiceEnabled)
 		// In live mode, changing this requires a session restart.
-		(*c.bus).Publish("ai:topic", "restart_session:voice_toggle")
+		(*c.bus).Publish(config.AITopic, "restart_session:voice_toggle")
 	case "tools":
 		config.C.AI.EnableTools = !config.C.AI.EnableTools
 		log.Printf("AI tools enabled set to: %t", config.C.AI.EnableTools)
 		// In live mode, changing this requires a session restart.
-		(*c.bus).Publish("ai:topic", "restart_session:tools_toggle")
+		(*c.bus).Publish(config.AITopic, "restart_session:tools_toggle")
 	case "transcript":
 		config.C.AI.Transcript = !config.C.AI.Transcript
 		log.Printf("Separate transcription step set to: %t", config.C.AI.Transcript)
 		// In live mode, changing this requires a session restart.
-		(*c.bus).Publish("ai:topic", "restart_session:transcript_toggle")
+		(*c.bus).Publish(config.AITopic, "restart_session:transcript_toggle")
 	case "history":
 		config.C.AI.VoiceHistory = !config.C.AI.VoiceHistory
 		log.Printf("Voice history set to: %t", config.C.AI.VoiceHistory)
@@ -331,7 +331,7 @@ func (c *CLI) command(cmd string) {
 				c.mode = value
 				config.C.Mode = value
 				log.Printf("AI mode set to: %s", value)
-				(*c.bus).Publish("ai:topic", fmt.Sprintf("mode:%s", value))
+				(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", value))
 			}
 		}
 	case "help":

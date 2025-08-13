@@ -17,7 +17,10 @@ import (
 	"gemini/tools"
 )
 
-const AgentFileName = "FileAgent"
+const (
+	AgentFileName = "FileAgent"
+	pathError     = "'path' argument is required"
+)
 
 func init() {
 	RegisterFactory(AgentFileName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
@@ -31,7 +34,7 @@ type FileAgent struct {
 }
 
 // NewFileAgent creates a specialized agent for reading local files.
-func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *FileAgent {
+func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, _ *EventBus.Bus) *FileAgent {
 	// Define the function declarations for all file system tools.
 	functions := []*genai.FunctionDeclaration{
 		{
@@ -183,10 +186,10 @@ func (a *FileAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 }
 
 func (a *FileAgent) handleReadFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, ok := call.Args["path"].(string)
 	if !ok || path == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf(pathError))
 	}
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
@@ -200,7 +203,7 @@ func (a *FileAgent) handleReadFileTool(call *genai.FunctionCall) *genai.Function
 }
 
 func (a *FileAgent) handleCreateFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, pathOK := call.Args["path"].(string)
 	content, contentOK := call.Args["content"].(string)
 	if !pathOK || !contentOK {
@@ -218,10 +221,10 @@ func (a *FileAgent) handleCreateFileTool(call *genai.FunctionCall) *genai.Functi
 }
 
 func (a *FileAgent) handleDeleteFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, ok := call.Args["path"].(string)
 	if !ok {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf(pathError))
 	}
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
@@ -235,7 +238,7 @@ func (a *FileAgent) handleDeleteFileTool(call *genai.FunctionCall) *genai.Functi
 }
 
 func (a *FileAgent) handleListFilesTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, _ := call.Args["path"].(string)
 	if path == "" {
 		path = "." // Default to current directory
@@ -252,10 +255,10 @@ func (a *FileAgent) handleListFilesTool(call *genai.FunctionCall) *genai.Functio
 }
 
 func (a *FileAgent) handleMakeDirectoryTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, ok := call.Args["path"].(string)
 	if !ok {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf(pathError))
 	}
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
@@ -269,7 +272,7 @@ func (a *FileAgent) handleMakeDirectoryTool(call *genai.FunctionCall) *genai.Fun
 }
 
 func (a *FileAgent) handleMoveFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	source, sourceOK := call.Args["source_path"].(string)
 	dest, destOK := call.Args["destination_path"].(string)
 	if !sourceOK || !destOK {
@@ -291,7 +294,7 @@ func (a *FileAgent) handleMoveFileTool(call *genai.FunctionCall) *genai.Function
 }
 
 func (a *FileAgent) handleCopyFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	source, sourceOK := call.Args["source_path"].(string)
 	dest, destOK := call.Args["destination_path"].(string)
 	if !sourceOK || !destOK {
@@ -313,10 +316,10 @@ func (a *FileAgent) handleCopyFileTool(call *genai.FunctionCall) *genai.Function
 }
 
 func (a *FileAgent) handleGetFileInfoTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, ok := call.Args["path"].(string)
 	if !ok {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf(pathError))
 	}
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
@@ -330,7 +333,7 @@ func (a *FileAgent) handleGetFileInfoTool(call *genai.FunctionCall) *genai.Funct
 }
 
 func (a *FileAgent) handleSearchFilesTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	pattern, ok := call.Args["pattern"].(string)
 	if !ok {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'pattern' argument is required"))
@@ -351,7 +354,7 @@ func (a *FileAgent) handleSearchFilesTool(call *genai.FunctionCall) *genai.Funct
 }
 
 func (a *FileAgent) handleAppendToFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, pathOK := call.Args["path"].(string)
 	content, contentOK := call.Args["content"].(string)
 	if !pathOK || !contentOK {
@@ -369,10 +372,10 @@ func (a *FileAgent) handleAppendToFileTool(call *genai.FunctionCall) *genai.Func
 }
 
 func (a *FileAgent) handleUploadImageTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, ok := call.Args["path"].(string)
 	if !ok || path == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf(pathError))
 	}
 
 	safePath, err := config.GetSafePath(path)

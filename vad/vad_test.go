@@ -146,7 +146,7 @@ func TestEngine_Run_Warmup(t *testing.T) {
 
 	// Subscribe to the event bus to catch the ready signal
 	eventChan := make(chan string, 1)
-	err := bus.Subscribe("main:topic", func(event string) {
+	err := bus.Subscribe(config.MainTopic, func(event string) {
 		eventChan <- event
 	})
 	require.NoError(t, err)

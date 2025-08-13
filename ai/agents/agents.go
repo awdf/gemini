@@ -17,6 +17,8 @@ import (
 	"gemini/inout"
 )
 
+const PrintTemplate = "Executing tool call: %s with args: %v"
+
 type Callable interface {
 	ModelName() string
 	RPM() int

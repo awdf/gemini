@@ -52,7 +52,7 @@ func NewExecutor(bus *EventBus.Bus) (*Executor, error) {
 // and returning the captured output as a string.
 func (e *Executor) Execute(command string) (string, error) {
 	// Mute the CLI prompt and soundbar before executing the command.
-	(*e.bus).Publish("main:topic", "mute:shell.execute")
+	(*e.bus).Publish(config.MainTopic, "mute:shell.execute")
 
 	// Use the system's default shell to interpret the command.
 	// This allows for shell features like pipes, redirection, etc.
@@ -94,21 +94,21 @@ func (e *Executor) Execute(command string) (string, error) {
 // ExecuteStream runs a command and streams its output to the provided channel.
 // It returns immediately, with errors from command execution logged asynchronously.
 func (e *Executor) ExecuteStream(command string, outputChan chan<- string) error {
-	(*e.bus).Publish("main:topic", "mute:shell.execute.stream")
+	(*e.bus).Publish(config.MainTopic, "mute:shell.execute.stream")
 
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = e.workspaceDir
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		(*e.bus).Publish("main:topic", "draw:shell.execute.stream.fail")
+		(*e.bus).Publish(config.MainTopic, "draw:shell.execute.stream.fail")
 		close(outputChan)
 		return fmt.Errorf("failed to start pty: %w", err)
 	}
 
 	go func() {
 		defer func() { _ = ptmx.Close() }()
-		// defer (*e.bus).Publish("main:topic", "draw:shell.execute.stream.done")
+		// defer (*e.bus).Publish(config.MainTopic, "draw:shell.execute.stream.done")
 		// The outputChan is closed by the scanner goroutine when it's done.
 
 		if err := pty.InheritSize(os.Stdin, ptmx); err != nil {

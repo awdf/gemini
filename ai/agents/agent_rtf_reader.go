@@ -524,7 +524,7 @@ func extendedHTMLRules(a *RtfReaderAgent) (rtf.RuleSet, rtf.PostRuleSet, rtf.Fin
 				url = "" // Reset url for the next link
 				return nil
 			},
-			"field": func(actions *rtf.Actions) error {
+			"field": func(_ *rtf.Actions) error {
 				// The field group's actions now correctly contain the link and any following text.
 				// No special processing is needed here, but the rule must exist to be in the PostRuleSet.
 				return nil
@@ -820,7 +820,7 @@ func extendedHTMLRules(a *RtfReaderAgent) (rtf.RuleSet, rtf.PostRuleSet, rtf.Fin
 
 	// --- Table Processing Rules ---
 
-	rules["intbl"] = func(_ rtf.Header, stack rtf.StackType, _ rtf.Action) error {
+	rules["intbl"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
 		// This marks the upcoming paragraph as being part of a table.
 		// The actual tags will be created lazily by the text hook.
 		isParagraphInTable = true
@@ -904,7 +904,7 @@ func extendedHTMLRules(a *RtfReaderAgent) (rtf.RuleSet, rtf.PostRuleSet, rtf.Fin
 
 	rules["pngblip"] = func(_ rtf.Header, _ rtf.StackType, _ rtf.Action) error {
 		if isInPicture {
-			pictureType = "image/png"
+			pictureType = config.MIMEImage
 		}
 		return nil
 	}

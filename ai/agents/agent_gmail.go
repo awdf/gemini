@@ -40,7 +40,7 @@ type GmailAgent struct {
 
 // NewGmailAgent creates and initializes the Gmail agent.
 // It handles the OAuth2 flow to get an authenticated client.
-func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *GmailAgent {
+func NewGmailAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, _ *EventBus.Bus) *GmailAgent {
 	if !config.C.Google.Enabled {
 		log.Println("WARNING: Could not create Gmail agent, Gmail tools is disabled.")
 		return nil
@@ -522,7 +522,7 @@ func (a *GmailAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 }
 
 func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 
 	var result any
 	var err error
@@ -545,7 +545,7 @@ func (a *GmailAgent) handleGmailSendEmailTool(call *genai.FunctionCall) *genai.F
 }
 
 func (a *GmailAgent) handleDownloadAttachmentTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	var result any
 	var err error
 	messageID, msgOk := call.Args["message_id"].(string)
@@ -565,7 +565,7 @@ func (a *GmailAgent) handleDownloadAttachmentTool(call *genai.FunctionCall) *gen
 }
 
 func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	var result any
 	var err error
 	query, _ := call.Args["query"].(string)
@@ -585,7 +585,7 @@ func (a *GmailAgent) handleGmailListEmailsTool(call *genai.FunctionCall) *genai.
 }
 
 func (a *GmailAgent) handleGmailReadEmailTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	var result any
 	var err error
 	messageID, ok := call.Args["message_id"].(string)

@@ -79,7 +79,7 @@ func (d *RMSDisplay) printBar() {
 func (d *RMSDisplay) Run() {
 	defer d.wg.Done()
 
-	helpers.Verify((*d.bus).SubscribeAsync("main:topic", func(event string) {
+	helpers.Verify((*d.bus).SubscribeAsync(config.MainTopic, func(event string) {
 		config.DebugPrintf("Bar received event: %s\n", event)
 		d.Mu.Lock() // Full lock to write state
 		defer d.Mu.Unlock()

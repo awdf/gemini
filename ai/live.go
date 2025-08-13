@@ -311,7 +311,7 @@ func (l *LiveAI) Run() {
 	}()
 
 	// Subscribe to the main event topic to listen for the warm-up completion signal from VAD.
-	helpers.Verify((*l.bus).SubscribeAsync("main:topic", func(event string) {
+	helpers.Verify((*l.bus).SubscribeAsync(config.MainTopic, func(event string) {
 		if strings.HasPrefix(event, "ready:") {
 			l.mu.Lock()
 			if !l.warmUpDone {
@@ -321,8 +321,8 @@ func (l *LiveAI) Run() {
 			l.mu.Unlock()
 		}
 	}, false))
-	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
-	helpers.Verify((*l.bus).SubscribeAsync("agent:tool_response", l.handleAgentToolResponse, false))
+	helpers.Verify((*l.bus).Subscribe(config.AITopic, l.handleEvents))
+	helpers.Verify((*l.bus).SubscribeAsync(config.AgentTopic, l.handleAgentToolResponse, false))
 
 	l.OpenSession()
 	// Start a dedicated goroutine to handle all incoming server messages.
@@ -546,7 +546,7 @@ func (l *LiveAI) handleResponses() {
 					log.Println("Live stream generation started.")
 					inModelTurn = true
 					turnGroundingChunks = nil
-					(*l.bus).Publish("main:topic", "mute:ai.handleResponses")
+					(*l.bus).Publish(config.MainTopic, "mute:ai.handleResponses")
 					if !config.C.AI.Transcript {
 						// Usuely transcript clear screen.
 						l.formatter.Clear()
@@ -570,7 +570,7 @@ func (l *LiveAI) handleResponses() {
 				outTranscript = false
 				inModelTurn = false
 				l.formatter.Reset()
-				(*l.bus).Publish("main:topic", "draw:ai.handleResponses")
+				(*l.bus).Publish(config.MainTopic, "draw:ai.handleResponses")
 			}
 		case msg.ToolCall != nil:
 			go func(request *genai.LiveServerToolCall) {
@@ -759,6 +759,8 @@ func (l *LiveAI) sendInitialFiles() {
 	l.writeMu.Unlock()
 }
 
+const sendImageError = "ERROR: failed to send realtime image input: %v"
+
 func (l *LiveAI) sendLiveMessage(text string) {
 	online := l.Online
 
@@ -773,7 +775,7 @@ func (l *LiveAI) sendLiveMessage(text string) {
 	})
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		log.Printf(sendImageError, err)
 		// Stop streaming on error to prevent flooding with more errors.
 	}
 }
@@ -792,13 +794,13 @@ func (l *LiveAI) sendLiveImage() {
 	l.writeMu.Lock()
 	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
 		Media: &genai.Blob{
-			MIMEType: "image/png",
+			MIMEType: config.MIMEImage,
 			Data:     imageBuffer.Bytes(), // This is safe because imageBuffer is a local var now
 		},
 	})
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		log.Printf(sendImageError, err)
 		// Stop streaming on error to prevent flooding with more errors.
 	}
 }
@@ -829,7 +831,7 @@ func (l *LiveAI) sendTextPrompt(prompt string) error {
 		} else {
 			log.Printf("failed to take screenshot: %v", err)
 		}
-		parts = append(parts, genai.NewPartFromBytes(l.imageBuffer.Bytes(), "image/png")) // The buffer now holds PNG data
+		parts = append(parts, genai.NewPartFromBytes(l.imageBuffer.Bytes(), config.MIMEImage)) // The buffer now holds PNG data
 	}
 
 	turn := genai.NewContentFromParts(parts, genai.RoleUser)
@@ -920,7 +922,7 @@ func (l *LiveAI) notifyStreamDone() {
 	})
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		log.Printf(sendImageError, err)
 		// Stop streaming on error to prevent flooding with more errors.
 	}
 }
@@ -940,7 +942,7 @@ func (l *LiveAI) notifyStreamStart() {
 	})
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		log.Printf(sendImageError, err)
 		// Stop streaming on error to prevent flooding with more errors.
 	}
 }
@@ -960,7 +962,7 @@ func (l *LiveAI) notifyActivityEnd() {
 	})
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf("ERROR: failed to send realtime image input: %v", err)
+		log.Printf(sendImageError, err)
 		// Stop streaming on error to prevent flooding with more errors.
 	}
 }

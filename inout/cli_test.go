@@ -61,7 +61,7 @@ func TestCLI_CommandHandling(t *testing.T) {
 		var eventReceived string
 		var wg sync.WaitGroup
 		wg.Add(1)
-		err := bus.Subscribe("ai:topic", func(event string) {
+		err := bus.Subscribe(config.AITopic, func(event string) {
 			eventReceived = event
 			wg.Done()
 		})
@@ -71,7 +71,7 @@ func TestCLI_CommandHandling(t *testing.T) {
 		wg.Wait() // Wait for the async event to be processed
 
 		assert.Equal(t, "save:history.txt", eventReceived)
-		require.NoError(t, bus.Unsubscribe("ai:topic", "save:history.txt")) // Clean up
+		require.NoError(t, bus.Unsubscribe(config.AITopic, "save:history.txt")) // Clean up
 	})
 
 	t.Run("toggle commands", func(t *testing.T) {

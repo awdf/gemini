@@ -79,7 +79,7 @@ func init() {
 	// Register custom MIME types to ensure correct handling by the AI.
 	// This is the ideal place for package-specific, one-time initializations.
 	helpers.Verify(mime.AddExtensionType(".md", "text/markdown"))
-	helpers.Verify(mime.AddExtensionType(".wav", "audio/wav"))
+	helpers.Verify(mime.AddExtensionType(".wav", config.MIMEAudio))
 }
 
 // NewAI creates a new AI instance, initializing the client and conversation history.
@@ -152,7 +152,7 @@ func (a *AI) Run() {
 		return
 	}
 
-	helpers.Verify((*a.bus).Subscribe("ai:topic", a.handleEvents))
+	helpers.Verify((*a.bus).Subscribe(config.AITopic, a.handleEvents))
 
 	for a.fileChan != nil || a.textCmdChan != nil {
 		select {
@@ -347,7 +347,7 @@ func (a *AI) TextQuestion(prompt string, imageBuffer *images.ScreenshotBuffer) e
 	}
 
 	if imageBuffer != nil {
-		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
+		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), config.MIMEImage))
 	}
 
 	// Text models are able to use the URLContext tool to parse and understend web content.
@@ -370,7 +370,7 @@ func (a *AI) VoiceQuestion(
 	uploadedFile, err := a.client.Files.UploadFromPath(
 		a.ctx,
 		wavPath,
-		&genai.UploadFileConfig{MIMEType: "audio/wav"},
+		&genai.UploadFileConfig{MIMEType: config.MIMEAudio},
 	)
 	if err != nil {
 		return fmt.Errorf("file upload failed: %w", err)
@@ -382,7 +382,7 @@ func (a *AI) VoiceQuestion(
 	}
 
 	if imageBuffer != nil { // Fix: Use append correctly to modify the slice
-		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
+		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), config.MIMEImage))
 	}
 	return a.generateAndProcessContent(parts, fURLContextDisabled, fVoicePrompt)
 }
@@ -426,7 +426,7 @@ func (a *AI) VoiceQuestionWithTranscript(
 		genai.NewPartFromText(fullPrompt),
 	}
 	if imageBuffer != nil { // Fix: Use append correctly to modify the slice
-		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), "image/png"))
+		parts = append(parts, genai.NewPartFromBytes(imageBuffer.Bytes(), config.MIMEImage))
 	}
 	// The second step is a pure text-based query, so we can reuse the history logic.
 	return a.generateAndProcessContent(parts, fURLContextEnabled, fNoVoicePrompt)
@@ -438,7 +438,7 @@ func (a *AI) generateTranscript(wavPath string) (string, error) {
 	uploadedFile, err := a.client.Files.UploadFromPath(
 		a.ctx,
 		wavPath,
-		&genai.UploadFileConfig{MIMEType: "audio/wav"},
+		&genai.UploadFileConfig{MIMEType: config.MIMEAudio},
 	)
 	if err != nil {
 		return "", fmt.Errorf("file upload failed: %w", err)
@@ -477,7 +477,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 	var functionCalls []*genai.FunctionCall
 
 	// Stop other output
-	(*a.bus).Publish("main:topic", "mute:ai.output")
+	(*a.bus).Publish(config.MainTopic, "mute:ai.output")
 
 	// sources will store unique source URIs and their titles.
 	sources := make(map[string]string)
@@ -564,7 +564,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 	a.formatter.Println(fmt.Sprintf("Request execution time: %.2fs\n", duration.Seconds()), inout.ColorDarkGray)
 
 	// Restore other output
-	(*a.bus).Publish("main:topic", "draw:ai.output")
+	(*a.bus).Publish(config.MainTopic, "draw:ai.output")
 
 	// After the stream is finished, if voice was enabled and we have text,
 	// make a single API call to generate the audio.

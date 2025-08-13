@@ -114,7 +114,7 @@ func (a *SystemAgent) streamCommand(call *genai.FunctionCall, command string, sh
 		log.Printf("ERROR starting shell stream: %v", err)
 		// Send the error back as a final tool response.
 		errResponse := a.CreateFunctionResponse(call, nil, fmt.Errorf("error starting command: %w", err), false)
-		(*a.bus).Publish("agent:tool_response", errResponse)
+		(*a.bus).Publish(config.AgentTopic, errResponse)
 		return
 	}
 
@@ -122,13 +122,13 @@ func (a *SystemAgent) streamCommand(call *genai.FunctionCall, command string, sh
 	// This runs only if the command starts successfully.
 	defer func() {
 		finalResponse := a.CreateFunctionResponse(call, map[string]any{"status": "completed"}, nil, false)
-		(*a.bus).Publish("agent:tool_response", finalResponse)
+		(*a.bus).Publish(config.AgentTopic, finalResponse)
 		a.Printf("Shell command stream finished for call ID %s.", call.ID)
 	}()
 
 	for chunk := range outputChan {
 		chunkResponse := a.CreateFunctionResponse(call, map[string]any{"output": chunk}, nil, true)
-		(*a.bus).Publish("agent:tool_response", chunkResponse)
+		(*a.bus).Publish(config.AgentTopic, chunkResponse)
 	}
 }
 

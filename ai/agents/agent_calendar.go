@@ -30,7 +30,7 @@ type CalendarAgent struct {
 }
 
 // NewCalendarAgent creates and initializes the Calendar agent.
-func NewCalendarAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *CalendarAgent {
+func NewCalendarAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, _ *EventBus.Bus) *CalendarAgent {
 	if !config.C.Google.Enabled {
 		log.Println("WARNING: Could not create Calendar agent, Google integration is disabled.")
 		return nil
@@ -205,10 +205,12 @@ type EventSummary struct {
 	Link        string         `json:"link"`
 }
 
+const errorNotInitialized = "calendar agent not initialized"
+
 // ListEvents retrieves a list of events from the primary calendar.
 func (a *CalendarAgent) ListEvents(timeMin, timeMax string, maxResults int64) ([]EventSummary, error) {
 	if a.service == nil {
-		return nil, fmt.Errorf("calendar agent not initialized")
+		return nil, fmt.Errorf(errorNotInitialized)
 	}
 
 	if timeMin == "" {
@@ -269,7 +271,7 @@ func (a *CalendarAgent) ListEvents(timeMin, timeMax string, maxResults int64) ([
 // CreateEvent adds a new event to the primary calendar.
 func (a *CalendarAgent) CreateEvent(summary, location, description, startTime, endTime string, attendees []string) (*EventSummary, error) {
 	if a.service == nil {
-		return nil, fmt.Errorf("calendar agent not initialized")
+		return nil, fmt.Errorf(errorNotInitialized)
 	}
 
 	event := &calendar.Event{
@@ -309,7 +311,7 @@ func (a *CalendarAgent) CreateEvent(summary, location, description, startTime, e
 // DeleteEvent removes an event from the primary calendar.
 func (a *CalendarAgent) DeleteEvent(eventID string) error {
 	if a.service == nil {
-		return fmt.Errorf("calendar agent not initialized")
+		return fmt.Errorf(errorNotInitialized)
 	}
 	return a.service.Events.Delete("primary", eventID).Do()
 }
@@ -317,7 +319,7 @@ func (a *CalendarAgent) DeleteEvent(eventID string) error {
 // UpdateEvent modifies an existing event.
 func (a *CalendarAgent) UpdateEvent(eventID string, updates map[string]interface{}) (*EventSummary, error) {
 	if a.service == nil {
-		return nil, fmt.Errorf("calendar agent not initialized")
+		return nil, fmt.Errorf(errorNotInitialized)
 	}
 
 	// First, get the existing event to update.
@@ -379,7 +381,7 @@ func (a *CalendarAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse
 }
 
 func (a *CalendarAgent) handleListEvents(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	timeMin, _ := call.Args["time_min"].(string)
 	timeMax, ok := call.Args["time_max"].(string)
 	if !ok || timeMax == "" {
@@ -399,7 +401,7 @@ func (a *CalendarAgent) handleListEvents(call *genai.FunctionCall) *genai.Functi
 }
 
 func (a *CalendarAgent) handleCreateEvent(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	summary, sumOK := call.Args["summary"].(string)
 	startTime, startOK := call.Args["start_time"].(string)
 	endTime, endOK := call.Args["end_time"].(string)
@@ -427,7 +429,7 @@ func (a *CalendarAgent) handleCreateEvent(call *genai.FunctionCall) *genai.Funct
 }
 
 func (a *CalendarAgent) handleDeleteEvent(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	eventID, ok := call.Args["event_id"].(string)
 	if !ok || eventID == "" {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'event_id' is required"))
@@ -441,7 +443,7 @@ func (a *CalendarAgent) handleDeleteEvent(call *genai.FunctionCall) *genai.Funct
 }
 
 func (a *CalendarAgent) handleUpdateEvent(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 	eventID, ok := call.Args["event_id"].(string)
 	if !ok || eventID == "" {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'event_id' is required"))

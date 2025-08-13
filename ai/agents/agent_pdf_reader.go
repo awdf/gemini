@@ -32,7 +32,7 @@ type PdfReaderAgent struct {
 }
 
 // NewPdfReaderAgent creates a specialized agent for reading and summarizing PDF documents.
-func NewPdfReaderAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *PdfReaderAgent {
+func NewPdfReaderAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, _ *EventBus.Bus) *PdfReaderAgent {
 	systemInstruction := `You are an PDF document reader specialist. 
 The user will provide a query with pdf document, read document please and provide concise and accurate response.`
 

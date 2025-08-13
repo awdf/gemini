@@ -36,7 +36,7 @@ type ObjectDetectionAgent struct {
 }
 
 // NewObjectDetectionAgent creates a specialized agent for detecting objects in an image.
-func NewObjectDetectionAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *ObjectDetectionAgent {
+func NewObjectDetectionAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, _ *EventBus.Bus) *ObjectDetectionAgent {
 	bounds := helpers.Check(desktop.C.ScreenSize()) // If it still fails after retries, it's a fatal error.
 	grid := ObjectDetectionNormalizationGrid
 	halfGrid := grid / 2
@@ -197,7 +197,7 @@ func (a *ObjectDetectionAgent) handleDetectObjectsTool(call *genai.FunctionCall)
 					a.Printf("Object detection image size %d x %d (width x height).", bounds.Dx(), bounds.Dy())
 					// Process the image with the agent, using the query from the tool call as the prompt.
 					// The image buffer is PNG encoded.
-					detectionResult, processErr := a.Process(query, genai.NewPartFromBytes(imageBuf.Bytes(), "image/png"))
+					detectionResult, processErr := a.Process(query, genai.NewPartFromBytes(imageBuf.Bytes(), config.MIMEImage))
 					if processErr != nil {
 						err = fmt.Errorf("object detection failed: %w", processErr)
 					} else {
@@ -218,7 +218,7 @@ func (a *ObjectDetectionAgent) handleDetectObjectsTool(call *genai.FunctionCall)
 }
 
 func (a *ObjectDetectionAgent) handleVerifyObjectDetectionTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 
 	var result any
 	var err error
@@ -270,7 +270,7 @@ func (a *ObjectDetectionAgent) handleVerifyObjectDetectionTool(call *genai.Funct
 						// 7. Return the new image and a verification prompt to be sent to the session by the caller.
 						parts := []*genai.Part{
 							genai.NewPartFromText("Tool have drawn the red box according to provided coordinates. Is the user requested object to detect inside the red box correctly identified? If not, try resolve this issue without user confirmation"),
-							genai.NewPartFromBytes(newImageBuf.Bytes(), "image/png"),
+							genai.NewPartFromBytes(newImageBuf.Bytes(), config.MIMEImage),
 						}
 						turn := genai.NewContentFromParts(parts, genai.RoleUser)
 						content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
@@ -295,7 +295,7 @@ func (a *ObjectDetectionAgent) handleVerifyObjectDetectionTool(call *genai.Funct
 }
 
 func (a *ObjectDetectionAgent) handleMouseClickTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 
 	var result any
 	var err error

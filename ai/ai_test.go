@@ -24,6 +24,8 @@ import (
 	"gemini/inout"
 )
 
+const filePatern = "history-*.txt"
+
 // TestMain loads a default configuration for the tests.
 func TestMain(m *testing.M) {
 	config.Load("dummy-config.toml")
@@ -51,7 +53,7 @@ func TestSaveConversationHistory(t *testing.T) {
 	}
 
 	t.Run("without initial context", func(t *testing.T) {
-		tmpfile, err := os.CreateTemp(t.TempDir(), "history-*.txt")
+		tmpfile, err := os.CreateTemp(t.TempDir(), filePatern)
 		require.NoError(t, err)
 		tmpfile.Close() // Close because saveConversationHistory opens it again
 
@@ -66,7 +68,7 @@ func TestSaveConversationHistory(t *testing.T) {
 
 	t.Run("with initial context", func(t *testing.T) {
 		ai.initialContextAdded = true // Mark that initial context was added
-		tmpfile, err := os.CreateTemp(t.TempDir(), "history-*.txt")
+		tmpfile, err := os.CreateTemp(t.TempDir(), filePatern)
 		require.NoError(t, err)
 		tmpfile.Close()
 
@@ -95,7 +97,7 @@ func TestSaveConversationHistory(t *testing.T) {
 
 func TestHandleEvents(t *testing.T) {
 	ai := newTestAI(t)
-	tmpfile, err := os.CreateTemp(t.TempDir(), "history-*.txt")
+	tmpfile, err := os.CreateTemp(t.TempDir(), filePatern)
 	require.NoError(t, err)
 	tmpfile.Close()
 
@@ -255,7 +257,7 @@ func TestParsePromptForMultimedia(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/image.png":
-			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Content-Type", config.MIMEImage)
 			_, _ = w.Write([]byte("fake-image-data"))
 		case "/page.html":
 			w.Header().Set("Content-Type", "text/html")

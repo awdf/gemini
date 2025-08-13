@@ -160,7 +160,7 @@ func TestRMSDisplay_Run_EventHandling(t *testing.T) {
 	// event will be received, the state will change, and the condition will pass.
 	// This is safe because the 'ready' event handler is idempotent.
 	require.Eventually(t, func() bool {
-		bus.Publish("main:topic", "ready:app.run")
+		bus.Publish(config.MainTopic, "ready:app.run")
 		display.Mu.RLock()
 		defer display.Mu.RUnlock()
 		return !display.muted && display.warmUpDone

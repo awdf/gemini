@@ -15,6 +15,17 @@ import (
 // C holds the global application configuration.
 var C Config
 
+const (
+	MainTopic  = "main:topic"
+	AgentTopic = "agent:tool_response"
+	AITopic    = "ai:topic"
+)
+
+const (
+	MIMEImage = "image/png"
+	MIMEAudio = "audio/wav"
+)
+
 // TimeFormat defines the standard time format used across the application.
 const TimeFormat = time.RFC1123
 

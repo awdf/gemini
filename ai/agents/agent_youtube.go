@@ -137,7 +137,7 @@ func (a *YoutubeAgent) handleYoutubeAnalysisTool(call *genai.FunctionCall) *gena
 			a.Printf("YouTube video analysis successful for url: '%s'", url)
 			finalResponse = a.CreateFunctionResponse(call, map[string]any{"result": resultText}, nil)
 		}
-		(*a.bus).Publish("agent:tool_response", finalResponse)
+		(*a.bus).Publish(config.AgentTopic, finalResponse)
 	}()
 
 	// Immediately return the initial response to acknowledge the request.

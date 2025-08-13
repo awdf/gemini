@@ -75,8 +75,10 @@ type DocxAgent struct {
 	*Agent
 }
 
+const errorPath = "The path of the .docx file within the workspace directory."
+
 // NewDocxAgent creates a new DocxAgent and registers its function with the toolset.
-func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *DocxAgent {
+func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, _ *EventBus.Bus) *DocxAgent {
 	readDocxFunc := &genai.FunctionDeclaration{
 		Name:        "readDocx",
 		Description: "DOCX Reader: Reads the content of a .docx file from the workspace and returns it as HTML. You MUST use this tool to read the content of any DOCX file before you can analyze or summarize it.",
@@ -85,7 +87,7 @@ func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 			Properties: map[string]*genai.Schema{
 				"path": {
 					Type:        genai.TypeString,
-					Description: "The path of the .docx file within the workspace directory.",
+					Description: errorPath,
 				},
 			},
 			Required: []string{"path"},
@@ -99,7 +101,7 @@ func NewDocxAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 			Properties: map[string]*genai.Schema{
 				"path": {
 					Type:        genai.TypeString,
-					Description: "The path of the .docx file within the workspace directory.",
+					Description: errorPath,
 				},
 			},
 			Required: []string{"path"},
@@ -153,10 +155,12 @@ func (a *DocxAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	}
 }
 
+const errorMsg = "'path' argument is required and must be a non-empty string"
+
 func (a *DocxAgent) handleReadDocx(call *genai.FunctionCall) *genai.FunctionResponse {
 	path, ok := call.Args["path"].(string)
 	if !ok || path == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf(errorMsg))
 	}
 
 	// The conversion function now returns the body content as a fragment.
@@ -191,7 +195,7 @@ footer{margin-top: 2em; padding-top: 1em; border-top: 1px solid #ccc; font-size:
 func (a *DocxAgent) handleGetDocxStylesXML(call *genai.FunctionCall) *genai.FunctionResponse {
 	path, ok := call.Args["path"].(string)
 	if !ok || path == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf(errorMsg))
 	}
 
 	xmlContent, err := a.getDocxStylesXML(path)
@@ -205,7 +209,7 @@ func (a *DocxAgent) handleGetDocxStylesXML(call *genai.FunctionCall) *genai.Func
 func (a *DocxAgent) handleGetDocxXML(call *genai.FunctionCall) *genai.FunctionResponse {
 	path, ok := call.Args["path"].(string)
 	if !ok || path == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' argument is required and must be a non-empty string"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf(errorMsg))
 	}
 
 	xmlContent, err := a.getDocxMainXML(path)

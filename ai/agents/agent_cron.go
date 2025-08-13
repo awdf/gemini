@@ -291,7 +291,7 @@ func (a *CronAgent) scheduleCronExpression(call *genai.FunctionCall, cronSpec, a
 			Context: event.Context,
 		}
 		response := a.CreateFunctionResponse(call, ResponsePayload{TriggeredEvent: triggeredEvent}, nil, isRecurring)
-		(*a.bus).Publish("agent:tool_response", response)
+		(*a.bus).Publish(config.AgentTopic, response)
 	})
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid cron pattern '%s': %w", cronSpec, err))
@@ -348,7 +348,7 @@ func (a *CronAgent) handleDeleteScheduledAction(call *genai.FunctionCall) *genai
 			nil,
 			false, // This is the final response for this tool call ID.
 		)
-		(*a.bus).Publish("agent:tool_response", finalResponse)
+		(*a.bus).Publish(config.AgentTopic, finalResponse)
 	}
 
 	a.Printf("Deleted scheduled action with ID %s", eventID)

@@ -92,7 +92,7 @@ func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespon
 }
 
 func (a *WebScraperAgent) handleWebScraperTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf("Executing tool call: %s with args: %v", call.Name, call.Args)
+	a.Printf(PrintTemplate, call.Name, call.Args)
 
 	var result any
 	var err error
