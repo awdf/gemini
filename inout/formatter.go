@@ -131,18 +131,8 @@ func LogToolResult(callName string, result any) {
 					continue
 				}
 			}
-			// For other keys, pretty-print the value as JSON.
-			jsonData, err := json.MarshalIndent(value, "    ", "  ")
-			if err != nil {
-				// Fallback for non-serializable values, with truncation.
-				valueStr := fmt.Sprintf("%v", value)
-				if len(valueStr) > 512 {
-					valueStr = fmt.Sprintf("%.512s...", valueStr)
-				}
-				log.Printf("  %s: %s", key, valueStr)
-			} else {
-				log.Printf("  %s:\n%s", key, string(jsonData))
-			}
+			// Other map keys with values
+			log.Printf("  %s: %v", key, value)
 		}
 	} else {
 		// If the result is not a map, pretty-print the whole thing as JSON.

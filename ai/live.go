@@ -322,9 +322,6 @@ func (l *LiveAI) Run() {
 		}
 	}, false))
 	helpers.Verify((*l.bus).Subscribe("ai:topic", l.handleEvents))
-	helpers.Verify((*l.bus).SubscribeAsync("live:stream_text", func(text string) {
-		l.sendLiveMessage(text)
-	}, false))
 	helpers.Verify((*l.bus).SubscribeAsync("agent:tool_response", l.handleAgentToolResponse, false))
 
 	l.OpenSession()
@@ -386,7 +383,7 @@ func (l *LiveAI) Run() {
 				l.sendLiveMessage(fmt.Sprintf("The current time is %s.", currentTime))
 				l.isStreaming = true
 				if l.vadDisabled {
-					l.notifyActivityStart()
+					l.notifyStreamStart()
 				}
 
 				if l.mode == inout.ImageMode {
@@ -577,7 +574,7 @@ func (l *LiveAI) handleResponses() {
 			}
 		case msg.ToolCall != nil:
 			go func(request *genai.LiveServerToolCall) {
-				log.Println("Live stream received tool call request.")
+				log.Printf("Live stream received %d tool call(s) request.", len(request.FunctionCalls))
 				responses := l.executeToolCalls(request)
 
 				// Send the results back to the model using the dedicated tool response message.
@@ -929,7 +926,7 @@ func (l *LiveAI) notifyStreamDone() {
 }
 
 // Explicit activity control is not supported when automatic activity detection is enabled.
-func (l *LiveAI) notifyActivityStart() {
+func (l *LiveAI) notifyStreamStart() {
 	online := l.Online
 
 	if !online {
@@ -976,7 +973,7 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 	// This is crucial because one tool call might depend on the result of a previous one
 	// (e.g., creating a file, then reading it).
 	for _, call := range request.FunctionCalls {
-		log.Printf("Executing tool call: '%s'", call.Name)
+		log.Printf("Executing tool call: '%s' with Args: %+v", call.Name, call.Args)
 		// Add the current image buffer to any tool call that might need it.
 		// The tool itself is responsible for using or ignoring this argument.
 		l.mu.RLock()

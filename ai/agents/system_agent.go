@@ -45,7 +45,7 @@ func NewSystemAgent(
 
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &genai.FunctionDeclaration{
 		Name:        "execute_shell_command",
-		Description: "Executes a shell command in the configured workspace directory. The command's stdout and stderr will be returned.",
+		Description: "LINUX SYSTEM: Executes a shell command in the configured workspace directory. The command's stdout and stderr will be returned.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
@@ -66,7 +66,12 @@ func NewSystemAgent(
 // Handle for SystemAgent now contains the execution logic.
 func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	if call.Name != "execute_shell_command" {
-		return nil // Not for this agent
+		return a.Agent.Handle(call) // Not for this agent
+	}
+
+	if config.C.Mode != inout.System {
+		err := fmt.Errorf("warning: SystemAgent requires system mode for command execution. Please leed user switch to system mode")
+		return a.CreateFunctionResponse(call, nil, err)
 	}
 
 	// The CLI and ShellExecutor components are injected at runtime via the call arguments.
@@ -85,18 +90,7 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
-	// The logic for LiveAI vs. PostAI is now handled by the caller (LiveAI or AI).
-	// LiveAI will call streamCommand, and PostAI will call Execute.
-	// This agent now only needs to decide how to execute based on the mode.
-	if config.C.LiveAI {
-		// In live mode, we start the command and stream its output via the event bus.
-		// The main LiveAI loop will pick up the text chunks and send them to the model.
-		go a.streamCommand(command, cli, shellExecutor)
-		// Return an immediate response to the model indicating the command is running.
-		return a.CreateFunctionResponse(call, map[string]any{"status": "executing", "output": "Command is executing, output is being streamed."}, nil)
-	}
-
-	// In PostAI mode, we block and wait for the command to complete.
+	// In system mode, we block and wait for the command to complete.
 	prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
 	if !cli.Confirm(prompt) {
 		log.Println("User denied shell command execution.")
@@ -104,36 +98,37 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
-	output, err := shellExecutor.Execute(command)
-	responseMap := map[string]any{"output": output}
-	if err != nil {
-		// Include the exit error in the response to the model.
-		responseMap["error"] = err.Error()
-	}
-
-	return a.CreateFunctionResponse(call, responseMap, nil)
+	// In system mode, we start the command in a goroutine and immediately return
+	// a response to the model indicating that the process has started.
+	// Subsequent output will be streamed as asynchronous tool responses.
+	go a.streamCommand(call, command, shellExecutor)
+	// Return an immediate response to the model indicating the command is running.
+	return a.CreateFunctionResponse(call, map[string]any{"status": "executing", "output": "Command is executing, output is being streamed."}, nil, true)
 }
 
-// streamCommand executes a command and publishes its output to the event bus.
-func (a *SystemAgent) streamCommand(command string, cli *inout.CLI, shellExecutor *shell.Executor) {
-	// We need user confirmation even for streaming.
-	prompt := fmt.Sprintf("AI wants to run the command: '%s'. Allow?", command)
-	if !cli.Confirm(prompt) {
-		log.Println("User denied shell command execution.")
-		(*a.bus).Publish("live:stream_text", "[User denied execution]")
-		return
-	}
-
+// streamCommand executes a command and publishes its output as a series of tool responses.
+func (a *SystemAgent) streamCommand(call *genai.FunctionCall, command string, shellExecutor *shell.Executor) {
 	outputChan := make(chan string)
+
 	if err := shellExecutor.ExecuteStream(command, outputChan); err != nil {
 		log.Printf("ERROR starting shell stream: %v", err)
-		// Also send the error to the model via the stream.
-		(*a.bus).Publish("live:stream_text", fmt.Sprintf("[Error starting command: %v]", err))
+		// Send the error back as a final tool response.
+		errResponse := a.CreateFunctionResponse(call, nil, fmt.Errorf("error starting command: %w", err), false)
+		(*a.bus).Publish("agent:tool_response", errResponse)
 		return
 	}
 
+	// Defer a final response to close the tool call transaction.
+	// This runs only if the command starts successfully.
+	defer func() {
+		finalResponse := a.CreateFunctionResponse(call, map[string]any{"status": "completed"}, nil, false)
+		(*a.bus).Publish("agent:tool_response", finalResponse)
+		a.Printf("Shell command stream finished for call ID %s.", call.ID)
+	}()
+
 	for chunk := range outputChan {
-		(*a.bus).Publish("live:stream_text", chunk)
+		chunkResponse := a.CreateFunctionResponse(call, map[string]any{"output": chunk}, nil, true)
+		(*a.bus).Publish("agent:tool_response", chunkResponse)
 	}
 }
 
@@ -144,6 +139,6 @@ func (a *SystemAgent) WarmUp() time.Duration {
 	return 0
 }
 
-func (a *SystemAgent) Process(prompt string, parts ...*genai.Part) (string, error) {
+func (a *SystemAgent) Process(_ string, _ ...*genai.Part) (string, error) {
 	return "", nil
 }

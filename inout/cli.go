@@ -329,6 +329,7 @@ func (c *CLI) command(cmd string) {
 				hint()
 			} else {
 				c.mode = value
+				config.C.Mode = value
 				log.Printf("AI mode set to: %s", value)
 				(*c.bus).Publish("ai:topic", fmt.Sprintf("mode:%s", value))
 			}

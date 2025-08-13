@@ -108,7 +108,7 @@ func (e *Executor) ExecuteStream(command string, outputChan chan<- string) error
 
 	go func() {
 		defer func() { _ = ptmx.Close() }()
-		defer (*e.bus).Publish("main:topic", "draw:shell.execute.stream.done")
+		// defer (*e.bus).Publish("main:topic", "draw:shell.execute.stream.done")
 		// The outputChan is closed by the scanner goroutine when it's done.
 
 		if err := pty.InheritSize(os.Stdin, ptmx); err != nil {
