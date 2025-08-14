@@ -221,6 +221,7 @@ func (a *SystemAgent) streamOutput(call *genai.FunctionCall, outputChan <-chan s
 		finalResponse := a.CreateFunctionResponse(call, map[string]any{"status": "completed"}, nil, false)
 		(*a.bus).Publish(config.AgentTopic, finalResponse)
 		a.Printf("Interactive shell stream finished for call ID %s.", call.ID)
+		a.Printf("Interactive shell stream finished for call ID %s.", call.ID)
 	}()
 
 	for chunk := range outputChan {
