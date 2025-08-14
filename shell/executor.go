@@ -244,24 +244,6 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 
 	// This goroutine manages the lifecycle of the interactive session.
 	go func() {
-		// This defer block ensures cleanup happens when the goroutine exits.
-		defer func() {
-			e.ptyMutex.Lock()
-			if e.activePty != nil {
-				_ = e.activePty.Close()
-				e.activePty = nil
-			}
-			if e.activeCmd != nil {
-				// Wait for the process to finish to prevent zombies.
-				_ = e.activeCmd.Wait()
-				e.activeCmd = nil
-			}
-			e.ptyMutex.Unlock()
-			close(outputChan)
-			(*e.bus).Publish(config.MainTopic, "draw:shell.interactive.done")
-			log.Println("Interactive shell session resources cleaned up.")
-		}()
-
 		(*e.bus).Publish(config.MainTopic, "mute:shell.interactive.start")
 
 		// Stream output directly from ptmx to both the user's stdout and the output channel.
@@ -295,7 +277,7 @@ func (e *Executor) SendInput(input string) error {
 }
 
 // StopInteractive terminates the active interactive shell session.
-func (e *Executor) StopInteractive() error {
+func (e *Executor) StopInteractive(outputChan chan<- string) error {
 	e.ptyMutex.Lock()
 	defer e.ptyMutex.Unlock()
 
@@ -305,5 +287,20 @@ func (e *Executor) StopInteractive() error {
 
 	// Killing the process will cause the PTY read in the goroutine to fail,
 	// which will trigger the deferred cleanup logic in that goroutine.
-	return e.activeCmd.Process.Kill()
+	err := e.activeCmd.Process.Kill()
+
+	if e.activePty != nil {
+		_ = e.activePty.Close()
+		e.activePty = nil
+	}
+	if e.activeCmd != nil {
+		// Wait for the process to finish to prevent zombies.
+		_ = e.activeCmd.Wait()
+		e.activeCmd = nil
+	}
+	close(outputChan)
+	(*e.bus).Publish(config.MainTopic, "draw:shell.interactive.done")
+	log.Println("Interactive shell session resources cleaned up.")
+
+	return err
 }

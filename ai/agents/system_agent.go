@@ -17,13 +17,12 @@ import (
 const AgentSystemName = "systemAgent"
 
 func init() {
-	// Decided not use system agent in post ai as it takes too long and absolutely not convenient
-	if !config.C.LiveAI {
-		return
-	}
-
 	RegisterFactory(AgentSystemName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewSystemAgent(ctx, client, toolset, bus)
+		// Decided not use system agent in post ai as it takes too long and absolutely not convenient.
+		if config.C.LiveAI {
+			return NewSystemAgent(ctx, client, toolset, bus)
+		}
+		return nil
 	})
 }
 
@@ -57,11 +56,11 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 	// --- Interactive Shell Tools ---
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &genai.FunctionDeclaration{
 		Name:        "start_interactive_shell",
-		Description: "Starts a persistent, stateful, interactive shell session. Output will be streamed back. Use 'execute_in_shell' to run commands and 'send_input_to_shell' to provide input (like passwords).",
-		Behavior:    genai.BehaviorNonBlocking, // This tool returns immediately while the shell runs.
+		Description: "SYSTEM SHELL: Starts a persistent, stateful, interactive shell session. Output will be streamed back. Use 'execute_in_shell' to run commands and 'send_input_to_shell' to provide input (like passwords).",
+		Behavior:    genai.BehaviorBlocking, // This tool returns immediately while the shell runs.
 	}, &genai.FunctionDeclaration{
 		Name:        "execute_in_shell",
-		Description: "Executes a command in the active interactive shell and returns immediately. The command's output will be streamed back asynchronously.",
+		Description: "SYSTEM SHELL: Executes a command in the active interactive shell and returns immediately. The command's output will be streamed back asynchronously.",
 		Parameters: &genai.Schema{
 			Type:       genai.TypeObject,
 			Properties: map[string]*genai.Schema{"command": {Type: genai.TypeString, Description: "The command to execute in the shell. A newline is automatically appended."}},
@@ -70,7 +69,7 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 		Behavior: genai.BehaviorNonBlocking,
 	}, &genai.FunctionDeclaration{
 		Name:        "send_input_to_shell",
-		Description: "Sends a line of text to the active interactive shell's standard input. Use this to respond to prompts like passwords or confirmations.",
+		Description: "SYSTEM SHELL: Sends a line of text to the active interactive shell's standard input. Use this to respond to prompts like passwords or confirmations.",
 		Parameters: &genai.Schema{
 			Type:       genai.TypeObject,
 			Properties: map[string]*genai.Schema{"input": {Type: genai.TypeString, Description: "The text to send to the shell's stdin. A newline is automatically appended."}},
@@ -79,11 +78,11 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 		Behavior: genai.BehaviorBlocking,
 	}, &genai.FunctionDeclaration{
 		Name:        "stop_interactive_shell",
-		Description: "Stops the currently active interactive shell session and cleans up its resources.",
+		Description: "SYSTEM SHELL: Stops the currently active interactive shell session and cleans up its resources.",
 		Behavior:    genai.BehaviorBlocking,
 	}, &genai.FunctionDeclaration{
 		Name:        "get_secret_from_user",
-		Description: "Prompts the human user for a secret (like a password) and stores it behind a placeholder name for later use. If the secret for a given placeholder name already exists, it will not prompt the user again.",
+		Description: "SYSTEM SHELL: Prompts the human user for a secret (like a password) and stores it behind a placeholder name for later use. If the secret for a given placeholder name already exists, it will not prompt the user again.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
@@ -104,23 +103,22 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 
 // Handle for SystemAgent now contains the execution logic.
 func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
-	switch call.Name {
-	case "start_interactive_shell", "execute_in_shell", "send_input_to_shell", "stop_interactive_shell", "get_secret_from_user":
-		// All interactive tools require system mode and LiveAI.
-		if config.C.Mode != inout.System {
-			err := fmt.Errorf("interactive shell tools require 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
-			return a.CreateFunctionResponse(call, nil, err)
-		}
-
-		if call.Name == "get_secret_from_user" {
-			return a.handleGetSecretFromUser(call)
-		} else {
-			return a.handleInteractiveShell(call)
-		}
-	default:
-		// If this agent doesn't handle the tool, return nil to allow other agents to try.
-		return nil
+	// All interactive tools require system mode.
+	if config.C.Mode != inout.System {
+		err := fmt.Errorf("interactive shell tools require 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
+		return a.CreateFunctionResponse(call, nil, err)
 	}
+
+	switch call.Name {
+	case "start_interactive_shell", "execute_in_shell", "send_input_to_shell", "stop_interactive_shell":
+		return a.handleInteractiveShell(call)
+	case "get_secret_from_user":
+		return a.handleGetSecretFromUser(call)
+	default:
+	}
+
+	// Do inherited Handler. I future able common logic on skip
+	return a.Agent.Handle(call)
 }
 
 // handleInteractiveShell dispatches calls for the new interactive tools.
@@ -140,22 +138,22 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 		return text
 	}
 
+	outputChan := make(chan string)
 	switch call.Name {
 	case "start_interactive_shell":
-		outputChan := make(chan string)
 		if err := shellExecutor.StartInteractive(outputChan); err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
 		}
-		// Start a goroutine to stream the shell's output back to the model.
-		go a.streamOutput(call, outputChan)
 		// Return an immediate, non-blocking response to the model.
-		return a.CreateFunctionResponse(call, map[string]any{"status": "interactive shell started"}, nil, true)
+		return a.CreateFunctionResponse(call, map[string]any{"status": "interactive shell started"}, nil)
 
 	case "execute_in_shell":
 		command, ok := call.Args["command"].(string)
 		if !ok || command == "" {
 			return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid 'command' argument, must be a non-empty string"))
 		}
+		// Start a goroutine to stream the shell's output back to the model.
+		go a.streamOutput(call, outputChan)
 		// Append a newline to simulate the user pressing 'Enter'.
 		if err := shellExecutor.SendInput(substitutePlaceholders(command) + "\n"); err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
@@ -175,7 +173,7 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 		return a.CreateFunctionResponse(call, map[string]any{"status": "input sent successfully"}, nil)
 
 	case "stop_interactive_shell":
-		if err := shellExecutor.StopInteractive(); err != nil {
+		if err := shellExecutor.StopInteractive(outputChan); err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
 		}
 		// This is a blocking tool call that also terminates the non-blocking 'start_interactive_shell' call.
@@ -220,7 +218,6 @@ func (a *SystemAgent) streamOutput(call *genai.FunctionCall, outputChan <-chan s
 	defer func() {
 		finalResponse := a.CreateFunctionResponse(call, map[string]any{"status": "completed"}, nil, false)
 		(*a.bus).Publish(config.AgentTopic, finalResponse)
-		a.Printf("Interactive shell stream finished for call ID %s.", call.ID)
 		a.Printf("Interactive shell stream finished for call ID %s.", call.ID)
 	}()
 

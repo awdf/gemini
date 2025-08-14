@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	AgentFileName = "FileAgent"
+	AgentFileName = "fileAgent"
 	pathError     = "'path' argument is required"
 )
 

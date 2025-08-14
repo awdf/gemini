@@ -15,13 +15,12 @@ import (
 const AgentYoutubeName = "youtubeAgent"
 
 func init() {
-	// This agent redundant for Post AI with native youtube understanding
-	if config.C.LiveAI {
-		return
-	}
-
 	RegisterFactory(AgentYoutubeName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewYoutubeAgent(ctx, client, toolset, bus)
+		// This agent is redundant for Post AI with native youtube understanding.
+		if config.C.LiveAI {
+			return NewYoutubeAgent(ctx, client, toolset, bus)
+		}
+		return nil
 	})
 }
 
