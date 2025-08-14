@@ -38,6 +38,13 @@ type confirmRequest struct {
 	responseChan chan bool
 }
 
+// promptRequest is used to pass a text prompt and receive a string response
+// between the blocking PromptForInput method and the non-blocking Run loop.
+type promptRequest struct {
+	prompt       string
+	responseChan chan string
+}
+
 // CLI handles reading user input from the command line.
 type CLI struct {
 	wg            *sync.WaitGroup
@@ -49,6 +56,7 @@ type CLI struct {
 	ready         bool
 	mode          string
 	confirmChan   chan confirmRequest
+	promptChan    chan promptRequest
 }
 
 const (
@@ -91,6 +99,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		ready:         false,
 		mode:          config.C.Mode,
 		confirmChan:   make(chan confirmRequest),
+		promptChan:    make(chan promptRequest),
 	}
 }
 
@@ -103,6 +112,18 @@ func (c *CLI) Confirm(prompt string) bool {
 	}
 	c.confirmChan <- req
 	log.Printf("Waiting for user confirmation for prompt: '%s'", prompt)
+	return <-req.responseChan
+}
+
+// PromptForInput displays a prompt to the user and waits for a line of text input.
+// It's a blocking call that communicates with the main Run loop via a channel.
+func (c *CLI) PromptForInput(prompt string) string {
+	req := promptRequest{
+		prompt:       prompt,
+		responseChan: make(chan string, 1), // Buffered to prevent blocking.
+	}
+	c.promptChan <- req
+	log.Printf("Waiting for user text input for prompt: '%s'", prompt)
 	return <-req.responseChan
 }
 
@@ -153,6 +174,7 @@ func (c *CLI) Run() {
 
 	shutdownChan := flow.GetListener()
 	var activeConfirmation *confirmRequest
+	var activePrompt *promptRequest
 
 	for {
 		select {
@@ -165,6 +187,11 @@ func (c *CLI) Run() {
 			(*c.bus).Publish(config.MainTopic, "block:cli.confirm.start")
 			// Print the confirmation prompt. The newline handles cases where a prompt was already visible.
 			fmt.Printf("\n%s [y/N]: ", req.prompt)
+		case req := <-c.promptChan:
+			activePrompt = &req
+			// Mute the regular prompt/soundbar display.
+			(*c.bus).Publish(config.MainTopic, "block:cli.prompt.start")
+			fmt.Printf("\n%s: ", req.prompt)
 
 		case firstLine, ok := <-inputChan:
 			if !ok {
@@ -178,6 +205,14 @@ func (c *CLI) Run() {
 				close(activeConfirmation.responseChan)
 				activeConfirmation = nil
 				(*c.bus).Publish(config.MainTopic, "ready:cli.confirm.done")
+				continue // Skip normal processing.
+			}
+
+			if activePrompt != nil {
+				activePrompt.responseChan <- firstLine
+				close(activePrompt.responseChan)
+				activePrompt = nil
+				(*c.bus).Publish(config.MainTopic, "ready:cli.prompt.done")
 				continue // Skip normal processing.
 			}
 
