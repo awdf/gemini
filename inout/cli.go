@@ -47,16 +47,17 @@ type promptRequest struct {
 
 // CLI handles reading user input from the command line.
 type CLI struct {
-	wg            *sync.WaitGroup
-	cmdChan       chan<- string
-	bus           *EventBus.Bus
-	shellExecutor *shell.Executor
-	muted         bool
-	aiEnabled     bool
-	ready         bool
-	mode          string
-	confirmChan   chan confirmRequest
-	promptChan    chan promptRequest
+	wg                  *sync.WaitGroup
+	cmdChan             chan<- string
+	bus                 *EventBus.Bus
+	shellExecutor       *shell.Executor
+	muted               bool
+	isSystemShellActive bool
+	aiEnabled           bool
+	ready               bool
+	mode                string
+	confirmChan         chan confirmRequest
+	promptChan          chan promptRequest
 }
 
 const (
@@ -90,16 +91,17 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 	}
 
 	return &CLI{
-		wg:            wg,
-		cmdChan:       cmdChan,
-		bus:           bus,
-		shellExecutor: shellExecutor,
-		muted:         true,
-		aiEnabled:     aiEnabled,
-		ready:         false,
-		mode:          config.C.Mode,
-		confirmChan:   make(chan confirmRequest),
-		promptChan:    make(chan promptRequest),
+		wg:                  wg,
+		cmdChan:             cmdChan,
+		bus:                 bus,
+		shellExecutor:       shellExecutor,
+		muted:               true,
+		isSystemShellActive: false,
+		aiEnabled:           aiEnabled,
+		ready:               false,
+		mode:                config.C.Mode,
+		confirmChan:         make(chan confirmRequest),
+		promptChan:          make(chan promptRequest),
 	}
 }
 
@@ -125,6 +127,41 @@ func (c *CLI) PromptForInput(prompt string) string {
 	c.promptChan <- req
 	log.Printf("Waiting for user text input for prompt: '%s'", prompt)
 	return <-req.responseChan
+}
+
+// startSystemShell starts the interactive shell for system mode.
+func (c *CLI) startSystemShell() {
+	if c.isSystemShellActive {
+		return
+	}
+	// This channel will receive output from the interactive shell.
+	outputChan := make(chan string, 100)
+	go func() {
+		for line := range outputChan {
+			// Publish each line of shell output to the event bus
+			// so other components (like LiveAI) can listen.
+			(*c.bus).Publish(config.AITopic, fmt.Sprintf("shell_output:%s", line))
+		}
+		log.Println("CLI shell output publisher finished.")
+	}()
+	if err := c.shellExecutor.StartInteractive(outputChan); err != nil {
+		fmt.Printf("Error starting system shell: %v\n", err)
+	} else {
+		c.isSystemShellActive = true
+		log.Println("Entered system mode. Interactive shell started.")
+	}
+}
+
+// stopSystemShell stops the interactive shell when leaving system mode.
+func (c *CLI) stopSystemShell() {
+	if !c.isSystemShellActive {
+		return
+	}
+	if err := c.shellExecutor.StopInteractive(); err != nil {
+		fmt.Printf("Error stopping system shell: %v\n", err)
+	}
+	c.isSystemShellActive = false
+	log.Println("Exited system mode. Interactive shell stopped.")
 }
 
 // Run starts the CLI input loop. It should be run in a goroutine.
@@ -160,6 +197,11 @@ func (c *CLI) Run() {
 			config.DebugPrintf("CLI drop event: %s\n", event)
 		}
 	}, false))
+
+	// Check if the initial mode is 'system' and start the shell if so.
+	if c.mode == System {
+		c.startSystemShell()
+	}
 
 	scanner := bufio.NewScanner(os.Stdin)
 	inputChan := make(chan string)
@@ -232,13 +274,15 @@ func (c *CLI) Run() {
 
 			// If it's not a command, handle it based on the mode.
 			if c.mode == System {
-				// In system mode, non-command input is a shell command.
-				if _, err := c.shellExecutor.Execute(firstLine); err != nil {
-					// The error is usually just the exit status, which can be non-zero.
-					log.Printf("Shell command finished with error: %v", err)
+				// In system mode, send input to the interactive shell.
+				if c.isSystemShellActive {
+					if err := c.shellExecutor.SendInput(firstLine + "\n"); err != nil {
+						log.Printf("Error sending input to system shell: %v", err)
+					}
+				} else {
+					log.Println("System mode is active, but interactive shell is not running yet. Input ignored.")
 				}
-				(*c.bus).Publish(config.MainTopic, "draw:cli.run.system")
-				continue // Move to the next iteration of the loop.
+				continue
 			}
 
 			// In other modes (prompt, voice, image), non-command input is a prompt for the AI.
@@ -277,6 +321,18 @@ func (c *CLI) Run() {
 
 func (c *CLI) draw() {
 	if c.muted || !c.ready {
+		return
+	}
+	// In system mode, the interactive shell provides its own prompt.
+	// The CLI should not draw its own prompt or soundbar to avoid interference.
+	if c.isSystemShellActive {
+		// After a model response in system mode, the shell prompt might be
+		// overwritten or not visible. We send a newline to the interactive
+		// shell to trigger it to print a fresh prompt, ensuring the user
+		// knows they can enter another command.
+		if err := c.shellExecutor.SendInput("\n"); err != nil {
+			log.Printf("Error sending newline to system shell to redraw prompt: %v", err)
+		}
 		return
 	}
 	fmt.Printf(promptPatern, c.mode) // Initial prompt
@@ -368,6 +424,12 @@ func (c *CLI) command(cmd string) {
 				fmt.Printf("Unknown AI mode: %s\n", mode)
 				hint()
 			} else {
+				if value == System {
+					c.startSystemShell()
+				} else {
+					// This will also handle switching from system to another mode.
+					c.stopSystemShell()
+				}
 				c.mode = value
 				config.C.Mode = value
 				log.Printf("AI mode set to: %s", value)

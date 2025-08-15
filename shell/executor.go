@@ -3,7 +3,6 @@ package shell
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -52,6 +51,11 @@ func NewExecutor(bus *EventBus.Bus) (*Executor, error) {
 		workspaceDir: workspaceDir,
 		bus:          bus,
 	}, nil
+}
+
+// WorkspaceDir returns the configured workspace directory for the executor.
+func (e *Executor) WorkspaceDir() string {
+	return e.workspaceDir
 }
 
 // Execute runs a command in a pseudo-terminal, streaming its output to stdout
@@ -230,8 +234,13 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 	}
 
 	// Start a generic shell, not a specific command.
-	cmd := exec.Command("sh")
+	// Use bash to get more advanced features like PS1 prompt string expansion (\w, \$, etc.).
+	// Use --noprofile and --norc to prevent user startup files (like .bashrc or .profile)
+	// from overriding the custom PS1 prompt we are setting.
+	cmd := exec.Command("bash", "--noprofile", "--norc")
 	cmd.Dir = e.workspaceDir
+	// Set a custom prompt for system mode to make it clear to the user.
+	cmd.Env = append(os.Environ(), "PS1=system:\\w\\$ ")
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -246,29 +255,36 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 	// This goroutine manages the lifecycle of the interactive session.
 	go func() {
 		// Defer closing the channel to ensure it's closed when the goroutine exits.
-		// This signals to any readers that the stream of output has ended.
-		defer close(outputChan)
 		(*e.bus).Publish(config.MainTopic, "mute:shell.interactive.start")
 
-		// Stream output directly from ptmx to both the user's stdout and the output channel.
-		scanner := bufio.NewScanner(ptmx)
-		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Println(line) // Let the user see the output in real-time.
-			outputChan <- line
-		}
+		// Create a pipe. The pty output will be written to the pipe's writer.
+		// A goroutine will read from the pipe's reader and send to the channel.
+		pr, pw := io.Pipe()
 
-		if err := scanner.Err(); err != nil {
-			// This error is expected when the PTY is closed by StopInteractive.
-			// We check if it's a PathError, which is typical for I/O on a closed file descriptor,
-			// and log it as a debug message. Other errors are logged as warnings.
-			var pathErr *os.PathError
-			if errors.As(err, &pathErr) {
-				config.DebugPrintf("Interactive shell scanner stopped as expected: %v", err)
-			} else {
-				log.Printf("WARNING: Interactive shell scanner finished with unexpected error: %v", err)
+		// This goroutine reads from the pipe, sends line-by-line to the channel,
+		// and is responsible for closing the channel when it's done.
+		go func() {
+			defer close(outputChan)
+			scanner := bufio.NewScanner(pr)
+			for scanner.Scan() {
+				outputChan <- scanner.Text()
 			}
-		}
+			if err := scanner.Err(); err != nil {
+				config.DebugPrintf("Interactive shell pipe scanner stopped: %v", err)
+			}
+		}()
+
+		// Create a MultiWriter to simultaneously write to the user's stdout and the pipe.
+		multiWriter := io.MultiWriter(os.Stdout, pw)
+
+		// This will block until the command is done, copying output to both writers.
+		// We can ignore the error, as it will be an expected one (EIO or EOF)
+		// when the pty is closed by StopInteractive.
+		_, _ = io.Copy(multiWriter, ptmx)
+
+		// After io.Copy returns, the command has finished. We must close the pipe
+		// writer to signal EOF to the scanner goroutine, allowing it to exit gracefully.
+		pw.Close()
 	}()
 
 	return nil
