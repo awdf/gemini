@@ -229,6 +229,26 @@ func (l *LiveAI) OpenSession() {
 
 		if len(tools) > 0 {
 			liveConfig.Tools = tools
+			if config.IsDebug() {
+				var toolNames []string
+				for _, tool := range tools {
+					if tool.GoogleSearch != nil {
+						toolNames = append(toolNames, "GoogleSearch")
+					}
+					if tool.URLContext != nil {
+						toolNames = append(toolNames, "URLContext")
+					}
+					if tool.CodeExecution != nil {
+						toolNames = append(toolNames, "CodeExecution")
+					}
+					if len(tool.FunctionDeclarations) > 0 {
+						for _, fd := range tool.FunctionDeclarations {
+							toolNames = append(toolNames, "Function:"+fd.Name)
+						}
+					}
+				}
+				config.DebugPrintf("Opening live session with tools: [%s]", strings.Join(toolNames, ", "))
+			}
 		}
 	}
 
@@ -653,6 +673,11 @@ func (l *LiveAI) processModelTurnParts(parts []*genai.Part) {
 		if part.Text != "" {
 			l.formatter.Print(part.Text)
 		}
+
+		if part.ExecutableCode != nil {
+			config.DebugPrintf("Live stream received executable code part: %+v", part.ExecutableCode)
+		}
+
 		if part.InlineData != nil && len(part.InlineData.Data) > 0 {
 			config.DebugPrintf("Live stream received data blob: %s, size: %d", part.InlineData.MIMEType, len(part.InlineData.Data))
 			if l.streamPlayer != nil {

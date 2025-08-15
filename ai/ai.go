@@ -691,6 +691,26 @@ func (a *AI) generateAndProcessContent(
 
 			if len(tools) > 0 {
 				genConfig.Tools = tools
+				if config.IsDebug() {
+					var toolNames []string
+					for _, tool := range tools {
+						if tool.GoogleSearch != nil {
+							toolNames = append(toolNames, "GoogleSearch")
+						}
+						if tool.URLContext != nil {
+							toolNames = append(toolNames, "URLContext")
+						}
+						if tool.CodeExecution != nil {
+							toolNames = append(toolNames, "CodeExecution")
+						}
+						if len(tool.FunctionDeclarations) > 0 {
+							for _, fd := range tool.FunctionDeclarations {
+								toolNames = append(toolNames, "Function:"+fd.Name)
+							}
+						}
+					}
+					config.DebugPrintf("Sending request to model with tools: [%s]", strings.Join(toolNames, ", "))
+				}
 			}
 		}
 

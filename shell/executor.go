@@ -3,6 +3,7 @@ package shell
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -244,6 +245,9 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 
 	// This goroutine manages the lifecycle of the interactive session.
 	go func() {
+		// Defer closing the channel to ensure it's closed when the goroutine exits.
+		// This signals to any readers that the stream of output has ended.
+		defer close(outputChan)
 		(*e.bus).Publish(config.MainTopic, "mute:shell.interactive.start")
 
 		// Stream output directly from ptmx to both the user's stdout and the output channel.
@@ -255,8 +259,15 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 		}
 
 		if err := scanner.Err(); err != nil {
-			// This error is expected when the PTY is closed.
-			config.DebugPrintf("Interactive shell scanner finished with error: %v", err)
+			// This error is expected when the PTY is closed by StopInteractive.
+			// We check if it's a PathError, which is typical for I/O on a closed file descriptor,
+			// and log it as a debug message. Other errors are logged as warnings.
+			var pathErr *os.PathError
+			if errors.As(err, &pathErr) {
+				config.DebugPrintf("Interactive shell scanner stopped as expected: %v", err)
+			} else {
+				log.Printf("WARNING: Interactive shell scanner finished with unexpected error: %v", err)
+			}
 		}
 	}()
 
@@ -277,7 +288,7 @@ func (e *Executor) SendInput(input string) error {
 }
 
 // StopInteractive terminates the active interactive shell session.
-func (e *Executor) StopInteractive(outputChan chan<- string) error {
+func (e *Executor) StopInteractive() error {
 	e.ptyMutex.Lock()
 	defer e.ptyMutex.Unlock()
 
@@ -298,7 +309,7 @@ func (e *Executor) StopInteractive(outputChan chan<- string) error {
 		_ = e.activeCmd.Wait()
 		e.activeCmd = nil
 	}
-	close(outputChan)
+	// The channel is now closed by the writer goroutine in StartInteractive.
 	(*e.bus).Publish(config.MainTopic, "draw:shell.interactive.done")
 	log.Println("Interactive shell session resources cleaned up.")
 
