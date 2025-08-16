@@ -11,8 +11,8 @@ import (
 	"google.golang.org/genai"
 
 	"gemini/config"
+	"gemini/desktop"
 	"gemini/inout"
-	"gemini/shell"
 )
 
 const AgentSystemName = "systemAgent"
@@ -138,12 +138,6 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 // handleInteractiveShell dispatches calls for the new interactive tools.
 // This is only supported in LiveAI mode.
 func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.FunctionResponse {
-	shellExecutor, execOK := call.Args["executor_component"].(*shell.Executor)
-	if !execOK {
-		err := fmt.Errorf("internal error: SystemAgent requires executor component")
-		return a.CreateFunctionResponse(call, nil, err)
-	}
-
 	// Helper function to substitute placeholders in a command string.
 	substitutePlaceholders := func(text string) string {
 		for placeholder, secret := range a.passwordPlaceholders {
@@ -155,7 +149,7 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 	switch call.Name {
 	case "start_interactive_shell":
 		a.outputChan = make(chan string, 1000)
-		if err := shellExecutor.StartInteractive(a.outputChan); err != nil {
+		if err := desktop.C.StartInteractiveShell(a.outputChan); err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
 		}
 		// Return an immediate, non-blocking response to the model.
@@ -173,7 +167,7 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 		// Start a goroutine to stream the shell's output back to the model.
 		go a.streamOutput(call, a.outputChan)
 		// Append a newline to simulate the user pressing 'Enter'.
-		if err := shellExecutor.SendInput(substitutePlaceholders(command) + "\n"); err != nil {
+		if err := desktop.C.SendToShell(substitutePlaceholders(command) + "\n"); err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
 		}
 		// This is a non-blocking tool. We return an intermediate response to acknowledge the command was sent.
@@ -188,7 +182,7 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 		if !ok || input == "" {
 			return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid 'input' argument, must be a non-empty string"))
 		}
-		if err := shellExecutor.SendInput(substitutePlaceholders(input) + "\n"); err != nil {
+		if err := desktop.C.SendToShell(substitutePlaceholders(input) + "\n"); err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
 		}
 		// This is a blocking tool. The model will wait for this response before proceeding.
@@ -199,7 +193,7 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 			err := fmt.Errorf("no active interactive shell to stop. You must call 'start_interactive_shell' first")
 			return a.CreateFunctionResponse(call, nil, err, false)
 		}
-		if err := shellExecutor.StopInteractive(); err != nil {
+		if err := desktop.C.StopInteractiveShell(); err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
 		}
 		// This is a blocking tool call that also terminates the non-blocking 'start_interactive_shell' call.

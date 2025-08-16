@@ -36,7 +36,7 @@ func mockStdin(t *testing.T) (*os.File, *os.File) {
 func TestCLI_CommandHandling(t *testing.T) {
 	// Setup
 	bus := EventBus.New()
-	cli := NewCLI(&sync.WaitGroup{}, nil, &bus, true, nil)
+	cli := NewCLI(&sync.WaitGroup{}, nil, &bus, true)
 
 	t.Run("help command", func(t *testing.T) {
 		// Capture output synchronously to avoid race conditions.
@@ -143,7 +143,7 @@ func TestCLI_Run_InputProcessing(t *testing.T) {
 	wg := &sync.WaitGroup{}
 	cmdChan := make(chan string, 5)
 	bus := EventBus.New()
-	cli := NewCLI(wg, cmdChan, &bus, true, nil)
+	cli := NewCLI(wg, cmdChan, &bus, true)
 
 	// The CLI's Run loop listens for shutdown signals via the flow package.
 	// We must start the flow package's signal processor for the test to terminate correctly.

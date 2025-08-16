@@ -23,7 +23,6 @@ import (
 	"gemini/helpers"
 	"gemini/images"
 	"gemini/inout"
-	"gemini/shell"
 	"gemini/vad"
 )
 
@@ -48,7 +47,6 @@ type LiveAI struct {
 	bus              *EventBus.Bus
 	session          *genai.Session
 	imageBuffer      *images.ScreenshotBuffer
-	shellExecutor    *shell.Executor
 	cli              *inout.CLI
 	toolset          *genai.Tool
 	isStreaming      bool
@@ -76,7 +74,6 @@ func NewLiveSink(
 	textCmdChan <-chan string,
 	bus *EventBus.Bus,
 	flags *Flags,
-	shellExecutor *shell.Executor,
 	cli *inout.CLI,
 ) *LiveAI {
 	ctx := context.Background()
@@ -130,7 +127,6 @@ func NewLiveSink(
 		Element:          sink.Element,
 		streamPlayer:     streamPlayer,
 		toolset:          toolset,
-		shellExecutor:    shellExecutor,
 		cli:              cli,
 		isStreaming:      false,
 		activityType:     "", // Can be AudioStream, ShellStream, or empty.
@@ -1130,7 +1126,6 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 		}
 
 		call.Args["cli_component"] = l.cli
-		call.Args["executor_component"] = l.shellExecutor
 
 		l.mu.RUnlock()
 

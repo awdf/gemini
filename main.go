@@ -75,11 +75,16 @@ func NewApp(flags *CliFlags) *App {
 	app.bus = &bus
 
 	// The shell executor is a shared component used by the CLI (for direct user commands)
-	// and the AI (for tool-based command execution).
+	// and the AI (for tool-based command execution). It is wrapped by the desktop controller.
 	shellExecutor, err := shell.NewExecutor(app.bus)
 	if err != nil {
 		log.Fatalf("Failed to initialize shell executor: %v", err)
 	}
+	desktopController, err := desktop.NewWaylandController(shellExecutor)
+	if err != nil {
+		log.Fatalf("Failed to initialize desktop controller: %v", err)
+	}
+	desktop.SetController(desktopController)
 
 	// Create buffered channels to decouple the "hot" GStreamer loop from other goroutines.
 	app.rmsDisplayChan = make(chan float64, 10) // For the RMS volume bar
@@ -96,12 +101,12 @@ func NewApp(flags *CliFlags) *App {
 
 	// The CLI must be created first, as it's a dependency for the AI components
 	// which need it for user confirmation prompts.
-	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus, flags.AIEnabled, shellExecutor)
+	app.cli = inout.NewCLI(app.wg, app.textCommandChan, app.bus, flags.AIEnabled)
 
 	// Create the main components with Dependency Injection.
 	// 2 modes: PostAI and LiveAI
 	if flags.Live {
-		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus, aiFlags, shellExecutor, app.cli)
+		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus, aiFlags, app.cli)
 		// The Live API requires 16kHz mono audio.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.LiveChannels, audio.LiveSampleRate)
 	} else {
@@ -110,7 +115,7 @@ func NewApp(flags *CliFlags) *App {
 		app.recorder = recorder.NewRecorderSink(app.wg, app.fileControlChan, app.aiOnDemandChan, app.bus)
 		// For recording, we use the higher quality settings defined in the audio package.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.recorder.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.WavChannels, audio.WavSampleRate)
-		app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus, shellExecutor, app.cli)
+		app.ai = ai.NewAI(app.wg, app.pipeline, aiFlags, app.aiOnDemandChan, app.textCommandChan, app.bus, app.cli)
 	}
 	app.vadEngine = vad.NewVAD(app.wg, app.fileControlChan, app.vadControlChan, app.bus)
 	app.display = inout.NewRMSDisplay(app.wg, app.rmsDisplayChan, app.bus)
@@ -155,8 +160,9 @@ func main() {
 	config.Load(flags.ConfigPath)
 
 	// Command-line flags override config file settings for convenience.
-	config.C.LiveAI = flags.Live
-
+	if flags.Live {
+		config.C.LiveAI = true
+	}
 	if flags.Voice {
 		config.C.AI.VoiceEnabled = true
 	}
@@ -165,13 +171,8 @@ func main() {
 	}
 	gst.Init(nil)
 
-	// Initialize the platform-specific desktop controller.
-	desktopController, err := desktop.NewWaylandController()
-	if err != nil {
-		log.Fatalf("Failed to initialize desktop controller: %v", err)
-	}
-	desktop.SetController(desktopController)
-	defer desktop.C.Close()
+	app := NewApp(flags)
+	defer desktop.C.Close() // Ensure controller is closed on exit.
 
 	// TODO: Remove after object detection live testing
 	// desktop.C.MoveMouse(72, 303)
@@ -179,7 +180,7 @@ func main() {
 	// desktop.C.Close()
 	// return
 
-	NewApp(flags).run()
+	app.run()
 }
 
 func (app *App) run() {

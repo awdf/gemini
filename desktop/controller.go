@@ -21,6 +21,11 @@ type Controller interface {
 	CaptureScreen() (*images.ScreenshotBuffer, error)
 	ScreenSize() (image.Rectangle, error)
 
+	// Shell functions
+	StartInteractiveShell(outputChan chan<- string) error
+	SendToShell(input string) error
+	StopInteractiveShell() error
+
 	// Cleanup
 	Close()
 }

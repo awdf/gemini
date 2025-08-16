@@ -6,16 +6,18 @@ import (
 	"time"
 
 	"gemini/images"
+	"gemini/shell"
 	"gemini/wayland"
 )
 
 // WaylandController implements the Controller interface for the Wayland display server.
 type WaylandController struct {
 	screenBounds image.Rectangle
+	shellExec    *shell.Executor
 }
 
 // NewWaylandController initializes the Wayland C library and returns a controller.
-func NewWaylandController() (*WaylandController, error) {
+func NewWaylandController(shellExec *shell.Executor) (*WaylandController, error) {
 	wayland.DisableJoystick()
 	if err := wayland.Init(); err != nil {
 		return nil, fmt.Errorf("failed to initialize wayland controller: %w", err)
@@ -30,7 +32,10 @@ func NewWaylandController() (*WaylandController, error) {
 		return nil, fmt.Errorf("failed to get screen size on init: %w", err)
 	}
 
-	return &WaylandController{screenBounds: rect.Bounds()}, nil
+	return &WaylandController{
+		screenBounds: rect.Bounds(),
+		shellExec:    shellExec,
+	}, nil
 }
 
 // MoveMouse moves the mouse cursor to an absolute position.
@@ -64,7 +69,25 @@ func (wc *WaylandController) ScreenSize() (image.Rectangle, error) {
 	return wc.screenBounds, nil
 }
 
+// StartInteractiveShell starts a persistent shell session.
+func (wc *WaylandController) StartInteractiveShell(outputChan chan<- string) error {
+	return wc.shellExec.StartInteractive(outputChan)
+}
+
+// SendToShell sends input to the active shell session.
+func (wc *WaylandController) SendToShell(input string) error {
+	return wc.shellExec.SendInput(input)
+}
+
+// StopInteractiveShell stops the active shell session.
+func (wc *WaylandController) StopInteractiveShell() error {
+	return wc.shellExec.StopInteractive()
+}
+
 // Close cleans up the Wayland connection.
 func (wc *WaylandController) Close() {
+	// Attempt to gracefully stop the interactive shell if it's running.
+	// We can ignore the error as we are shutting down anyway.
+	_ = wc.shellExec.StopInteractive()
 	wayland.Done()
 }

@@ -12,9 +12,9 @@ import (
 	"github.com/asaskevich/EventBus"
 
 	"gemini/config"
+	"gemini/desktop"
 	"gemini/flow"
 	"gemini/helpers"
-	"gemini/shell"
 )
 
 const (
@@ -50,7 +50,6 @@ type CLI struct {
 	wg                  *sync.WaitGroup
 	cmdChan             chan<- string
 	bus                 *EventBus.Bus
-	shellExecutor       *shell.Executor
 	muted               bool
 	isSystemShellActive bool
 	aiEnabled           bool
@@ -85,7 +84,7 @@ var thinkingLevels = map[string]int32{
 }
 
 // NewCLI creates a new CLI instance.
-func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnabled bool, shellExecutor *shell.Executor) *CLI {
+func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnabled bool) *CLI {
 	if aiEnabled {
 		fmt.Println("Use keyboard to send text prompts to the AI.")
 	}
@@ -94,7 +93,6 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		wg:                  wg,
 		cmdChan:             cmdChan,
 		bus:                 bus,
-		shellExecutor:       shellExecutor,
 		muted:               true,
 		isSystemShellActive: false,
 		aiEnabled:           aiEnabled,
@@ -144,7 +142,7 @@ func (c *CLI) startSystemShell() {
 		}
 		log.Println("CLI shell output publisher finished.")
 	}()
-	if err := c.shellExecutor.StartInteractive(outputChan); err != nil {
+	if err := desktop.C.StartInteractiveShell(outputChan); err != nil {
 		fmt.Printf("Error starting system shell: %v\n", err)
 	} else {
 		c.isSystemShellActive = true
@@ -157,7 +155,7 @@ func (c *CLI) stopSystemShell() {
 	if !c.isSystemShellActive {
 		return
 	}
-	if err := c.shellExecutor.StopInteractive(); err != nil {
+	if err := desktop.C.StopInteractiveShell(); err != nil {
 		fmt.Printf("Error stopping system shell: %v\n", err)
 	}
 	c.isSystemShellActive = false
@@ -276,7 +274,7 @@ func (c *CLI) Run() {
 			if c.mode == System {
 				// In system mode, send input to the interactive shell.
 				if c.isSystemShellActive {
-					if err := c.shellExecutor.SendInput(firstLine + "\n"); err != nil {
+					if err := desktop.C.SendToShell(firstLine + "\n"); err != nil {
 						log.Printf("Error sending input to system shell: %v", err)
 					}
 				} else {
@@ -330,7 +328,7 @@ func (c *CLI) draw() {
 		// overwritten or not visible. We send a newline to the interactive
 		// shell to trigger it to print a fresh prompt, ensuring the user
 		// knows they can enter another command.
-		if err := c.shellExecutor.SendInput("\n"); err != nil {
+		if err := desktop.C.SendToShell("\n"); err != nil {
 			log.Printf("Error sending newline to system shell to redraw prompt: %v", err)
 		}
 		return

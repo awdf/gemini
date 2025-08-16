@@ -30,7 +30,6 @@ import (
 	"gemini/images"
 	"gemini/inout"
 	"gemini/pipeline"
-	"gemini/shell"
 )
 
 // Flags holds the command-line flags that control AI behavior.
@@ -55,7 +54,6 @@ type AI struct {
 	toolset             *genai.Tool
 	agents              map[string]agents.Callable
 	initialContextAdded bool
-	shellExecutor       *shell.Executor
 	cli                 *inout.CLI
 	mode                string
 }
@@ -90,7 +88,6 @@ func NewAI(
 	fileChan <-chan string,
 	textCmdChan <-chan string,
 	bus *EventBus.Bus,
-	shellExecutor *shell.Executor,
 	cli *inout.CLI,
 ) *AI {
 	ctx := context.Background()
@@ -120,7 +117,6 @@ func NewAI(
 		mode:                config.C.Mode,
 		toolset:             toolset,
 		agents:              agents.AgentRegistry,
-		shellExecutor:       shellExecutor,
 		cli:                 cli,
 	}
 
@@ -774,7 +770,6 @@ func (a *AI) executeToolCalls(calls []*genai.FunctionCall) (modelParts, toolResp
 				call.Args = make(map[string]any)
 			}
 			call.Args["cli_component"] = a.cli
-			call.Args["executor_component"] = a.shellExecutor
 			response = agent.Handle(call)
 			if response != nil {
 				break // An agent handled the call, so we can stop searching.
