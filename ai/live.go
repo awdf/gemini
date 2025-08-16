@@ -778,8 +778,16 @@ func (l *LiveAI) handleEvents(event string) {
 
 	switch command {
 	case "mode":
-		l.mode = payload
-		log.Printf("LiveAI mode set to: %s", payload)
+		previousMode := l.mode
+		if previousMode != payload {
+			l.mode = payload
+			log.Printf("LiveAI mode set to: %s", payload)
+			if payload == inout.System {
+				l.sendLiveMessage("System Notification: You have entered system mode. You can now use shell commands via the 'submit_shell_command' tool.")
+			} else if previousMode == inout.System {
+				l.sendLiveMessage("System Notification: You have left system mode. Shell commands are no longer available.")
+			}
+		}
 	case "restart_session":
 		log.Printf("Restarting live session due to configuration change: %s", payload)
 		// The main Run loop will detect the closed session and reopen it with the new config.

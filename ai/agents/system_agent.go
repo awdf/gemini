@@ -3,8 +3,8 @@ package agents
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/asaskevich/EventBus"
@@ -32,9 +32,6 @@ type SystemAgent struct {
 	*Agent
 	bus                  *EventBus.Bus
 	passwordPlaceholders map[string]string
-	outputChan           chan string
-	reportTo             *genai.FunctionCall
-	mu                   sync.Mutex
 }
 
 // NewSystemAgent creates a new agent and registers its tool definitions with the provided toolset.
@@ -44,11 +41,11 @@ func NewSystemAgent(
 	toolset *genai.Tool,
 	bus *EventBus.Bus,
 ) *SystemAgent {
-	agentInstructions := `You have access to a sandboxed Linux shell. To use it, you MUST follow this sequence:
-1. Call 'start_interactive_shell' to begin a session.
-2. Call 'execute_in_shell' one or more times to run commands. The output will be streamed back to you(can be any length). You MUST be silent until 'execute_in_shell' (one command or more) execution will complete.
-3. If a command requires input (like a password or confirmation), use 'send_input_to_shell'.
-4. When you are finished, you MUST call 'stop_interactive_shell' to clean up the session and report to user execution status.
+	agentInstructions := `You have access to a sandboxed Linux shell via direct function calls.
+- To execute a command, you MUST URL-encode the command string and pass it to the 'submit_shell_command' function.
+- This function is only available when the user is in 'system' mode. If they are not, ask them to switch using the '/mode system' command.
+- Example of a correct call for the command 'ls -l "my folder"': 'submit_shell_command(command="ls+-l+%22my+folder%22")'.
+- IMPORTANT: Do not wrap this function call in any other API like 'default_api' or in a code block. Call it directly.
 
 To execute commands requiring a password (like 'sudo'), you MUST use the following secure workflow:
 0. IMPORTANT! This is secure workflow! No output! No responses to user! No any other questions! Only interaction by 'get_secret_from_user' tool allowed.
@@ -67,18 +64,14 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 
 	// --- Interactive Shell Tools ---
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &genai.FunctionDeclaration{
-		Name:        "start_interactive_shell",
-		Description: "SYSTEM SHELL: Starts a persistent, stateful, interactive shell session. Output will be streamed back. Use 'execute_in_shell' to run commands and 'send_input_to_shell' to provide input (like passwords).",
-		Behavior:    genai.BehaviorBlocking, // This tool returns immediately while the shell runs.
-	}, &genai.FunctionDeclaration{
-		Name:        "execute_in_shell",
-		Description: "SYSTEM SHELL: Executes a command in the active interactive shell and returns immediately. The command's output will be streamed back asynchronously. Please wait for shell prompt to be shure that command have been executed.",
+		Name:        "submit_shell_command",
+		Description: "SYSTEM SHELL: Submits a URL-encoded command to the user's active interactive shell for execution. The shell must be started by the user by switching to '/mode system'. The command's output will appear in the user's terminal and be added to the conversation context for you to see in the next turn.",
 		Parameters: &genai.Schema{
 			Type:       genai.TypeObject,
-			Properties: map[string]*genai.Schema{"command": {Type: genai.TypeString, Description: "The command to execute in the shell. A newline is automatically appended."}},
+			Properties: map[string]*genai.Schema{"command": {Type: genai.TypeString, Description: "The URL-encoded command to execute in the shell. A newline is automatically appended."}},
 			Required:   []string{"command"},
 		},
-		Behavior: genai.BehaviorNonBlocking,
+		Behavior: genai.BehaviorBlocking,
 	}, &genai.FunctionDeclaration{
 		Name:        "send_input_to_shell",
 		Description: "SYSTEM SHELL: Sends a line of text to the active interactive shell's standard input. Use this to respond to prompts like passwords or confirmations.",
@@ -88,10 +81,6 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 			Required:   []string{"input"},
 		},
 		Behavior: genai.BehaviorBlocking,
-	}, &genai.FunctionDeclaration{
-		Name:        "stop_interactive_shell",
-		Description: "SYSTEM SHELL: Stops the currently active interactive shell session and cleans up its resources.",
-		Behavior:    genai.BehaviorBlocking,
 	}, &genai.FunctionDeclaration{
 		Name:        "get_secret_from_user",
 		Description: "SYSTEM SHELL: Prompts the human user for a secret (like a password) and stores it behind a placeholder name for later use. If the secret for a given placeholder name already exists, it will not prompt the user again.",
@@ -116,7 +105,7 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 // Handle for SystemAgent now contains the execution logic.
 func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
-	case "start_interactive_shell", "execute_in_shell", "send_input_to_shell", "stop_interactive_shell":
+	case "submit_shell_command", "send_input_to_shell":
 		// Default agent execution flow
 	case "get_secret_from_user":
 		// Triggered critical secure flow
@@ -128,7 +117,7 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 
 	// All interactive tools require system mode.
 	if config.C.Mode != inout.System {
-		err := fmt.Errorf("interactive shell tools require 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
+		err := fmt.Errorf("interactive shell tools require the user to be in 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
@@ -147,57 +136,37 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 	}
 
 	switch call.Name {
-	case "start_interactive_shell":
-		a.outputChan = make(chan string, 1000)
-		if err := desktop.C.StartInteractiveShell(a.outputChan); err != nil {
-			return a.CreateFunctionResponse(call, nil, err)
+	case "submit_shell_command":
+		encodedCommand, ok := call.Args["command"].(string)
+		if !ok || encodedCommand == "" {
+			return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid 'command' argument, must be a non-empty string"))
 		}
-		// Return an immediate, non-blocking response to the model.
-		return a.CreateFunctionResponse(call, map[string]any{"status": "interactive shell started"}, nil)
-
-	case "execute_in_shell":
-		if a.outputChan == nil {
-			err := fmt.Errorf("no active interactive shell. You must call 'start_interactive_shell' first")
-			return a.CreateFunctionResponse(call, nil, err, false)
+		command, err := url.QueryUnescape(encodedCommand)
+		if err != nil {
+			return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to decode command: %w", err))
 		}
-		command, ok := call.Args["command"].(string)
-		if !ok || command == "" {
-			return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid 'command' argument, must be a non-empty string"), false)
-		}
-		// Start a goroutine to stream the shell's output back to the model.
-		go a.streamOutput(call, a.outputChan)
 		// Append a newline to simulate the user pressing 'Enter'.
 		if err := desktop.C.SendToShell(substitutePlaceholders(command) + "\n"); err != nil {
+			// This will fail if the user is not in system mode, which is correct.
 			return a.CreateFunctionResponse(call, nil, err)
 		}
-		// This is a non-blocking tool. We return an intermediate response to acknowledge the command was sent.
-		return a.CreateFunctionResponse(call, map[string]any{"status": "command sent successfully"}, nil, true)
+		// The output will be streamed to the user's terminal and sent to the AI
+		// as context via the 'shell_output' event by the CLI.
+		// This tool call is now "fire and forget". The model will see the output
+		// in the subsequent context.
+		return a.CreateFunctionResponse(call, map[string]any{"status": "command sent to user's shell"}, nil)
 
 	case "send_input_to_shell":
-		if a.outputChan == nil {
-			err := fmt.Errorf("no active interactive shell. You must call 'start_interactive_shell' first")
-			return a.CreateFunctionResponse(call, nil, err, false)
-		}
 		input, ok := call.Args["input"].(string)
 		if !ok || input == "" {
 			return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid 'input' argument, must be a non-empty string"))
 		}
 		if err := desktop.C.SendToShell(substitutePlaceholders(input) + "\n"); err != nil {
+			// This will fail if the user is not in system mode, which is correct.
 			return a.CreateFunctionResponse(call, nil, err)
 		}
 		// This is a blocking tool. The model will wait for this response before proceeding.
 		return a.CreateFunctionResponse(call, map[string]any{"status": "input sent successfully"}, nil)
-
-	case "stop_interactive_shell":
-		if a.outputChan == nil {
-			err := fmt.Errorf("no active interactive shell to stop. You must call 'start_interactive_shell' first")
-			return a.CreateFunctionResponse(call, nil, err, false)
-		}
-		if err := desktop.C.StopInteractiveShell(); err != nil {
-			return a.CreateFunctionResponse(call, nil, err)
-		}
-		// This is a blocking tool call that also terminates the non-blocking 'start_interactive_shell' call.
-		return a.CreateFunctionResponse(call, map[string]any{"status": "interactive shell stopped"}, nil)
 	}
 	return a.CreateFunctionResponse(call, nil, fmt.Errorf("unknown interactive tool: %s", call.Name))
 }
@@ -229,76 +198,6 @@ func (a *SystemAgent) handleGetSecretFromUser(call *genai.FunctionCall) *genai.F
 	a.Printf("Secret for placeholder '%s' has been set.", placeholderName)
 	result := map[string]any{"status": fmt.Sprintf("Secret for placeholder '%s' has been set. You can now use '{{%s}}' in other tools.", placeholderName, placeholderName)}
 	return a.CreateFunctionResponse(call, result, nil)
-}
-
-// streamOutput is a helper goroutine that reads from a channel and streams the
-// content back to the model as a series of non-blocking tool responses.
-func (a *SystemAgent) streamOutput(call *genai.FunctionCall, outputChan <-chan string) {
-	a.mu.Lock()
-	if a.reportTo != nil {
-		a.reportTo = call
-		a.mu.Unlock()
-		return
-	}
-
-	// Set first call to report
-	a.reportTo = call
-	a.mu.Unlock()
-
-	// The final response signals the end of the tool call. It's sent when the channel is closed.
-	defer func() {
-		a.mu.Lock()
-		// When the stream ends, we need to get the final call to report to,
-		// and then reset the agent's state for the next session.
-		reportCall := a.reportTo
-		a.reportTo = nil
-		a.mu.Unlock()
-
-		if reportCall != nil {
-			finalResponse := a.CreateFunctionResponse(reportCall, map[string]any{"status": "completed"}, nil, false)
-			(*a.bus).Publish(config.AgentTopic, finalResponse)
-			a.Printf("Interactive shell stream finished for call ID %s.", reportCall.ID)
-		}
-	}()
-
-	// Batch output to avoid overwhelming the model with too many intermediate responses.
-	ticker := time.NewTicker(250 * time.Millisecond) // Send updates every 250ms
-	defer ticker.Stop()
-	var outputBatch strings.Builder
-
-	for {
-		select {
-		case chunk, ok := <-outputChan:
-			if !ok { // Channel closed
-				// Send any remaining output before finishing.
-				if outputBatch.Len() > 0 {
-					a.mu.Lock()
-					reportCall := a.reportTo
-					a.mu.Unlock()
-					if reportCall != nil {
-						// This is the last chunk of output, but not the final response for the tool call.
-						// The final response is sent in the defer block.
-						chunkResponse := a.CreateFunctionResponse(reportCall, map[string]any{"output": outputBatch.String()}, nil, true)
-						(*a.bus).Publish(config.AgentTopic, chunkResponse)
-					}
-				}
-				return // Exit the goroutine
-			}
-			outputBatch.WriteString(chunk + "\n") // The outputChan sends line by line.
-
-		case <-ticker.C:
-			if outputBatch.Len() > 0 {
-				a.mu.Lock()
-				reportCall := a.reportTo
-				a.mu.Unlock()
-				if reportCall != nil {
-					chunkResponse := a.CreateFunctionResponse(reportCall, map[string]any{"output": outputBatch.String()}, nil, true)
-					(*a.bus).Publish(config.AgentTopic, chunkResponse)
-				}
-				outputBatch.Reset()
-			}
-		}
-	}
 }
 
 // The following methods satisfy the Callable interface but are no-ops for this agent
