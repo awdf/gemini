@@ -115,22 +115,24 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 
 // Handle for SystemAgent now contains the execution logic.
 func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
+	switch call.Name {
+	case "start_interactive_shell", "execute_in_shell", "send_input_to_shell", "stop_interactive_shell":
+		// Default agent execution flow
+	case "get_secret_from_user":
+		// Triggered critical secure flow
+		return a.handleGetSecretFromUser(call)
+	default:
+		// Do inherited Handler. I future able common logic on skip
+		return a.Agent.Handle(call)
+	}
+
 	// All interactive tools require system mode.
 	if config.C.Mode != inout.System {
 		err := fmt.Errorf("interactive shell tools require 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 
-	switch call.Name {
-	case "start_interactive_shell", "execute_in_shell", "send_input_to_shell", "stop_interactive_shell":
-		return a.handleInteractiveShell(call)
-	case "get_secret_from_user":
-		return a.handleGetSecretFromUser(call)
-	default:
-	}
-
-	// Do inherited Handler. I future able common logic on skip
-	return a.Agent.Handle(call)
+	return a.handleInteractiveShell(call)
 }
 
 // handleInteractiveShell dispatches calls for the new interactive tools.

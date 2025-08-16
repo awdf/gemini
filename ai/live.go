@@ -30,36 +30,36 @@ import (
 type StreamType string
 
 const (
-	AudioStream StreamType = "audio"
-	TextStream  StreamType = "text"
+	AudioStream StreamType = "audio" // A real-time audio stream from VAD.
+	ShellStream StreamType = "shell" // A logical stream of shell command outputs.
 )
 
 type LiveAI struct {
-	ctx                   context.Context
-	client                *genai.Client
-	agents                map[string]agents.Callable
-	formatter             *inout.Formatter
-	liveSink              *app.Sink
-	Element               *gst.Element
-	wg                    *sync.WaitGroup
-	flags                 *Flags
-	controlChan           <-chan string
-	textCmdChan           <-chan string
-	bus                   *EventBus.Bus
-	session               *genai.Session
-	imageBuffer           *images.ScreenshotBuffer
-	shellExecutor         *shell.Executor
-	cli                   *inout.CLI
-	toolset               *genai.Tool
-	isStreaming           bool
-	isShellActivityActive bool
-	streamPlayer          *audio.PCMStreamPlayer
-	mode                  string
-	sessionClosed         chan struct{}
-	resumptionHandle      string
-	warmUpDone            bool
-	vadDisabled           bool
-	Online                bool
+	ctx              context.Context
+	client           *genai.Client
+	agents           map[string]agents.Callable
+	formatter        *inout.Formatter
+	liveSink         *app.Sink
+	Element          *gst.Element
+	wg               *sync.WaitGroup
+	flags            *Flags
+	controlChan      <-chan string
+	textCmdChan      <-chan string
+	bus              *EventBus.Bus
+	session          *genai.Session
+	imageBuffer      *images.ScreenshotBuffer
+	shellExecutor    *shell.Executor
+	cli              *inout.CLI
+	toolset          *genai.Tool
+	isStreaming      bool
+	streamPlayer     *audio.PCMStreamPlayer
+	activityType     StreamType
+	mode             string
+	sessionClosed    chan struct{}
+	resumptionHandle string
+	warmUpDone       bool
+	vadDisabled      bool
+	Online           bool
 	// mu protects the internal state of the LiveAI struct (e.g., session, Online, resumptionHandle).
 	// It allows multiple concurrent readers but only one writer, which is ideal for state
 	// that is read often but changed infrequently (like during session setup/teardown).
@@ -117,29 +117,29 @@ func NewLiveSink(
 	agents.BuildAgentNetwork(ctx, client, toolset, bus)
 
 	return &LiveAI{
-		wg:                    wg,
-		ctx:                   ctx,
-		flags:                 flags,
-		client:                client,
-		agents:                agents.AgentRegistry,
-		formatter:             inout.NewFormatter(),
-		bus:                   bus,
-		controlChan:           controlChan,
-		textCmdChan:           textCmdChan,
-		liveSink:              sink,
-		Element:               sink.Element,
-		streamPlayer:          streamPlayer,
-		toolset:               toolset,
-		shellExecutor:         shellExecutor,
-		cli:                   cli,
-		isStreaming:           false,
-		isShellActivityActive: false,
-		mode:                  config.C.Mode,
-		sessionClosed:         make(chan struct{}, 1), // Buffered channel to prevent blocking
-		resumptionHandle:      "",
-		warmUpDone:            false,
-		vadDisabled:           config.C.VAD.DisableNativeVAD,
-		Online:                false,
+		wg:               wg,
+		ctx:              ctx,
+		flags:            flags,
+		client:           client,
+		agents:           agents.AgentRegistry,
+		formatter:        inout.NewFormatter(),
+		bus:              bus,
+		controlChan:      controlChan,
+		textCmdChan:      textCmdChan,
+		liveSink:         sink,
+		Element:          sink.Element,
+		streamPlayer:     streamPlayer,
+		toolset:          toolset,
+		shellExecutor:    shellExecutor,
+		cli:              cli,
+		isStreaming:      false,
+		activityType:     "", // Can be AudioStream, ShellStream, or empty.
+		mode:             config.C.Mode,
+		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
+		resumptionHandle: "",
+		warmUpDone:       false,
+		vadDisabled:      config.C.VAD.DisableNativeVAD,
+		Online:           false,
 	}
 }
 
@@ -402,6 +402,25 @@ func (l *LiveAI) Run() {
 			}
 			switch {
 			case strings.HasPrefix(cmd, vad.MarkerStart):
+				l.mu.Lock()
+				if l.isStreaming {
+					l.mu.Unlock()
+					log.Println("WARNING: VAD start detected while an audio stream is already active. Ignoring.")
+					continue
+				}
+
+				// If an activity is not already in progress, this voice input will start a new audio activity.
+				// If a text activity is in progress, this voice input will be streamed as part of it,
+				// and the subsequent VAD Stop will terminate the entire turn.
+				l.isStreaming = true
+				if l.activityType == "" {
+					l.activityType = AudioStream
+					l.mu.Unlock()                      // Unlock before calling notifier to avoid holding lock during I/O
+					l.notifyActivityStart(AudioStream) // This is a pure audio stream activity.
+				} else { // activityType is ShellStream
+					l.mu.Unlock() // No state change needed, just start streaming audio.
+				}
+
 				// The native audio models perform their own VAD (automatic activity detection).
 				// Sending explicit ActivityStart/ActivityEnd signals conflicts with this,
 				// causing a websocket error. We still use our application's VAD to control when we
@@ -410,22 +429,16 @@ func (l *LiveAI) Run() {
 				log.Println("VAD Start: beginning to stream audio to Live API.")
 				currentTime := config.FormatTimeWithTimezone(config.C.AI.Timezone)
 				l.sendLiveMessage(fmt.Sprintf("The current time is %s.", currentTime))
-				l.isStreaming = true
-				l.notifyActivityStart(AudioStream)
 
 				if l.mode == inout.ImageMode {
 					l.mu.Lock()
 					// If an old image buffer exists from a previous turn, release it.
 					if l.imageBuffer != nil {
-						log.Println("Releasing previous screenshot buffer for new turn.")
 						l.imageBuffer.Release()
 						l.imageBuffer = nil
 					}
-					log.Println("Taking live screenshot for AI response...")
 					var err error
 					l.imageBuffer, err = desktop.C.CaptureScreen()
-					// TODO: Remove after live testing
-					go helpers.Verify(images.SaveImage("Screenshot.png", l.imageBuffer.Bytes()))
 					l.mu.Unlock() // Unlock before logging and sending to avoid holding lock during I/O
 					if err != nil {
 						log.Printf("failed to take screenshot: %v", err)
@@ -437,11 +450,24 @@ func (l *LiveAI) Run() {
 				// The response is handled by the handleResponses goroutine.
 				// No action needed here to process the stream.
 				log.Println("VAD Stop: finishing turn.")
+
 				// Drain any remaining audio that's already in the sink's queue
-				// before we mark the stream as not streaming.
+				// before we mark the stream and activity as inactive.
 				l.pullAndSendSamples()
+
+				l.mu.Lock()
+				activityToEnd := l.activityType
+				// The user's turn is over, whether it was a pure audio turn or a text turn
+				// concluded by voice. Reset the state for the next turn.
+				l.activityType = ""
 				l.isStreaming = false
-				l.notifyActivityEnd(AudioStream) // This will now send AudioStreamEnd then ActivityEnd
+				l.mu.Unlock()
+
+				// If an activity was in progress, end it. We always send AudioStream type because
+				// a VAD stop means audio was just sent, which needs to be terminated correctly.
+				if activityToEnd != "" {
+					l.notifyActivityEnd(AudioStream)
+				}
 				// The image buffer is now released upon GenerationComplete, not here.
 			default:
 				log.Printf("WARNING: received unknown control command: %s", cmd)
@@ -453,10 +479,14 @@ func (l *LiveAI) Run() {
 			}
 			trimmedCmd := strings.TrimSpace(textCmd)
 
+			l.mu.RLock()
+			currentActivity := l.activityType
+			l.mu.RUnlock()
+
 			// If we are in system mode and there's an open shell activity,
 			// this text prompt is the user's question about that activity.
 			// We send it and then end the activity to trigger a model response.
-			if l.mode == inout.System && l.isShellActivityActive {
+			if l.mode == inout.System && currentActivity == ShellStream {
 				log.Println("Live AI: Finalizing shell activity...")
 				// If the user provided a non-empty prompt, send it as the final question.
 				// Otherwise, just end the activity to get a response to the shell output.
@@ -464,8 +494,11 @@ func (l *LiveAI) Run() {
 					log.Println("Live AI: Sending user question with final prompt...")
 					l.sendLiveMessage(trimmedCmd)
 				}
-				l.notifyActivityEnd(TextStream)
-				l.isShellActivityActive = false // Reset for the next sequence.
+				// This is a text-only turn conclusion for the shell activity.
+				l.notifyActivityEnd(ShellStream)
+				l.mu.Lock()
+				l.activityType = "" // Reset for the next sequence.
+				l.mu.Unlock()
 			} else {
 				// This is a regular, self-contained text prompt. Ignore if empty.
 				if trimmedCmd != "" {
@@ -763,13 +796,20 @@ func (l *LiveAI) handleEvents(event string) {
 				return
 			}
 
+			var activityStarted bool
+			l.mu.Lock()
 			// If this is the first piece of shell output in a sequence,
 			// start a new user activity turn. This keeps the turn open
 			// so the model sees all subsequent shell output and the final
 			// user prompt as a single block of input.
-			if !l.isShellActivityActive {
-				l.notifyActivityStart(TextStream)
-				l.isShellActivityActive = true
+			if l.activityType == "" {
+				l.activityType = ShellStream
+				activityStarted = true
+			}
+			l.mu.Unlock()
+
+			if activityStarted {
+				l.notifyActivityStart(ShellStream)
 			}
 			// Send the shell output as part of the ongoing user turn.
 			l.sendLiveMessage(fmt.Sprintf("User shell output: %s", payload))
@@ -832,6 +872,9 @@ func (l *LiveAI) sendInitialFiles() {
 
 const sendImageError = "ERROR: failed to send realtime image input: %v"
 
+// sendLiveMessage sends a simple text message to the active live session.
+// It is used for sending contextual information or user prompts that are not
+// part of a larger content turn. It is safe for concurrent use.
 func (l *LiveAI) sendLiveMessage(text string) {
 	online := l.Online
 
@@ -851,6 +894,9 @@ func (l *LiveAI) sendLiveMessage(text string) {
 	}
 }
 
+// sendLiveImage sends the currently held screenshot buffer to the active live session.
+// It checks if a session is online and an image buffer exists before sending.
+// It is safe for concurrent use.
 func (l *LiveAI) sendLiveImage() {
 	l.mu.RLock()
 	imageBuffer := l.imageBuffer
@@ -939,9 +985,12 @@ func (l *LiveAI) pullAndSendSamples() {
 			break // No more samples in queue.
 		}
 
+		l.mu.RLock()
+		isStreaming := l.isStreaming
+		l.mu.RUnlock()
 		// Only send audio to the API if we are in a streaming state (between VAD start/stop).
-		if !l.isStreaming {
-			continue // Discard the sample.
+		if !isStreaming {
+			continue // Discard the sample if we're not in an audio activity.
 		}
 
 		buffer := sample.GetBuffer()
@@ -971,7 +1020,9 @@ func (l *LiveAI) pullAndSendSamples() {
 			if err != nil {
 				log.Printf("ERROR: failed to send realtime audio input: %v", err)
 				// Stop streaming on error to prevent flooding with more errors.
+				l.mu.Lock()
 				l.isStreaming = false
+				l.mu.Unlock()
 			}
 			buffer.Unmap()
 		}
@@ -996,13 +1047,13 @@ func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 
 	var input genai.LiveRealtimeInput
 	switch streamType {
-	case AudioStream, TextStream:
+	case AudioStream, ShellStream:
 		// For both audio and text streams, when manual VAD is used, we explicitly
 		// signal the start of a user's turn.
 		log.Printf("Live stream activity started for %s stream", streamType)
 		input.ActivityStart = &genai.ActivityStart{}
 	default:
-		log.Printf("WARNING: unhandled stream type in notifyStreamStart: %s", streamType)
+		log.Printf("WARNING: unhandled stream type in notifyActivityStart: %s", streamType)
 		return
 	}
 	l.writeMu.Lock()
