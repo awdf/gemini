@@ -166,6 +166,14 @@ Execute the compiled binary from your terminal. You can also use the `make launc
 
 ---
 
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0.
+
+The use of the `go-docx` library (located in `internal/libs/go-docx`), which is licensed under AGPL-3.0, requires this project to be licensed under the same terms. See the LICENSE file for the full license text.
+
+---
+
 ## Diagrams
 
 The architecture diagrams are located in the `/UML` directory and are written using PlantUML. If you make changes to the `.puml` files, you must regenerate the PNG images to keep this README up-to-date.
