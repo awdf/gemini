@@ -197,7 +197,7 @@ func createDefaultConfig(path string) {
 	1. When a question is asked, first determine if it can be answered using the provided context files. 
 	2. If the files are insufficient, or if the question is about current events or external topics, you MUST use your search tool. 
 	3. Synthesize a comprehensive answer from all available information.`
-	defaultConfig.AI.DirectivesPrompt = "1.Never reffer to yourself as LLM."
+	defaultConfig.AI.DirectivesPrompt = "1.Never refer to yourself as LLM."
 	defaultConfig.AI.Thinking = -1
 	defaultConfig.AI.Thoughts = false
 	defaultConfig.AI.EnableTools = true
@@ -265,14 +265,27 @@ func (a *AIConfig) GetSystemInstruction() string {
 		sb.WriteString(a.SystemPrompt)
 	}
 
+	// This directive is critical for ensuring the terminal output is not broken by unformatted commands.
+	// It provides positive and negative examples for clarity, making it more likely the model will comply.
+	directives := "CRITICAL FORMATTING RULE: You MUST wrap ALL shell commands in markdown code fences.\n" +
+		"- For inline commands (inside a sentence), use single backticks. Example: \"To see files, use the `ls -l` command.\"\n" +
+		"- For command blocks, use triple backticks with the 'bash' language identifier.\n\n" +
+		"CORRECT formatting for a block:\n" +
+		"```bash\n" +
+		"docker logs my_container\n" +
+		"```\n\n" +
+		"INCORRECT formatting:\n" +
+		"bash\n" +
+		"docker logs my_container\n\n" +
+		"Failure to follow this rule breaks the output. There are no exceptions."
 	if a.DirectivesPrompt != "" {
-		if sb.Len() > 0 {
-			sb.WriteString("\n\nDirectives:\n")
-		} else {
-			sb.WriteString("Directives:\n")
-		}
-		sb.WriteString(a.DirectivesPrompt)
+		directives += "\n" + a.DirectivesPrompt
 	}
+
+	if sb.Len() > 0 {
+		sb.WriteString("\n\nDirectives:\n")
+	}
+	sb.WriteString(directives)
 
 	// Append agent-specific instructions.
 	if len(a.AgentInstructions) > 0 {

@@ -951,7 +951,7 @@ func (l *LiveAI) sendLiveMessage(text string) {
 	if !online {
 		return
 	}
-	log.Println("Sending live message to session context...")
+	log.Println("Streaming live message to model...")
 
 	l.writeMu.Lock()
 	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
@@ -976,7 +976,7 @@ func (l *LiveAI) sendLiveImage() {
 	if !online || imageBuffer == nil {
 		return
 	}
-	log.Println("Sending live image to session context...")
+	log.Println("Streaming live image to model...")
 
 	l.writeMu.Lock()
 	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{

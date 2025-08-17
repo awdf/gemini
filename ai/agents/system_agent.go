@@ -138,8 +138,10 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 			return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to decode base64 command: %w", err))
 		}
 		command := string(decodedBytes)
+		a.Printf("Submitting shell command: %s", command)
+		// Begin from 'Enter' as shell prompt have overridden by model answer
 		// Append a newline to simulate the user pressing 'Enter'.
-		if err := desktop.C.SendToShell(substitutePlaceholders(command) + "\n"); err != nil {
+		if err := desktop.C.SendToShell("\n" + substitutePlaceholders(command) + "\n"); err != nil {
 			// This will fail if the user is not in system mode, which is correct.
 			return a.CreateFunctionResponse(call, nil, err)
 		}
