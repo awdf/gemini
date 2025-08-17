@@ -2,8 +2,8 @@ package agents
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -19,11 +19,8 @@ const AgentSystemName = "systemAgent"
 
 func init() {
 	RegisterFactory(AgentSystemName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		// Decided not use system agent in post ai as it takes too long and absolutely not convenient.
-		if config.C.LiveAI {
-			return NewSystemAgent(ctx, client, toolset, bus)
-		}
-		return nil
+		// Enable the SystemAgent in all modes to provide the execute_python tool.
+		return NewSystemAgent(ctx, client, toolset, bus)
 	})
 }
 
@@ -41,18 +38,12 @@ func NewSystemAgent(
 	toolset *genai.Tool,
 	bus *EventBus.Bus,
 ) *SystemAgent {
-	agentInstructions := `You have access to a sandboxed Linux shell via direct function calls.
-- To execute a command, you MUST URL-encode the command string and pass it to the 'submit_shell_command' function.
-- This function is only available when the user is in 'system' mode. If they are not, ask them to switch using the '/mode system' command.
-- Example of a correct call for the command 'ls -l "my folder"': 'submit_shell_command(command="ls+-l+%22my+folder%22")'.
-- IMPORTANT: Do not wrap this function call in any other API like 'default_api' or in a code block. Call it directly.
-
-To execute commands requiring a password (like 'sudo'), you MUST use the following secure workflow:
+	agentInstructions := `To execute commands requiring a password (like 'sudo'), you MUST use the following secure workflow:
 0. IMPORTANT! This is secure workflow! No output! No responses to user! No any other questions! Only interaction by 'get_secret_from_user' tool allowed.
-1. When you see a password prompt (the secure workflow started), call the 'get_secret_from_user' tool. Provide a 'placeholder_name' (e.g., 'sudo_password') and a 'prompt_text' for the user.
+1. When you see a password prompt (the secure workflow started), call 'get_secret_from_user'. Provide a 'placeholder_name' (e.g., 'sudo_password') and a 'prompt_text' for the user.
 2. The tool will securely get the password from the user and confirm it's stored.
-3. Once confirmed, use the 'send_input_to_shell' tool with the placeholder you created (e.g., '{{sudo_password}}') to submit the password.
-4. For subsequent commands, you can reuse the placeholder directly, e.g., 'echo "{{sudo_password}}" | sudo -S other_command'.
+3. Once confirmed, use 'send_input_to_shell' with 'input': '{{sudo_password}}'} to submit the password.
+4. For subsequent commands, you can reuse the placeholder directly, e.g., by providing a base64-encoded command string like 'submit_shell_command(command='ZWNobyAie3tzdWRvX3Bhc3N3b3JkfX0iIHwgc3VkbyAtUyBvdGhlcl9jb21tYW5k')'.
 5. Continue execution of password depended command interrupted by this secure workflow (the secure workflow finished).
 6. User may to enter wrong password, in this case repeat secure workflow from scratch`
 
@@ -65,11 +56,14 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 	// --- Interactive Shell Tools ---
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &genai.FunctionDeclaration{
 		Name:        "submit_shell_command",
-		Description: "SYSTEM SHELL: Submits a URL-encoded command to the user's active interactive shell for execution. The shell must be started by the user by switching to '/mode system'. The command's output will appear in the user's terminal and be added to the conversation context for you to see in the next turn.",
+		Description: "SYSTEM SHELL: Submits a Base64-encoded command to the user's active interactive shell for execution. The shell must be started by the user by switching to '/mode system'. The command's output will appear in the user's terminal and be added to the conversation context for you to see in the next turn.",
 		Parameters: &genai.Schema{
-			Type:       genai.TypeObject,
-			Properties: map[string]*genai.Schema{"command": {Type: genai.TypeString, Description: "The URL-encoded command to execute in the shell. A newline is automatically appended."}},
-			Required:   []string{"command"},
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{"command": {
+				Type:        genai.TypeString,
+				Description: "The Base64-encoded command to execute in the shell. A newline is automatically appended.",
+			}},
+			Required: []string{"command"},
 		},
 		Behavior: genai.BehaviorBlocking,
 	}, &genai.FunctionDeclaration{
@@ -107,6 +101,12 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
 	case "submit_shell_command", "send_input_to_shell":
 		// Default agent execution flow
+		// All interactive tools require system mode.
+		if config.C.Mode != inout.System {
+			err := fmt.Errorf("interactive shell tools require the user to be in 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
+			return a.CreateFunctionResponse(call, nil, err)
+		}
+		return a.handleInteractiveShell(call)
 	case "get_secret_from_user":
 		// Triggered critical secure flow
 		return a.handleGetSecretFromUser(call)
@@ -114,14 +114,6 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		// Do inherited Handler. I future able common logic on skip
 		return a.Agent.Handle(call)
 	}
-
-	// All interactive tools require system mode.
-	if config.C.Mode != inout.System {
-		err := fmt.Errorf("interactive shell tools require the user to be in 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
-		return a.CreateFunctionResponse(call, nil, err)
-	}
-
-	return a.handleInteractiveShell(call)
 }
 
 // handleInteractiveShell dispatches calls for the new interactive tools.
@@ -141,10 +133,11 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 		if !ok || encodedCommand == "" {
 			return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid 'command' argument, must be a non-empty string"))
 		}
-		command, err := url.QueryUnescape(encodedCommand)
+		decodedBytes, err := base64.StdEncoding.DecodeString(encodedCommand)
 		if err != nil {
-			return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to decode command: %w", err))
+			return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to decode base64 command: %w", err))
 		}
+		command := string(decodedBytes)
 		// Append a newline to simulate the user pressing 'Enter'.
 		if err := desktop.C.SendToShell(substitutePlaceholders(command) + "\n"); err != nil {
 			// This will fail if the user is not in system mode, which is correct.

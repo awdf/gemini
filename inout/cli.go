@@ -24,25 +24,18 @@ const (
 	System    = "system" // System CLI integration mode. Allow execute system commands and stream output to AI
 )
 
-var modes = map[string]string{
-	Prompt:    Prompt,
-	System:    System,
-	VoiceMode: VoiceMode,
-	ImageMode: ImageMode,
-}
-
-// confirmRequest is used to pass a confirmation prompt and receive a response
-// between the blocking Confirm method and the non-blocking Run loop.
-type confirmRequest struct {
-	prompt       string
-	responseChan chan bool
-}
-
 // promptRequest is used to pass a text prompt and receive a string response
 // between the blocking PromptForInput method and the non-blocking Run loop.
 type promptRequest struct {
 	prompt       string
 	responseChan chan string
+}
+
+var modes = map[string]string{
+	Prompt:    Prompt,
+	System:    System,
+	VoiceMode: VoiceMode,
+	ImageMode: ImageMode,
 }
 
 // CLI handles reading user input from the command line.
@@ -55,8 +48,9 @@ type CLI struct {
 	aiEnabled           bool
 	ready               bool
 	mode                string
-	confirmChan         chan confirmRequest
 	promptChan          chan promptRequest
+	shellBuffer         strings.Builder
+	shellBufferMu       sync.Mutex
 }
 
 const (
@@ -98,21 +92,23 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		aiEnabled:           aiEnabled,
 		ready:               false,
 		mode:                config.C.Mode,
-		confirmChan:         make(chan confirmRequest),
 		promptChan:          make(chan promptRequest),
 	}
 }
 
-// Confirm displays a prompt to the user and waits for a 'y' or 'n' response.
-// It's a blocking call that communicates with the main Run loop via a channel.
-func (c *CLI) Confirm(prompt string) bool {
-	req := confirmRequest{
-		prompt:       prompt,
-		responseChan: make(chan bool, 1), // Buffered to prevent blocking.
+// ReceiveShellOutput retrieves and clears the buffered shell output since the
+// last call. It is safe for concurrent use.
+func (c *CLI) ReceiveShellOutput() string {
+	c.shellBufferMu.Lock()
+	defer c.shellBufferMu.Unlock()
+
+	if c.shellBuffer.Len() == 0 {
+		return ""
 	}
-	c.confirmChan <- req
-	log.Printf("Waiting for user confirmation for prompt: '%s'", prompt)
-	return <-req.responseChan
+
+	content := c.shellBuffer.String()
+	c.shellBuffer.Reset()
+	return content
 }
 
 // PromptForInput displays a prompt to the user and waits for a line of text input.
@@ -136,9 +132,9 @@ func (c *CLI) startSystemShell() {
 	outputChan := make(chan string, 100)
 	go func() {
 		for line := range outputChan {
-			// Publish each line of shell output to the event bus
-			// so other components (like LiveAI) can listen.
-			(*c.bus).Publish(config.AITopic, fmt.Sprintf("shell_output:%s", line))
+			c.shellBufferMu.Lock()
+			c.shellBuffer.WriteString(line + "\n")
+			c.shellBufferMu.Unlock()
 		}
 		log.Println("CLI shell output publisher finished.")
 	}()
@@ -160,6 +156,38 @@ func (c *CLI) stopSystemShell() {
 	}
 	c.isSystemShellActive = false
 	log.Println("Exited system mode. Interactive shell stopped.")
+}
+
+// collectPastedInput gathers multi-line input that is pasted into the terminal.
+// It starts with a single line and then waits for a short duration to see if more lines
+// arrive in quick succession.
+func (c *CLI) collectPastedInput(firstLine string, inputChan <-chan string) string {
+	lines := []string{firstLine}
+	// A small window to catch subsequent pasted lines.
+	pasteTimeout := time.NewTimer(50 * time.Millisecond)
+	defer pasteTimeout.Stop()
+
+	for {
+		select {
+		case nextLine, ok := <-inputChan:
+			if !ok {
+				// Channel closed, we're done collecting.
+				return strings.Join(lines, "\n")
+			}
+			lines = append(lines, nextLine)
+			// Reset the timer each time a new line arrives quickly.
+			if !pasteTimeout.Stop() {
+				// If Stop() returns false, it means the timer has already fired and the value
+				// has been sent to the channel. We must drain the channel to prevent a deadlock
+				// on the next Reset.
+				<-pasteTimeout.C
+			}
+			pasteTimeout.Reset(50 * time.Millisecond)
+		case <-pasteTimeout.C:
+			// Timer fired, which means the user has stopped pasting. We're done.
+			return strings.Join(lines, "\n")
+		}
+	}
 }
 
 // Run starts the CLI input loop. It should be run in a goroutine.
@@ -213,7 +241,6 @@ func (c *CLI) Run() {
 	}()
 
 	shutdownChan := flow.GetListener()
-	var activeConfirmation *confirmRequest
 	var activePrompt *promptRequest
 
 	for {
@@ -221,12 +248,6 @@ func (c *CLI) Run() {
 		case <-*shutdownChan: // Listens for Ctrl+C
 			log.Println("CLI input handler shutting down.")
 			return
-		case req := <-c.confirmChan:
-			activeConfirmation = &req
-			// Mute the regular prompt/soundbar display.
-			(*c.bus).Publish(config.MainTopic, "block:cli.confirm.start")
-			// Print the confirmation prompt. The newline handles cases where a prompt was already visible.
-			fmt.Printf("\n%s [y/N]: ", req.prompt)
 		case req := <-c.promptChan:
 			activePrompt = &req
 			// Mute the regular prompt/soundbar display.
@@ -237,15 +258,6 @@ func (c *CLI) Run() {
 			if !ok {
 				log.Println("Stdin closed, CLI input handler shutting down.")
 				return
-			}
-
-			if activeConfirmation != nil {
-				response := strings.ToLower(strings.TrimSpace(firstLine)) == "y"
-				activeConfirmation.responseChan <- response
-				close(activeConfirmation.responseChan)
-				activeConfirmation = nil
-				(*c.bus).Publish(config.MainTopic, "ready:cli.confirm.done")
-				continue // Skip normal processing.
 			}
 
 			if activePrompt != nil {
@@ -284,30 +296,7 @@ func (c *CLI) Run() {
 			}
 
 			// In other modes (prompt, voice, image), non-command input is a prompt for the AI.
-			// We'll collect subsequent lines that arrive in a very short window.
-			lines := []string{firstLine}
-			pasteTimeout := time.NewTimer(50 * time.Millisecond) // A small window to catch subsequent pasted lines.
-
-		collecting:
-			for {
-				select {
-				case nextLine, ok := <-inputChan:
-					if !ok {
-						pasteTimeout.Stop()
-						break collecting
-					}
-					lines = append(lines, nextLine)
-					// Reset the timer each time a new line arrives quickly.
-					if !pasteTimeout.Stop() {
-						<-pasteTimeout.C // Drain the channel if Stop() returns false.
-					}
-					pasteTimeout.Reset(50 * time.Millisecond)
-				case <-pasteTimeout.C:
-					break collecting // Timer fired, we're done collecting.
-				}
-			}
-
-			fullPrompt := strings.Join(lines, "\n")
+			fullPrompt := strings.TrimSpace(c.collectPastedInput(firstLine, inputChan))
 			if fullPrompt != "" {
 				c.cmdChan <- fullPrompt
 			} else {
@@ -347,9 +336,10 @@ func (c *CLI) command(cmd string) {
 
 	// The /prompt command is only active in system mode.
 	if c.mode == System && commandName == "prompt" {
-		promptText := strings.Join(parts[1:], " ")
+		promptText := strings.TrimSpace(strings.Join(parts[1:], " "))
 		if promptText != "" {
 			c.cmdChan <- promptText
+			// Expected model output, so we do not activate new prompt
 		} else {
 			fmt.Println("Usage: /prompt <text for AI>")
 			c.draw()

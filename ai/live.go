@@ -349,8 +349,9 @@ func (l *LiveAI) Run() {
 	helpers.Verify((*l.bus).Subscribe(config.AITopic, l.handleEvents))
 	helpers.Verify((*l.bus).SubscribeAsync(config.AgentTopic, l.handleAgentToolResponse, false))
 
+	// Initialize first session with Model
 	l.OpenSession()
-	// Start a dedicated goroutine to handle all incoming server messages.
+	// Start a dedicated goroutine to handle all incoming Model messages.
 	go l.handleResponses()
 	// Send initial files only once at the beginning of the session.
 	// This must be done after the response handler is running to catch the server's acknowledgment.
@@ -358,6 +359,10 @@ func (l *LiveAI) Run() {
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
+	// Use a separate ticker to poll for shell output from the CLI.
+	shellPollTicker := time.NewTicker(250 * time.Millisecond)
+	defer shellPollTicker.Stop()
+	// Application flow control channel
 	shutdownChan := flow.GetListener()
 
 	for {
@@ -391,7 +396,12 @@ func (l *LiveAI) Run() {
 			l.CloseSession() // Clean up the old session object.
 			l.OpenSession()  // Re-establish the session.
 			log.Println("Live session re-established.")
+			// Flush any shell output that was buffered in the CLI while offline.
+			if output := l.cli.ReceiveShellOutput(); output != "" {
+				l.handleShellOutput(output)
+			}
 		case cmd, ok := <-l.controlChan:
+			// Te only one place where we accumulate user voice control interactions
 			if !ok {
 				log.Println("Live AI streaming is finished")
 				return
@@ -469,11 +479,11 @@ func (l *LiveAI) Run() {
 				log.Printf("WARNING: received unknown control command: %s", cmd)
 			}
 		case textCmd, ok := <-l.textCmdChan:
+			// Te only one place where we accumulate interactions: user text prompt to model
 			if !ok {
 				l.textCmdChan = nil // Mark as closed
 				continue
 			}
-			trimmedCmd := strings.TrimSpace(textCmd)
 
 			l.mu.RLock()
 			currentActivity := l.activityType
@@ -484,31 +494,43 @@ func (l *LiveAI) Run() {
 			// We send it and then end the activity to trigger a model response.
 			if l.mode == inout.System && currentActivity == ShellStream {
 				log.Println("Live AI: Finalizing shell activity...")
-				// If the user provided a non-empty prompt, send it as the final question.
-				// Otherwise, just end the activity to get a response to the shell output.
-				if trimmedCmd != "" {
-					log.Println("Live AI: Sending user question with final prompt...")
-					l.sendLiveMessage(trimmedCmd)
+				// CLI provide a non-empty user prompt, send it as the final question.
+				log.Println("Live AI: Sending user system prompt...")
+				l.sendLiveMessage(textCmd)
+
+				// In case of voice activity we will wait until it ends and finalize turn.
+				// Otherwise, just end the activity to get a response to both the shell output and user prompt.
+				if l.endShellActivityIfNeeded() {
+					l.notifyActivityEnd(ShellStream)
 				}
-				// This is a text-only turn conclusion for the shell activity.
-				l.notifyActivityEnd(ShellStream)
-				l.mu.Lock()
-				l.activityType = "" // Reset for the next sequence.
-				l.mu.Unlock()
 			} else {
 				// This is a regular, self-contained text prompt. Ignore if empty.
-				if trimmedCmd != "" {
+				if textCmd != "" {
 					log.Printf("Live AI: Processing text prompt in %s mode...\n", l.mode)
 					go func(prompt string) {
 						if err := l.sendTextPrompt(prompt); err != nil {
 							log.Printf("ERROR: failed to process text prompt: %v", err)
 						}
-					}(trimmedCmd)
+					}(textCmd)
 				}
 			}
-
 		case <-ticker.C:
+			// App synk voice chunk processing, interaction: user voice to model
 			l.pullAndSendSamples()
+		case <-shellPollTicker.C:
+			// In system mode there is third interaction type: shell output to model.
+			// Shell have never finalize turn, only stream output data
+			if l.mode == inout.System {
+				// genai API has error and panic on big ammounts of streamed data(ex: journalctl).
+				// This "pull and batch" pattern is crucial for stability. Instead of
+				// sending every line of shell output as it occurs (which can overwhelm
+				// the API and cause errors or panics), we collect output in the CLI's
+				// buffer and fetch it in 250ms intervals. This coalesces rapid-fire
+				// output into a single, manageable chunk for the model.
+				if output := l.cli.ReceiveShellOutput(); output != "" {
+					l.handleShellOutput(output)
+				}
+			}
 		}
 	}
 }
@@ -602,6 +624,10 @@ func (l *LiveAI) handleResponses() {
 
 			fireClose()
 
+			// On a receive error, signal the main Run() loop to re-establish the
+			// connection. This goroutine will then 'continue' and wait in its
+			// 'session is temporarily unavailable' block until the new session is ready.
+			// This ensures this goroutine is a long-lived singleton.
 			continue
 		}
 
@@ -666,6 +692,11 @@ func (l *LiveAI) handleResponses() {
 		case msg.GoAway != nil:
 			// The loop will terminate in the next iteration due to the connection closing.
 			log.Printf("Live stream session GoAway received: %+v", msg.GoAway.TimeLeft)
+			// If a shell activity is in progress, end it gracefully before closing the session.
+			if l.endShellActivityIfNeeded() {
+				l.notifyActivityEnd(ShellStream)
+			}
+
 			if generation {
 				needToGo = true
 			} else {
@@ -676,8 +707,11 @@ func (l *LiveAI) handleResponses() {
 				generation = false
 				log.Printf("Live session resumption handle updated. New handle received.")
 				l.resumptionHandle = msg.SessionResumptionUpdate.NewHandle
-				// After GoAway message we have 1 minute to exit.
-				// We wait for last generated handle and close
+				// When a GoAway signal is received during a generation, we set 'needToGo'
+				// to true. This ensures that we don't close the session immediately.
+				// Instead, we wait for this final 'Resumable' update, which contains
+				// the handle needed to resume the session later. Once we have the handle,
+				// we can safely close the connection.
 				if needToGo {
 					needToGo = false
 					fireClose()
@@ -782,49 +816,81 @@ func (l *LiveAI) handleEvents(event string) {
 		if previousMode != payload {
 			l.mode = payload
 			log.Printf("LiveAI mode set to: %s", payload)
+			// Model confused if not notified
 			if payload == inout.System {
 				l.sendLiveMessage("System Notification: You have entered system mode. You can now use shell commands via the 'submit_shell_command' tool.")
 			} else if previousMode == inout.System {
 				l.sendLiveMessage("System Notification: You have left system mode. Shell commands are no longer available.")
+				if l.endShellActivityIfNeeded() {
+					l.notifyActivityEnd(ShellStream)
+				}
 			}
 		}
 	case "restart_session":
 		log.Printf("Restarting live session due to configuration change: %s", payload)
 		// The main Run loop will detect the closed session and reopen it with the new config.
 		l.CloseSession()
-	case "shell_output":
-		// Only process shell output if we are in system mode.
-		if l.mode == inout.System {
-			// Do not send empty or whitespace-only lines from the shell to the model.
-			if strings.TrimSpace(payload) == "" {
-				return
-			}
-
-			var activityStarted bool
-			l.mu.Lock()
-			// If this is the first piece of shell output in a sequence,
-			// start a new user activity turn. This keeps the turn open
-			// so the model sees all subsequent shell output and the final
-			// user prompt as a single block of input.
-			if l.activityType == "" {
-				l.activityType = ShellStream
-				activityStarted = true
-			}
-			l.mu.Unlock()
-
-			if activityStarted {
-				l.notifyActivityStart(ShellStream)
-			}
-			// Send the shell output as part of the ongoing user turn.
-			l.sendLiveMessage(fmt.Sprintf("User shell output: %s", payload))
-			// We do NOT call notifyActivityEnd here. The activity is explicitly
-			// ended when the user sends a follow-up prompt via the CLI.
-
-		}
 	default:
 		// The "save" event is not handled here as LiveAI does not maintain history.
 		config.DebugPrintf("LiveAI component ignoring event: %s", event)
 	}
+}
+
+// handleShellOutput processes a batch of shell output received from the CLI.
+func (l *LiveAI) handleShellOutput(output string) {
+	trimmedContent := strings.TrimSpace(output)
+	if trimmedContent == "" {
+		return
+	}
+
+	// Check if the session is online before attempting to send.
+	l.mu.RLock()
+	online := l.Online
+	l.mu.RUnlock()
+
+	if !online {
+		// This case should be rare because the polling loop should only
+		// run when the session is online, but it's a good safeguard.
+		// The CLI will continue buffering, so no data is lost.
+		log.Println("LiveAI is offline, shell output will be polled on next cycle.")
+		return
+	}
+
+	// If this is the first piece of shell output in a sequence, start a new user activity turn.
+	if l.startShellActivityIfNeeded() {
+		l.notifyActivityStart(ShellStream)
+	}
+
+	// Send the buffered shell output as part of the ongoing user turn.
+	l.sendLiveMessage(fmt.Sprintf("User shell output: [%s]", trimmedContent))
+}
+
+// startShellActivityIfNeeded checks if a shell activity is running and starts one if not.
+// It returns true if a new activity was started. This method is safe for concurrent use.
+func (l *LiveAI) startShellActivityIfNeeded() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// If no activity is in progress, start a new shell activity.
+	if l.activityType == "" {
+		l.activityType = ShellStream
+		return true
+	}
+	// An activity is already in progress (either Shell or Audio), so do nothing.
+	return false
+}
+
+// endShellActivityIfNeeded checks if a shell activity is running and ends it if so.
+// It returns true if an activity was ended. This method is safe for concurrent use.
+func (l *LiveAI) endShellActivityIfNeeded() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// If a shell activity is in progress, end it.
+	if l.activityType == ShellStream {
+		l.activityType = "" // Reset for the next sequence.
+		return true
+	}
+	// No shell activity was in progress.
+	return false
 }
 
 // sendInitialFiles reads files from the cache directory and sends them as the first
