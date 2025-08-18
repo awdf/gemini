@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/aiq/go-rtf v0.0.0-20250119212555-f57508a7d581
+	github.com/creack/pty v1.1.24
 	github.com/fumiama/go-docx v0.0.0
 	github.com/go-gst/go-glib v1.4.0
 	github.com/go-gst/go-gst v1.4.0
@@ -12,13 +13,13 @@ require (
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/oauth2 v0.28.0
+	golang.org/x/term v0.32.0
 	google.golang.org/api v0.197.0
 	google.golang.org/genai v1.13.0
 )
 
 require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.4 // indirect
-	github.com/creack/pty v1.1.24 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fumiama/imgsz v0.0.2 // indirect
 	github.com/gen2brain/shm v0.1.0 // indirect

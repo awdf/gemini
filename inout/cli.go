@@ -2,6 +2,7 @@ package inout
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asaskevich/EventBus"
+	"golang.org/x/term"
 
 	"gemini/config"
 	"gemini/desktop"
@@ -38,6 +40,12 @@ var modes = map[string]string{
 	ImageMode: ImageMode,
 }
 
+const (
+	// Defines the input state when in system mode.
+	stateProxyingToShell = iota
+	stateReadingCommand
+)
+
 // CLI handles reading user input from the command line.
 type CLI struct {
 	wg                  *sync.WaitGroup
@@ -47,10 +55,15 @@ type CLI struct {
 	isSystemShellActive bool
 	aiEnabled           bool
 	ready               bool
+	modeMu              sync.Mutex
 	mode                string
+	previousMode        string
 	promptChan          chan promptRequest
 	shellBuffer         strings.Builder
 	shellBufferMu       sync.Mutex
+	systemInputState    int
+	systemCommandBuffer bytes.Buffer
+	originalTermState   *term.State
 }
 
 const (
@@ -91,8 +104,11 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		isSystemShellActive: false,
 		aiEnabled:           aiEnabled,
 		ready:               false,
+		modeMu:              sync.Mutex{},
 		mode:                config.C.Mode,
+		previousMode:        "",
 		promptChan:          make(chan promptRequest),
+		systemInputState:    stateProxyingToShell,
 	}
 }
 
@@ -128,15 +144,42 @@ func (c *CLI) startSystemShell() {
 	if c.isSystemShellActive {
 		return
 	}
+
+	// Get the file descriptor for stdin and check if it's a terminal.
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		fmt.Println("Cannot start system shell: stdin is not a terminal.")
+		return
+	}
+
+	// Save the original terminal state and switch to raw mode.
+	var err error
+	c.originalTermState, err = term.GetState(fd)
+	if err != nil {
+		fmt.Printf("Error getting terminal state: %v\n", err)
+		return
+	}
+	if _, err := term.MakeRaw(fd); err != nil {
+		fmt.Printf("Error setting terminal to raw mode: %v\n", err)
+		return
+	}
+
 	// This channel will receive output from the interactive shell.
 	outputChan := make(chan string, 100)
 	go func() {
 		for line := range outputChan {
 			c.shellBufferMu.Lock()
 			c.shellBuffer.WriteString(line + "\n")
+			// In raw mode, we need to manually handle carriage returns and newlines.
+			// The PTY will send `\r\n` for newlines. We print it directly.
+			// This is a simplification; a full terminal emulator would be more complex.
+			fmt.Print(line + "\r\n")
 			c.shellBufferMu.Unlock()
 		}
 		log.Println("CLI shell output publisher finished.")
+		// When the shell exits, its output channel is closed. We can now safely
+		// stop the system shell mode from this goroutine.
+		c.stopSystemShell()
 	}()
 	if err := desktop.C.StartInteractiveShell(outputChan); err != nil {
 		fmt.Printf("Error starting system shell: %v\n", err)
@@ -154,38 +197,77 @@ func (c *CLI) stopSystemShell() {
 	if err := desktop.C.StopInteractiveShell(); err != nil {
 		fmt.Printf("Error stopping system shell: %v\n", err)
 	}
+
+	// Restore the terminal to its original state.
+	if c.originalTermState != nil {
+		fd := int(os.Stdin.Fd())
+		if err := term.Restore(fd, c.originalTermState); err != nil {
+			log.Printf("Error restoring terminal state: %v", err)
+		}
+		c.originalTermState = nil
+	}
+
 	c.isSystemShellActive = false
 	log.Println("Exited system mode. Interactive shell stopped.")
+	if c.previousMode != "" {
+		c.mode = c.previousMode
+		c.previousMode = "" // Reset for the next time.
+	} else {
+		c.mode = Prompt // Default fallback.
+	}
+	c.draw()
 }
 
-// collectPastedInput gathers multi-line input that is pasted into the terminal.
-// It starts with a single line and then waits for a short duration to see if more lines
-// arrive in quick succession.
-func (c *CLI) collectPastedInput(firstLine string, inputChan <-chan string) string {
-	lines := []string{firstLine}
-	// A small window to catch subsequent pasted lines.
-	pasteTimeout := time.NewTimer(50 * time.Millisecond)
-	defer pasteTimeout.Stop()
-
-	for {
-		select {
-		case nextLine, ok := <-inputChan:
-			if !ok {
-				// Channel closed, we're done collecting.
-				return strings.Join(lines, "\n")
+// handleSystemModeInput processes user input when the CLI is in 'system' mode.
+// It implements a state machine to differentiate between proxying input directly
+// to the interactive shell and capturing a CLI command (e.g., "/prompt").
+func (c *CLI) handleSystemModeInput(inputBytes []byte) {
+	if !c.isSystemShellActive {
+		return
+	}
+	// In system mode, we have a mini state machine to either proxy
+	// input to the shell or read a CLI command (starting with '/').
+	for _, b := range inputBytes {
+		if c.systemInputState == stateProxyingToShell {
+			if b == '/' {
+				// Transition to command reading state
+				c.systemInputState = stateReadingCommand
+				c.systemCommandBuffer.Reset()
+				fmt.Print("/") // Echo the slash to the user
+			} else {
+				// Proxy the byte to the interactive shell
+				if err := desktop.C.SendToShell(string(b)); err != nil {
+					log.Printf("Error sending input to system shell: %v", err)
+				}
 			}
-			lines = append(lines, nextLine)
-			// Reset the timer each time a new line arrives quickly.
-			if !pasteTimeout.Stop() {
-				// If Stop() returns false, it means the timer has already fired and the value
-				// has been sent to the channel. We must drain the channel to prevent a deadlock
-				// on the next Reset.
-				<-pasteTimeout.C
+		} else { // c.systemInputState == stateReadingCommand
+			switch b {
+			case '\r', '\n': // Enter key
+				fmt.Print("\r\n") // Echo newline
+				commandStr := c.systemCommandBuffer.String()
+				c.systemCommandBuffer.Reset()
+				c.systemInputState = stateProxyingToShell
+				if commandStr != "" {
+					c.command(commandStr)
+				} else {
+					c.draw() // User typed "/" then Enter, redraw prompt.
+				}
+			case 127, 8: // Backspace
+				if c.systemCommandBuffer.Len() > 0 {
+					c.systemCommandBuffer.Truncate(c.systemCommandBuffer.Len() - 1)
+					fmt.Print("\b \b") // Erase character on screen
+				}
+			case 3: // Ctrl+C or Escape
+				fmt.Println("^C")
+				c.systemCommandBuffer.Reset()
+				c.systemInputState = stateProxyingToShell
+				c.draw() // Redraw to get a fresh shell prompt
+			default:
+				if b >= 32 && b < 127 {
+					c.systemCommandBuffer.WriteByte(b)
+					fmt.Print(string(b))
+				}
 			}
-			pasteTimeout.Reset(50 * time.Millisecond)
-		case <-pasteTimeout.C:
-			// Timer fired, which means the user has stopped pasting. We're done.
-			return strings.Join(lines, "\n")
 		}
 	}
 }
@@ -206,19 +288,21 @@ func (c *CLI) Run() {
 	helpers.Verify((*c.bus).SubscribeAsync(config.MainTopic, func(event string) {
 		config.DebugPrintf("CLI received event: %s\n", event)
 
+		c.modeMu.Lock()
+		defer c.modeMu.Unlock()
 		switch {
 		case strings.HasPrefix(event, "mute:"): // Normal flow
 			c.muted = true
 		case strings.HasPrefix(event, "draw:"): // Normal flow
-			c.muted = false
-			c.draw() // Next prompts
+			c.muted = false // The prompt is drawn by the main loop after this.
+			c.drawLocked()  // Next prompts
 		case strings.HasPrefix(event, "block:"): // Critical flow blocking
 			c.ready = false
 			c.muted = true
 		case strings.HasPrefix(event, "ready:"): // Critical flow unblocking
 			c.ready = true
 			c.muted = false
-			c.draw() // Initial prompt
+			c.drawLocked() // Initial prompt
 		default:
 			config.DebugPrintf("CLI drop event: %s\n", event)
 		}
@@ -229,20 +313,35 @@ func (c *CLI) Run() {
 		c.startSystemShell()
 	}
 
-	scanner := bufio.NewScanner(os.Stdin)
-	inputChan := make(chan string)
-
-	// Goroutine to read from stdin, as scanner.Scan() is blocking.
+	// This goroutine reads raw bytes from stdin. It cannot be easily cancelled,
+	// so it will run for the lifetime of the application. This is an acceptable
+	// trade-off for achieving raw terminal I/O.
+	inputChan := make(chan []byte)
 	go func() {
-		for scanner.Scan() {
-			inputChan <- scanner.Text()
+		defer close(inputChan)
+		reader := bufio.NewReader(os.Stdin)
+		buf := make([]byte, 128)
+		for {
+			n, err := reader.Read(buf)
+			if err != nil {
+				log.Printf("Stdin read error: %v", err)
+				return
+			}
+			if n > 0 {
+				inputChan <- buf[:n]
+			}
 		}
-		close(inputChan)
 	}()
 
 	shutdownChan := flow.GetListener()
 	var activePrompt *promptRequest
-
+	var promptBuffer strings.Builder
+	// A short timeout to detect the end of a paste or multi-line input.
+	pasteTimeout := time.NewTimer(50 * time.Millisecond)
+	// The timer should be initially stopped so it doesn't fire immediately.
+	if !pasteTimeout.Stop() {
+		<-pasteTimeout.C
+	}
 	for {
 		select {
 		case <-*shutdownChan: // Listens for Ctrl+C
@@ -254,14 +353,18 @@ func (c *CLI) Run() {
 			(*c.bus).Publish(config.MainTopic, "block:cli.prompt.start")
 			fmt.Printf("\n%s: ", req.prompt)
 
-		case firstLine, ok := <-inputChan:
+		case inputBytes, ok := <-inputChan:
 			if !ok {
 				log.Println("Stdin closed, CLI input handler shutting down.")
 				return
 			}
 
+			c.modeMu.Lock()
+			currentMode := c.mode
+			c.modeMu.Unlock()
+
 			if activePrompt != nil {
-				activePrompt.responseChan <- firstLine
+				activePrompt.responseChan <- string(inputBytes)
 				close(activePrompt.responseChan)
 				activePrompt = nil
 				(*c.bus).Publish(config.MainTopic, "ready:cli.prompt.done")
@@ -276,30 +379,40 @@ func (c *CLI) Run() {
 				continue
 			}
 
-			// Check if the input is a command (starts with '/'). This is common to all modes.
-			if strings.HasPrefix(firstLine, "/") {
-				c.command(firstLine[1:])
+			if currentMode == System {
+				c.handleSystemModeInput(inputBytes)
 				continue
 			}
 
-			// If it's not a command, handle it based on the mode.
-			if c.mode == System {
-				// In system mode, send input to the interactive shell.
-				if c.isSystemShellActive {
-					if err := desktop.C.SendToShell(firstLine + "\n"); err != nil {
-						log.Printf("Error sending input to system shell: %v", err)
-					}
-				} else {
-					log.Println("System mode is active, but interactive shell is not running yet. Input ignored.")
-				}
+			// In prompt mode, buffer input to handle large pastes that might
+			// arrive in multiple chunks from the os.Stdin.Read() call.
+			promptBuffer.Write(inputBytes)
+			pasteTimeout.Reset(50 * time.Millisecond)
+
+		case <-pasteTimeout.C:
+			// The paste timeout fired, meaning the user has stopped typing or pasting.
+			// We can now process the entire buffered input as a single command.
+			if promptBuffer.Len() == 0 {
+				// Nothing was buffered, so just continue.
 				continue
 			}
 
-			// In other modes (prompt, voice, image), non-command input is a prompt for the AI.
-			fullPrompt := strings.TrimSpace(c.collectPastedInput(firstLine, inputChan))
-			if fullPrompt != "" {
-				c.cmdChan <- fullPrompt
+			// Get the complete input from the buffer and reset it for the next time.
+			line := promptBuffer.String()
+			promptBuffer.Reset()
+
+			// In "cooked" mode, the terminal driver handles echoing, backspace, etc.
+			// We receive the final, edited text. We just need to process it.
+			// The TrimSpace handles any leading/trailing newlines from the input.
+			trimmedLine := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmedLine, "/") {
+				// It's a command for the CLI.
+				c.command(trimmedLine[1:])
+			} else if trimmedLine != "" {
+				// It's a prompt for the AI.
+				c.cmdChan <- trimmedLine
 			} else {
+				// The buffer contained only whitespace. Redraw the prompt.
 				c.draw()
 			}
 		}
@@ -307,6 +420,14 @@ func (c *CLI) Run() {
 }
 
 func (c *CLI) draw() {
+	c.modeMu.Lock()
+	defer c.modeMu.Unlock()
+	c.drawLocked()
+}
+
+// drawLocked performs the drawing without acquiring a lock.
+// It assumes the caller already holds c.modeMu.
+func (c *CLI) drawLocked() {
 	if c.muted || !c.ready {
 		return
 	}
@@ -330,6 +451,9 @@ func (c *CLI) draw() {
 }
 
 func (c *CLI) command(cmd string) {
+	c.modeMu.Lock()
+	defer c.modeMu.Unlock()
+
 	log.Println("CLI command received:", cmd)
 	parts := strings.Fields(cmd)
 	commandName := parts[0]
@@ -413,11 +537,13 @@ func (c *CLI) command(cmd string) {
 				hint()
 			} else {
 				if value == System {
+					// Store the current mode so we can return to it after exiting the shell.
+					c.previousMode = c.mode
+					// This will set the terminal to raw mode and start the shell.
+					// The Run loop will then handle input differently.
 					c.startSystemShell()
-				} else {
-					// This will also handle switching from system to another mode.
-					c.stopSystemShell()
 				}
+				// Switching *out* of system mode is handled when the shell exits.
 				c.mode = value
 				config.C.Mode = value
 				log.Printf("AI mode set to: %s", value)
@@ -443,5 +569,5 @@ func (c *CLI) command(cmd string) {
 	default:
 		fmt.Printf("Unknown command: %s\n", commandName)
 	}
-	c.draw()
+	c.drawLocked()
 }
