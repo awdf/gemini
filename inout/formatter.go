@@ -201,7 +201,10 @@ func (f *Formatter) Print(text string, color ...string) {
 			i++
 		}
 	}
-	fmt.Print(output.String())
+	// In raw terminal mode (like 'system' mode), a line feed (\n) alone only moves the
+	// cursor down, not to the beginning of the line. We must send a carriage return
+	// as well (\r\n) to get the correct behavior. This replaces all newlines.
+	fmt.Print(strings.ReplaceAll(output.String(), "\n", "\r\n"))
 }
 
 // highlightCodeBlock formats the buffered code with syntax highlighting using the chroma library.
@@ -249,15 +252,15 @@ func (f *Formatter) highlightCodeBlock(out *strings.Builder) error {
 // Println prints a line with an optional prefix color.
 func (f *Formatter) Println(text string, color ...string) {
 	if len(color) > 0 {
-		fmt.Printf("%s%s%s\033[K\n", color[0], text, ColorReset)
+		fmt.Printf("%s%s%s\033[K\r\n", color[0], text, ColorReset)
 	} else {
-		fmt.Printf("%s\033[K\n", text)
+		fmt.Printf("%s\033[K\r\n", text)
 	}
 }
 
 // Reset prints the ANSI reset code and a newline.
 func (f *Formatter) Reset() {
-	fmt.Print(ColorReset + "\n")
+	fmt.Print(ColorReset + "\r\n")
 }
 
 // Clear clears the terminal screen.

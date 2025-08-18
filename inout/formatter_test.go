@@ -71,12 +71,12 @@ func TestFormatter_Print(t *testing.T) {
 		{
 			name:     "code block",
 			input:    "```\ncode\n```",
-			expected: ColorReset + ColorDarkGreen + "\ncode\n" + ColorReset,
+			expected: ColorReset + ColorDarkGreen + "\r\ncode\r\n" + ColorReset,
 		},
 		{
 			name:     "highlighted go code block",
 			input:    "```go\npackage main\n```",
-			expected: "\x1b[38;5;102mpackage\x1b[0m \x1b[38;5;231mmain\x1b[0m\n" + ColorReset,
+			expected: "\x1b[38;5;102mpackage\x1b[0m \x1b[38;5;231mmain\x1b[0m\r\n" + ColorReset,
 		},
 		{
 			name:     "strikethrough text",
@@ -180,7 +180,7 @@ func TestFormatter_Println(t *testing.T) {
 		f.Println("Prefix:", ColorDarkCyan)
 	})
 	// \033[K is for clearing the rest of the line
-	assert.Equal(t, ColorDarkCyan+"Prefix: "+ColorReset+"\033[K\n", output)
+	assert.Equal(t, ColorDarkCyan+"Prefix: "+ColorReset+"\033[K\r\n", output)
 }
 
 func TestFormatter_Reset(t *testing.T) {
@@ -188,7 +188,7 @@ func TestFormatter_Reset(t *testing.T) {
 	output := captureOutput(func() {
 		f.Reset()
 	})
-	assert.Equal(t, ColorReset+"\n", output)
+	assert.Equal(t, ColorReset+"\r\n", output)
 }
 
 func TestFormatter_Clear(t *testing.T) {

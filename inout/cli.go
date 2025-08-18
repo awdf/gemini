@@ -115,6 +115,10 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 // ReceiveShellOutput retrieves and clears the buffered shell output since the
 // last call. It is safe for concurrent use.
 func (c *CLI) ReceiveShellOutput() string {
+	if !c.isSystemShellActive {
+		return ""
+	}
+
 	c.shellBufferMu.Lock()
 	defer c.shellBufferMu.Unlock()
 
@@ -167,6 +171,7 @@ func (c *CLI) startSystemShell() {
 	// This channel will receive output from the interactive shell.
 	outputChan := make(chan string, 100)
 	go func() {
+		// Exit from shell on Ctrl+D or exit command
 		for line := range outputChan {
 			c.shellBufferMu.Lock()
 			// The PTY is already connected to the user's terminal, so it handles displaying the output.
@@ -183,7 +188,7 @@ func (c *CLI) startSystemShell() {
 		fmt.Printf("Error starting system shell: %v\n", err)
 	} else {
 		c.isSystemShellActive = true
-		log.Println("Entered system mode. Interactive shell started.")
+		log.Println("CLI entered system mode. Interactive shell started.")
 	}
 }
 
@@ -206,7 +211,7 @@ func (c *CLI) stopSystemShell() {
 	}
 
 	c.isSystemShellActive = false
-	log.Println("Exited system mode. Interactive shell stopped.")
+	log.Println("CLI exited system mode. Interactive shell stopped.")
 	if c.previousMode != "" {
 		c.mode = c.previousMode
 		c.previousMode = "" // Reset for the next time.
@@ -540,11 +545,15 @@ func (c *CLI) command(cmd string) {
 					// This will set the terminal to raw mode and start the shell.
 					// The Run loop will then handle input differently.
 					c.startSystemShell()
+				} else {
+					if c.mode == System { // Switching out of system mode
+						c.handleSystemModeInput([]byte("exit\n"))
+					}
 				}
 				// Switching *out* of system mode is handled when the shell exits.
 				c.mode = value
 				config.C.Mode = value
-				log.Printf("AI mode set to: %s", value)
+				log.Printf("CLI mode set to: %s", value)
 				(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", value))
 			}
 		}
