@@ -2,7 +2,7 @@
 LogFile = "gemini.log"
 
 # Enable or disable debug logging for all modules.
-Debug = true
+Debug = false
 Trace = false
 LiveAI = false
 Mode = "prompt"

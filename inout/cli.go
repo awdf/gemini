@@ -169,11 +169,9 @@ func (c *CLI) startSystemShell() {
 	go func() {
 		for line := range outputChan {
 			c.shellBufferMu.Lock()
+			// The PTY is already connected to the user's terminal, so it handles displaying the output.
+			// We just need to capture it for the AI, not print it again.
 			c.shellBuffer.WriteString(line + "\n")
-			// In raw mode, we need to manually handle carriage returns and newlines.
-			// The PTY will send `\r\n` for newlines. We print it directly.
-			// This is a simplification; a full terminal emulator would be more complex.
-			fmt.Print(line + "\r\n")
 			c.shellBufferMu.Unlock()
 		}
 		log.Println("CLI shell output publisher finished.")

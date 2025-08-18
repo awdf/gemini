@@ -39,6 +39,7 @@ func TestNewFormatter(t *testing.T) {
 	assert.False(t, f.inCodeBlock)
 	assert.False(t, f.inInlineCode)
 	assert.False(t, f.inItalic)
+	assert.False(t, f.inStrikethrough)
 }
 
 func TestFormatter_Print(t *testing.T) {
@@ -55,42 +56,92 @@ func TestFormatter_Print(t *testing.T) {
 		{
 			name:     "bold text",
 			input:    "**bold**",
-			expected: ColorDarkMagenta + "bold" + ColorReset,
+			expected: ColorReset + ColorDarkMagenta + "bold" + ColorReset,
 		},
 		{
 			name:     "italic text",
 			input:    "*italic*",
-			expected: ColorWhite + "italic" + ColorReset,
+			expected: ColorReset + ColorWhite + "italic" + ColorReset,
 		},
 		{
 			name:     "inline code",
 			input:    "`code`",
-			expected: ColorCyan + "code" + ColorReset,
+			expected: ColorReset + ColorCyan + "code" + ColorReset,
 		},
 		{
 			name:     "code block",
 			input:    "```\ncode\n```",
-			expected: ColorDarkGreen + "\ncode\n" + ColorReset,
+			expected: ColorReset + ColorDarkGreen + "\ncode\n" + ColorReset,
+		},
+		{
+			name:     "highlighted go code block",
+			input:    "```go\npackage main\n```",
+			expected: "\x1b[38;5;102mpackage\x1b[0m \x1b[38;5;231mmain\x1b[0m\n" + ColorReset,
+		},
+		{
+			name:     "strikethrough text",
+			input:    "~~strike~~",
+			expected: ColorReset + StyleStrikethrough + "strike" + ColorReset,
 		},
 		{
 			name:     "mixed formatting",
 			input:    "normal **bold** *italic* `code` normal",
-			expected: "normal " + ColorDarkMagenta + "bold" + ColorReset + " " + ColorWhite + "italic" + ColorReset + " " + ColorCyan + "code" + ColorReset + " normal",
+			expected: "normal " + ColorReset + ColorDarkMagenta + "bold" + ColorReset + " " + ColorReset + ColorWhite + "italic" + ColorReset + " " + ColorReset + ColorCyan + "code" + ColorReset + " normal",
 		},
 		{
 			name:     "unterminated bold",
 			input:    "**bold",
-			expected: ColorDarkMagenta + "bold",
+			expected: ColorReset + ColorDarkMagenta + "bold",
 		},
 		{
 			name:     "code block with other markers inside",
 			input:    "```**not bold**```",
-			expected: ColorDarkGreen + "**not bold**" + ColorReset,
+			expected: ColorReset + ColorDarkGreen + "**not bold**" + ColorReset,
 		},
 		{
 			name:     "empty string",
 			input:    "",
 			expected: "",
+		},
+		{
+			name:     "nested bold in italic",
+			input:    "*italic and **bold** inside*",
+			expected: ColorReset + ColorWhite + "italic and " + ColorReset + ColorDarkMagenta + "bold" + ColorReset + ColorWhite + " inside" + ColorReset,
+		},
+		{
+			name:     "bold with strikethrough",
+			input:    "**~~strike bold~~**",
+			expected: ColorReset + ColorDarkMagenta + ColorReset + ColorDarkMagenta + StyleStrikethrough + "strike bold" + ColorReset + ColorDarkMagenta + ColorReset,
+		},
+		{
+			name:     "unordered list",
+			input:    "* one\n* two",
+			expected: ColorDarkYellow + "• " + ColorReset + "one\n" + ColorDarkYellow + "• " + ColorReset + "two",
+		},
+		{
+			name:     "blockquote",
+			input:    "> quote",
+			expected: ColorDarkGray + "| " + ColorReset + "quote",
+		},
+		{
+			name:     "numbered list",
+			input:    "1. first\n2. second",
+			expected: ColorDarkYellow + "1. " + ColorReset + "first\n" + ColorDarkYellow + "2. " + ColorReset + "second",
+		},
+		{
+			name:     "indented list",
+			input:    "  * indented",
+			expected: "  " + ColorDarkYellow + "• " + ColorReset + "indented",
+		},
+		{
+			name:     "list with bold",
+			input:    "* **important** item",
+			expected: ColorDarkYellow + "• " + ColorReset + ColorReset + ColorDarkMagenta + "important" + ColorReset + " item",
+		},
+		{
+			name:     "blockquote with italic",
+			input:    "> *quoted italic*",
+			expected: ColorDarkGray + "| " + ColorReset + ColorReset + ColorWhite + "quoted italic" + ColorReset,
 		},
 	}
 
@@ -112,7 +163,7 @@ func TestFormatter_StatefulPrint(t *testing.T) {
 	output := captureOutput(func() {
 		f.Print("This is **bold")
 	})
-	assert.Equal(t, "This is "+ColorDarkMagenta+"bold", output)
+	assert.Equal(t, "This is "+ColorReset+ColorDarkMagenta+"bold", output)
 	assert.True(t, f.inBold)
 
 	// Continue bold and end it

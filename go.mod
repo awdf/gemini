@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/aiq/go-rtf v0.0.0-20250119212555-f57508a7d581
+	github.com/alecthomas/chroma/v2 v2.20.0
 	github.com/creack/pty v1.1.24
 	github.com/fumiama/go-docx v0.0.0
 	github.com/go-gst/go-glib v1.4.0
@@ -20,6 +21,7 @@ require (
 
 require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.4 // indirect
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fumiama/imgsz v0.0.2 // indirect
 	github.com/gen2brain/shm v0.1.0 // indirect
