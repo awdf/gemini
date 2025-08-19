@@ -228,48 +228,55 @@ func (c *CLI) handleSystemModeInput(inputBytes []byte) {
 	if !c.isSystemShellActive {
 		return
 	}
-	// In system mode, we have a mini state machine to either proxy
-	// input to the shell or read a CLI command (starting with '/').
+
+	// In raw mode, we process input byte by byte to handle control sequences.
 	for _, b := range inputBytes {
+		// State: Proxying all input directly to the underlying shell.
 		if c.systemInputState == stateProxyingToShell {
 			if b == '/' {
-				// Transition to command reading state
+				// Detected the start of a CLI command. Switch states.
 				c.systemInputState = stateReadingCommand
 				c.systemCommandBuffer.Reset()
-				fmt.Print("/") // Echo the slash to the user
-			} else {
-				// Proxy the byte to the interactive shell
-				if err := desktop.C.SendToShell(string(b)); err != nil {
-					log.Printf("Error sending input to system shell: %v", err)
-				}
+				fmt.Print("/") // Echo the slash to the user.
+				continue
 			}
-		} else { // c.systemInputState == stateReadingCommand
-			switch b {
-			case '\r', '\n': // Enter key
-				fmt.Print("\r\n") // Echo newline
-				commandStr := c.systemCommandBuffer.String()
-				c.systemCommandBuffer.Reset()
-				c.systemInputState = stateProxyingToShell
-				if commandStr != "" {
-					c.command(commandStr)
-				} else {
-					c.draw() // User typed "/" then Enter, redraw prompt.
-				}
-			case 127, 8: // Backspace
-				if c.systemCommandBuffer.Len() > 0 {
-					c.systemCommandBuffer.Truncate(c.systemCommandBuffer.Len() - 1)
-					fmt.Print("\b \b") // Erase character on screen
-				}
-			case 3: // Ctrl+C or Escape
-				fmt.Println("^C")
-				c.systemCommandBuffer.Reset()
-				c.systemInputState = stateProxyingToShell
-				c.draw() // Redraw to get a fresh shell prompt
-			default:
-				if b >= 32 && b < 127 {
-					c.systemCommandBuffer.WriteByte(b)
-					fmt.Print(string(b))
-				}
+			// Proxy the byte to the interactive shell.
+			if err := desktop.C.SendToShell(string(b)); err != nil {
+				log.Printf("Error sending input to system shell: %v", err)
+			}
+			continue
+		}
+
+		// State: Reading a CLI command (input after the initial '/').
+		// This is a minimal line editor.
+		switch b {
+		case '\r', '\n': // Enter key
+			fmt.Print("\r\n") // Echo newline.
+			commandStr := c.systemCommandBuffer.String()
+			c.systemCommandBuffer.Reset()
+			c.systemInputState = stateProxyingToShell // Return to proxying.
+			if commandStr != "" {
+				c.command(commandStr)
+			} else {
+				// User typed "/" then Enter. Redraw the shell's prompt.
+				c.draw()
+			}
+		case 127, 8: // Backspace
+			if c.systemCommandBuffer.Len() > 0 {
+				c.systemCommandBuffer.Truncate(c.systemCommandBuffer.Len() - 1)
+				fmt.Print("\b \b") // Erase character on screen.
+			}
+		case 3: // Ctrl+C
+			fmt.Println("^C")
+			c.systemCommandBuffer.Reset()
+			c.systemInputState = stateProxyingToShell
+			// Redraw to get a fresh shell prompt.
+			c.draw()
+		default:
+			// Echo printable characters and add to buffer.
+			if b >= 32 && b < 127 {
+				c.systemCommandBuffer.WriteByte(b)
+				fmt.Print(string(b))
 			}
 		}
 	}

@@ -68,8 +68,12 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 	// from overriding the custom PS1 prompt we are setting.
 	cmd := exec.Command("bash", "--noprofile", "--norc")
 	cmd.Dir = e.workspaceDir
-	// Set a custom prompt for system mode to make it clear to the user.
-	cmd.Env = append(os.Environ(), "PS1=system:\\w\\$ ")
+	// Set a custom, colored and bold prompt for system mode.
+	// - \[\033[1;91m\]: Start bold (1) and light red (91) color.
+	// - \[\033[1;94m\]: Start bold (1) and light blue (94) color for the directory.
+	// - \[\033[0m\]: Reset color to default.
+	// The \[ and \] are crucial to tell bash that the color codes are non-printing characters.
+	cmd.Env = append(os.Environ(), "PS1=\\[\033[1;91m\\]system\\[\033[0m\\]:\\[\033[1;94m\\]\\w\\[\033[0m\\]\\$ ")
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {

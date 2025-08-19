@@ -14,16 +14,24 @@ import (
 )
 
 // ANSI color codes for terminal output.
+// https://github.com/ChrisMaunder/How-to-Change-Text-Color-in-a-Linux-Terminal
 const (
 	ColorReset       = "\033[0m"
-	ColorDarkCyan    = "\033[36m"
-	ColorWhite       = "\033[97m"
-	ColorCyan        = "\033[96m"
-	ColorDarkGreen   = "\033[32m"
-	ColorDarkMagenta = "\033[35m"
-	ColorDarkYellow  = "\033[33m"
-	ColorDarkBlue    = "\033[34m"
-	ColorDarkGray    = "\033[90m"
+	ColorBlack       = "\033[30m" // Reserved
+	ColorDarkRed     = "\033[31m" // For errors or warnings
+	ColorDarkGreen   = "\033[32m" // For ```code``` blocks
+	ColorDarkYellow  = "\033[33m" // For "Thought:" prefix
+	ColorDarkBlue    = "\033[34m" // For links highlighting
+	ColorDarkMagenta = "\033[35m" // For **bold** text
+	ColorDarkCyan    = "\033[36m" // For "Answer:" prefix
+	ColorDarkGray    = "\033[90m" // For subtle text like sources
+	ColorRed         = "\033[91m" // Reserved
+	ColorGreen       = "\033[92m" // Reserved
+	ColorYellow      = "\033[93m" // For *italic* text
+	ColorBlue        = "\033[94m" // Reserved
+	ColorMagenta     = "\033[95m" // Reserved
+	ColorCyan        = "\033[96m" // For `inline code` blocks
+	ColorWhite       = "\033[97m" // For special emphasis
 	// ANSI style code for strikethrough.
 	StyleStrikethrough = "\033[9m"
 )

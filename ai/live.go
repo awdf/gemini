@@ -396,7 +396,8 @@ func (l *LiveAI) Run() {
 			l.CloseSession() // Clean up the old session object.
 			l.OpenSession()  // Re-establish the session.
 			log.Println("Live session re-established.")
-			// Flush any shell output that was buffered in the CLI while offline.
+			// Flush any shell output that was buffered in the CLI while offline
+			// between session switches. If no active shell, return empty.
 			if output := l.cli.ReceiveShellOutput(); output != "" {
 				l.handleShellOutput(output)
 			}
