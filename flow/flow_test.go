@@ -93,6 +93,54 @@ func TestMultipleListeners(t *testing.T) {
 	wg.Wait()
 }
 
+func TestGetWinchListenerAndSignalDispatch(t *testing.T) {
+	teardown := setup()
+	defer teardown()
+
+	listenerChan := GetWinchListener()
+	require.NotNil(t, listenerChan, "GetWinchListener should return a non-nil channel pointer")
+
+	// Send a signal directly to the internal channel for testing.
+	go func() {
+		signalChan <- syscall.SIGWINCH
+	}()
+
+	select {
+	case sig := <-*listenerChan:
+		assert.Equal(t, syscall.SIGWINCH, sig, "Listener should receive the SIGWINCH signal")
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for SIGWINCH signal")
+	}
+}
+
+func TestStopWinchListener(t *testing.T) {
+	teardown := setup()
+	defer teardown()
+
+	listener1 := GetWinchListener()
+	listener2 := GetWinchListener()
+
+	StopWinchListener(listener1)
+
+	// Send a signal.
+	go func() {
+		signalChan <- syscall.SIGWINCH
+	}()
+
+	// Listener 1 should be closed and not receive anything.
+	// Reading from a closed channel returns the zero value immediately.
+	_, ok := <-*listener1
+	assert.False(t, ok, "Channel for listener1 should be closed")
+
+	// Listener 2 should still receive the signal.
+	select {
+	case sig := <-*listener2:
+		assert.Equal(t, syscall.SIGWINCH, sig, "Listener 2 should still receive SIGWINCH")
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for listener2 to receive signal")
+	}
+}
+
 // syncBuffer is a bytes.Buffer that is safe for concurrent use.
 // The standard bytes.Buffer is not safe for concurrent reads and writes, which
 // can cause a data race when a test's main goroutine reads from the buffer

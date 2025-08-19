@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/creack/pty"
 
 	"gemini/config"
+	"gemini/flow"
 )
 
 // Executor is responsible for executing shell commands in a pseudo-terminal.
@@ -62,22 +64,70 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 		return fmt.Errorf("an interactive session is already running")
 	}
 
-	// Start a generic shell, not a specific command.
-	// Use bash to get more advanced features like PS1 prompt string expansion (\w, \$, etc.).
-	// Use --noprofile and --norc to prevent user startup files (like .bashrc or .profile)
-	// from overriding the custom PS1 prompt we are setting.
-	cmd := exec.Command("bash", "--noprofile", "--norc")
-	cmd.Dir = e.workspaceDir
-	// Set a custom, colored and bold prompt for system mode.
-	// - \[\033[1;91m\]: Start bold (1) and light red (91) color.
+	// To provide a familiar shell environment, we create a temporary rcfile for bash.
+	// This script sources the user's personal ~/.bashrc to load their complete
+	// environment, including aliases, functions, and any custom completion logic.
+	// It then sets our custom prompt, overriding any from the user's file to
+	// ensure a consistent look and feel for system mode.
+	usr, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("could not get current user to find .bashrc: %w", err)
+	}
+	userBashrcPath := filepath.Join(usr.HomeDir, ".bashrc")
+
+	// - \[\033[1;91m\]: Start bold (1) and light red (91) color for "system:".
 	// - \[\033[1;94m\]: Start bold (1) and light blue (94) color for the directory.
 	// - \[\033[0m\]: Reset color to default.
 	// The \[ and \] are crucial to tell bash that the color codes are non-printing characters.
-	cmd.Env = append(os.Environ(), "PS1=\\[\033[1;91m\\]system\\[\033[0m\\]:\\[\033[1;94m\\]\\w\\[\033[0m\\]\\$ ")
+	ps1 := "PS1='\\[\033[1;91m\\]system:\\[\033[0m\\]\\[\033[1;94m\\]\\w\\[\033[0m\\]\\$ '"
+	rcFileContent := fmt.Sprintf(`
+# Source the user's .bashrc to load their aliases, functions, and custom completions.
+if [ -f %q ]; then
+    . %q
+fi
+# Set our custom prompt, overriding any from the user's .bashrc.
+export %s
+`, userBashrcPath, userBashrcPath, ps1)
+
+	// Using os.CreateTemp is safer than ioutil.TempFile.
+	tmpfile, err := os.CreateTemp("", "gemini-bashrc-*.sh")
+	if err != nil {
+		return fmt.Errorf("could not create temporary rcfile: %w", err)
+	}
+
+	if _, err := tmpfile.WriteString(rcFileContent); err != nil {
+		tmpfile.Close()
+		os.Remove(tmpfile.Name())
+		return fmt.Errorf("could not write to temporary rcfile: %w", err)
+	}
+	if err := tmpfile.Close(); err != nil {
+		os.Remove(tmpfile.Name())
+		return fmt.Errorf("could not close temporary rcfile: %w", err)
+	}
+
+	// Use --rcfile to load our custom config and -i to run in interactive mode,
+	// which is necessary for completion to work.
+	cmd := exec.Command("bash", "--rcfile", tmpfile.Name(), "-i")
+	cmd.Dir = e.workspaceDir
+
+	// Get the initial size of the user's terminal.
+	initialSize, err := pty.GetsizeFull(os.Stdout)
+	if err != nil {
+		os.Remove(tmpfile.Name())
+		return fmt.Errorf("could not get terminal size: %w", err)
+	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
+		os.Remove(tmpfile.Name()) // Clean up on pty start failure.
 		return fmt.Errorf("failed to start interactive pty: %w", err)
+	}
+
+	// Set the PTY's initial size to match the user's terminal.
+	if err := pty.Setsize(ptmx, initialSize); err != nil {
+		ptmx.Close()
+		os.Remove(tmpfile.Name())
+		return fmt.Errorf("could not set pty size: %w", err)
 	}
 
 	e.activePty = ptmx
@@ -87,8 +137,29 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 
 	// This goroutine manages the lifecycle of the interactive session.
 	go func() {
+		// Ensure the temporary rcfile is cleaned up when the shell process exits.
+		defer os.Remove(tmpfile.Name())
 		// Defer closing the channel to ensure it's closed when the goroutine exits.
 		(*e.bus).Publish(config.MainTopic, "mute:shell.interactive.start")
+
+		// --- Resize Handling ---
+		// Get a channel for window resize signals from the flow package.
+		ch := flow.GetWinchListener()
+		go func() {
+			for range *ch { // The loop will exit when the channel is closed.
+				// When a resize signal is received, get the new size from stdout
+				// and apply it to the PTY.
+				e.ptyMutex.Lock()
+				if e.activePty != nil {
+					if err := pty.InheritSize(os.Stdout, e.activePty); err != nil {
+						log.Printf("Error resizing PTY: %v", err)
+					}
+				}
+				e.ptyMutex.Unlock()
+			}
+		}()
+		// When this goroutine exits, unregister the listener.
+		defer flow.StopWinchListener(ch)
 
 		// Create a pipe. The pty output will be written to the pipe's writer.
 		// A goroutine will read from the pipe's reader and send to the channel.
