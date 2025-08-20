@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/asaskevich/EventBus"
@@ -71,7 +72,7 @@ Analyze the video thoroughly to provide a rich and informative response.`
 			Properties: map[string]*genai.Schema{
 				"url": {
 					Type:        genai.TypeString,
-					Description: "The full URL of the YouTube video to analyze.",
+					Description: "The full, URL-encoded URL of the YouTube video to analyze.",
 				},
 			},
 			Required: []string{"url"},
@@ -117,23 +118,31 @@ func (a *YoutubeAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse 
 }
 
 func (a *YoutubeAgent) handleYoutubeAnalysisTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	url, urlOK := call.Args["url"].(string)
-	if !urlOK || url == "" {
+	rawURL, urlOK := call.Args["url"].(string)
+	if !urlOK || rawURL == "" {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
+	}
+
+	// Decode the URL in case it's URL-encoded by the model.
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		// If decoding fails, it might not have been encoded. Use the raw URL but log a warning.
+		a.Printf("WARNING: could not decode YouTube URL '%s', using it as is. Error: %v", rawURL, err)
+		decodedURL = rawURL
 	}
 
 	// Start the long-running analysis in a goroutine.
 	go func() {
-		a.Printf("Starting background analysis for YouTube URL: %s", url)
+		a.Printf("Starting background analysis for YouTube URL: %s", decodedURL)
 		query := "Please analyze the provided video and generate a comprehensive report based on your instructions."
-		resultText, processErr := a.Agent.Process(query, genai.NewPartFromURI(url, "video/mp4"))
+		resultText, processErr := a.Agent.Process(query, genai.NewPartFromURI(decodedURL, "video/mp4"))
 
 		var finalResponse *genai.FunctionResponse
 		if processErr != nil {
 			a.Printf("ERROR: YouTube video processing failed: %v", processErr)
 			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("YouTube video processing failed: %w", processErr))
 		} else {
-			a.Printf("YouTube video analysis successful for url: '%s'", url)
+			a.Printf("YouTube video analysis successful for url: '%s'", decodedURL)
 			finalResponse = a.CreateFunctionResponse(call, map[string]any{"result": resultText}, nil)
 		}
 		(*a.bus).Publish(config.AgentTopic, finalResponse)
