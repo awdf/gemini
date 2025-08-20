@@ -266,6 +266,15 @@ func (f *Formatter) Println(text string, color ...string) {
 	}
 }
 
+// Println prints a line with an optional prefix color.
+func (f *Formatter) PrintNl(text string, color ...string) {
+	if len(color) > 0 {
+		fmt.Printf("\r\n%s%s%s\033[K\r\n", color[0], text, ColorReset)
+	} else {
+		fmt.Printf("\r\n%s\033[K\r\n", text)
+	}
+}
+
 // Reset prints the ANSI reset code and a newline.
 func (f *Formatter) Reset() {
 	fmt.Print(ColorReset + "\r\n")

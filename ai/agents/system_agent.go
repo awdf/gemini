@@ -108,6 +108,11 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		}
 		return a.handleInteractiveShell(call)
 	case "get_secret_from_user":
+		// This tool is only useful in system mode where the terminal is raw.
+		if config.C.Mode != inout.System {
+			err := fmt.Errorf("the 'get_secret_from_user' tool requires the user to be in 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
+			return a.CreateFunctionResponse(call, nil, err)
+		}
 		// Triggered critical secure flow
 		return a.handleGetSecretFromUser(call)
 	default:

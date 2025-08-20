@@ -673,7 +673,7 @@ func (l *LiveAI) handleResponses() {
 			l.cli.ReceiveShellPause(inout.ShellPauseStop)
 			log.Println("Live session setup complete.")
 		case msg.ServerContent != nil:
-			l.processTranscript(msg.ServerContent.InputTranscription, &inTranscript, "\nTranscript:")
+			l.processTranscript(msg.ServerContent.InputTranscription, &inTranscript, "Transcript:")
 			l.processTranscript(msg.ServerContent.OutputTranscription, &outTranscript, "")
 
 			if msg.ServerContent.ModelTurn != nil {
@@ -687,7 +687,7 @@ func (l *LiveAI) handleResponses() {
 						// Usuely transcript clear screen.
 						l.formatter.Clear()
 					}
-					l.formatter.Println("\nAnswer:", inout.ColorDarkCyan)
+					l.formatter.PrintNl("Answer:", inout.ColorDarkCyan)
 				}
 				// Do on each turn for text or voice data
 				l.processModelTurnParts(msg.ServerContent.ModelTurn.Parts)
@@ -782,7 +782,7 @@ func (l *LiveAI) processTranscript(transcript *genai.Transcription, inProgress *
 		*inProgress = true
 		if label != "" {
 			l.formatter.Clear()
-			l.formatter.Println(fmt.Sprintf("\n%s", label), inout.ColorDarkCyan)
+			l.formatter.PrintNl(fmt.Sprintf("\n%s", label), inout.ColorDarkCyan)
 		}
 	}
 
@@ -818,7 +818,7 @@ func (l *LiveAI) printGroundingChunks(chunks []*genai.GroundingChunk) {
 	if len(chunks) == 0 {
 		return
 	}
-	l.formatter.Println("\nSources:", inout.ColorDarkYellow)
+	l.formatter.PrintNl("Sources:", inout.ColorDarkYellow)
 	for i, chunk := range chunks {
 		// Perform nil checks for safety
 		if chunk == nil || chunk.Web == nil {
