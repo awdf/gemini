@@ -26,12 +26,36 @@ import (
 	"gemini/vad"
 )
 
-type StreamType string
+type StreamType int
 
 const (
-	AudioStream StreamType = "audio" // A real-time audio stream from VAD.
-	ShellStream StreamType = "shell" // A logical stream of shell command outputs.
+	None        StreamType = 0
+	AudioStream StreamType = 1 << iota // 1
+	ShellStream                        // 2
+	VideoStream                        // 4
+	All         = AudioStream | ShellStream | VideoStream
 )
+
+// String provides a human-readable representation of the StreamType,
+// handling single and combined flags.
+func (s StreamType) String() string {
+	if s == None {
+		return "None"
+	}
+
+	var parts []string
+	if s&AudioStream != 0 {
+		parts = append(parts, "Audio")
+	}
+	if s&ShellStream != 0 {
+		parts = append(parts, "Shell")
+	}
+	if s&VideoStream != 0 {
+		parts = append(parts, "Video")
+	}
+
+	return strings.Join(parts, "|")
+}
 
 type LiveAI struct {
 	ctx              context.Context
@@ -49,9 +73,8 @@ type LiveAI struct {
 	imageBuffer      *images.ScreenshotBuffer
 	cli              *inout.CLI
 	toolset          *genai.Tool
-	isStreaming      bool
 	streamPlayer     *audio.PCMStreamPlayer
-	activityType     StreamType
+	activities       StreamType
 	mode             string
 	sessionClosed    chan struct{}
 	resumptionHandle string
@@ -128,8 +151,7 @@ func NewLiveSink(
 		streamPlayer:     streamPlayer,
 		toolset:          toolset,
 		cli:              cli,
-		isStreaming:      false,
-		activityType:     "", // Can be AudioStream, ShellStream, or empty.
+		activities:       None,
 		mode:             config.C.Mode,
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
 		resumptionHandle: "",
@@ -137,6 +159,42 @@ func NewLiveSink(
 		vadDisabled:      config.C.VAD.DisableNativeVAD,
 		Online:           false,
 	}
+}
+
+// startActivity adds an activity flag and notifies the model if it's the first one.
+func (l *LiveAI) startActivity(activity StreamType) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// If this is the first activity starting, notify the model.
+	if l.activities == None {
+		l.notifyActivityStart(activity)
+	}
+	l.activities |= activity
+}
+
+// stopActivity removes an activity flag and notifies the model if it's the last one.
+func (l *LiveAI) stopActivity(activity StreamType) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.activities &= ^activity
+
+	// If this was the last activity, signal the end of the entire turn.
+	if l.activities == None {
+		l.notifyActivityEnd(activity)
+	} else {
+		log.Printf("Live can not stop activity. Exists another activity: %v", l.activities)
+	}
+}
+
+func (l *LiveAI) isActive(activity StreamType) bool {
+	locked := l.mu.TryLock()
+	defer func() {
+		if locked {
+			l.mu.Unlock()
+		}
+	}()
+	return l.activities&activity != None
 }
 
 func (l *LiveAI) OpenSession() {
@@ -349,6 +407,8 @@ func (l *LiveAI) Run() {
 	helpers.Verify((*l.bus).Subscribe(config.AITopic, l.handleEvents))
 	helpers.Verify((*l.bus).SubscribeAsync(config.AgentTopic, l.handleAgentToolResponse, false))
 
+	// Block system mode output for case when in config set as default mode
+	l.cli.ReceiveShellPause(inout.ShellPauseStart)
 	// Initialize first session with Model
 	l.OpenSession()
 	// Start a dedicated goroutine to handle all incoming Model messages.
@@ -396,11 +456,6 @@ func (l *LiveAI) Run() {
 			l.CloseSession() // Clean up the old session object.
 			l.OpenSession()  // Re-establish the session.
 			log.Println("Live session re-established.")
-			// Flush any shell output that was buffered in the CLI while offline
-			// between session switches. If no active shell, return empty.
-			if output := l.cli.ReceiveShellOutput(); output != "" {
-				l.handleShellOutput(output)
-			}
 		case cmd, ok := <-l.controlChan:
 			// Te only one place where we accumulate user voice control interactions
 			if !ok {
@@ -409,8 +464,7 @@ func (l *LiveAI) Run() {
 			}
 			switch {
 			case strings.HasPrefix(cmd, vad.MarkerStart):
-				l.mu.Lock()
-				if l.isStreaming {
+				if l.isActive(AudioStream) {
 					l.mu.Unlock()
 					log.Println("WARNING: VAD start detected while an audio stream is already active. Ignoring.")
 					continue
@@ -419,14 +473,7 @@ func (l *LiveAI) Run() {
 				// If an activity is not already in progress, this voice input will start a new audio activity.
 				// If a text activity is in progress, this voice input will be streamed as part of it,
 				// and the subsequent VAD Stop will terminate the entire turn.
-				l.isStreaming = true
-				if l.activityType == "" {
-					l.activityType = AudioStream
-					l.mu.Unlock()                      // Unlock before calling notifier to avoid holding lock during I/O
-					l.notifyActivityStart(AudioStream) // This is a pure audio stream activity.
-				} else { // activityType is ShellStream
-					l.mu.Unlock() // No state change needed, just start streaming audio.
-				}
+				l.startActivity(AudioStream)
 
 				// The native audio models perform their own VAD (automatic activity detection).
 				// Sending explicit ActivityStart/ActivityEnd signals conflicts with this,
@@ -462,19 +509,12 @@ func (l *LiveAI) Run() {
 				// before we mark the stream and activity as inactive.
 				l.pullAndSendSamples()
 
-				l.mu.Lock()
-				activityToEnd := l.activityType
 				// The user's turn is over, whether it was a pure audio turn or a text turn
 				// concluded by voice. Reset the state for the next turn.
-				l.activityType = ""
-				l.isStreaming = false
-				l.mu.Unlock()
-
 				// If an activity was in progress, end it. We always send AudioStream type because
 				// a VAD stop means audio was just sent, which needs to be terminated correctly.
-				if activityToEnd != "" {
-					l.notifyActivityEnd(AudioStream)
-				}
+				l.stopActivity(AudioStream)
+
 				// The image buffer is now released upon GenerationComplete, not here.
 			default:
 				log.Printf("WARNING: received unknown control command: %s", cmd)
@@ -486,14 +526,10 @@ func (l *LiveAI) Run() {
 				continue
 			}
 
-			l.mu.RLock()
-			currentActivity := l.activityType
-			l.mu.RUnlock()
-
 			// If we are in system mode and there's an open shell activity,
 			// this text prompt is the user's question about that activity.
 			// We send it and then end the activity to trigger a model response.
-			if l.mode == inout.System && currentActivity == ShellStream {
+			if l.mode == inout.System && l.isActive(ShellStream) {
 				log.Println("Live AI: Finalizing shell activity...")
 				// CLI provide a non-empty user prompt, send it as the final question.
 				log.Println("Live AI: Sending user system prompt...")
@@ -501,9 +537,7 @@ func (l *LiveAI) Run() {
 
 				// In case of voice activity we will wait until it ends and finalize turn.
 				// Otherwise, just end the activity to get a response to both the shell output and user prompt.
-				if l.endShellActivityIfNeeded() {
-					l.notifyActivityEnd(ShellStream)
-				}
+				l.stopActivity(ShellStream)
 			} else {
 				// This is a regular, self-contained text prompt. Ignore if empty.
 				if textCmd != "" {
@@ -635,6 +669,8 @@ func (l *LiveAI) handleResponses() {
 		// Process the content of the message using a switch for clarity.
 		switch {
 		case msg.SetupComplete != nil:
+			// Resume shell output polling now that the new session is ready.
+			l.cli.ReceiveShellPause(inout.ShellPauseStop)
 			log.Println("Live session setup complete.")
 		case msg.ServerContent != nil:
 			l.processTranscript(msg.ServerContent.InputTranscription, &inTranscript, "\nTranscript:")
@@ -643,7 +679,7 @@ func (l *LiveAI) handleResponses() {
 			if msg.ServerContent.ModelTurn != nil {
 				if !inModelTurn {
 					// Do once per content block
-					log.Println("Live stream generation started.")
+					log.Println("Live model stream generation started.")
 					inModelTurn = true
 					turnGroundingChunks = nil
 					(*l.bus).Publish(config.MainTopic, "mute:ai.handleResponses")
@@ -664,7 +700,7 @@ func (l *LiveAI) handleResponses() {
 
 			if msg.ServerContent.GenerationComplete {
 				// Do once per content block
-				log.Println("Live stream generation complete.")
+				log.Println("Live model stream generation complete.")
 				l.printGroundingChunks(turnGroundingChunks)
 				inTranscript = false
 				outTranscript = false
@@ -693,10 +729,10 @@ func (l *LiveAI) handleResponses() {
 		case msg.GoAway != nil:
 			// The loop will terminate in the next iteration due to the connection closing.
 			log.Printf("Live stream session GoAway received: %+v", msg.GoAway.TimeLeft)
+			// Pause shell output polling to prevent sending data to a closed session.
+			l.cli.ReceiveShellPause(inout.ShellPauseStart)
 			// If a shell activity is in progress, end it gracefully before closing the session.
-			if l.endShellActivityIfNeeded() {
-				l.notifyActivityEnd(ShellStream)
-			}
+			l.stopActivity(ShellStream)
 
 			if generation {
 				needToGo = true
@@ -819,12 +855,11 @@ func (l *LiveAI) handleEvents(event string) {
 			log.Printf("LiveAI mode set to: %s", payload)
 			// Model confused if not notified
 			if payload == inout.System {
+				l.startActivity(ShellStream)
 				l.sendLiveMessage("System Notification: You have entered system mode. You can now use shell commands via the 'submit_shell_command' tool.")
 			} else if previousMode == inout.System {
 				l.sendLiveMessage("System Notification: You have left system mode. Shell commands are no longer available.")
-				if l.endShellActivityIfNeeded() {
-					l.notifyActivityEnd(ShellStream)
-				}
+				l.stopActivity(ShellStream)
 			}
 		}
 	case "restart_session":
@@ -858,40 +893,9 @@ func (l *LiveAI) handleShellOutput(output string) {
 	}
 
 	// If this is the first piece of shell output in a sequence, start a new user activity turn.
-	if l.startShellActivityIfNeeded() {
-		l.notifyActivityStart(ShellStream)
-	}
-
+	l.startActivity(ShellStream)
 	// Send the buffered shell output as part of the ongoing user turn.
 	l.sendLiveMessage(fmt.Sprintf("User shell output: [%s]", trimmedContent))
-}
-
-// startShellActivityIfNeeded checks if a shell activity is running and starts one if not.
-// It returns true if a new activity was started. This method is safe for concurrent use.
-func (l *LiveAI) startShellActivityIfNeeded() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	// If no activity is in progress, start a new shell activity.
-	if l.activityType == "" {
-		l.activityType = ShellStream
-		return true
-	}
-	// An activity is already in progress (either Shell or Audio), so do nothing.
-	return false
-}
-
-// endShellActivityIfNeeded checks if a shell activity is running and ends it if so.
-// It returns true if an activity was ended. This method is safe for concurrent use.
-func (l *LiveAI) endShellActivityIfNeeded() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	// If a shell activity is in progress, end it.
-	if l.activityType == ShellStream {
-		l.activityType = "" // Reset for the next sequence.
-		return true
-	}
-	// No shell activity was in progress.
-	return false
 }
 
 // sendInitialFiles reads files from the cache directory and sends them as the first
@@ -1056,11 +1060,8 @@ func (l *LiveAI) pullAndSendSamples() {
 			break // No more samples in queue.
 		}
 
-		l.mu.RLock()
-		isStreaming := l.isStreaming
-		l.mu.RUnlock()
 		// Only send audio to the API if we are in a streaming state (between VAD start/stop).
-		if !isStreaming {
+		if !l.isActive(AudioStream) {
 			continue // Discard the sample if we're not in an audio activity.
 		}
 
@@ -1091,9 +1092,7 @@ func (l *LiveAI) pullAndSendSamples() {
 			if err != nil {
 				log.Printf("ERROR: failed to send realtime audio input: %v", err)
 				// Stop streaming on error to prevent flooding with more errors.
-				l.mu.Lock()
-				l.isStreaming = false
-				l.mu.Unlock()
+				l.stopActivity(AudioStream)
 			}
 			buffer.Unmap()
 		}
@@ -1116,17 +1115,17 @@ func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 		return
 	}
 
-	var input genai.LiveRealtimeInput
-	switch streamType {
-	case AudioStream, ShellStream:
-		// For both audio and text streams, when manual VAD is used, we explicitly
-		// signal the start of a user's turn.
-		log.Printf("Live stream activity started for %s stream", streamType)
-		input.ActivityStart = &genai.ActivityStart{}
-	default:
+	// Use a guard clause to handle unsupported stream types.
+	if streamType != AudioStream && streamType != ShellStream {
 		log.Printf("WARNING: unhandled stream type in notifyActivityStart: %s", streamType)
 		return
 	}
+
+	// For both audio and text streams, when manual VAD is used, we explicitly
+	// signal the start of a user's turn.
+	log.Printf("Live stream activity started for %s stream", streamType)
+	input := genai.LiveRealtimeInput{ActivityStart: &genai.ActivityStart{}}
+
 	l.writeMu.Lock()
 	err := l.session.SendRealtimeInput(input)
 	l.writeMu.Unlock()
@@ -1152,8 +1151,10 @@ func (l *LiveAI) notifyActivityEnd(streamType StreamType) {
 	}
 
 	// For audio streams, we must first signal that the audio part of the turn is over.
-	if streamType == AudioStream {
-		log.Println("Live stream ending audio stream.")
+	// Use a bitwise AND to check if the AudioStream flag is present, which is more
+	// robust for handling combined stream types (like stopping 'All' activities).
+	if l.isActive(AudioStream) {
+		log.Println("Live stream audio stream ended.")
 		l.writeMu.Lock()
 		err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
 			AudioStreamEnd: true,

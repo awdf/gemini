@@ -26,6 +26,14 @@ const (
 	System    = "system" // System CLI integration mode. Allow execute system commands and stream output to AI
 )
 
+// ShellPauseState defines the states for pausing shell output.
+type ShellPauseState string
+
+const (
+	ShellPauseStart ShellPauseState = "start"
+	ShellPauseStop  ShellPauseState = "stop"
+)
+
 // promptRequest is used to pass a text prompt and receive a string response
 // between the blocking PromptForInput method and the non-blocking Run loop.
 type promptRequest struct {
@@ -62,6 +70,7 @@ type CLI struct {
 	shellBuffer         strings.Builder
 	shellBufferMu       sync.Mutex
 	systemInputState    int
+	shellPaused         bool
 	systemCommandBuffer bytes.Buffer
 	originalTermState   *term.State
 }
@@ -109,6 +118,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		previousMode:        "",
 		promptChan:          make(chan promptRequest),
 		systemInputState:    stateProxyingToShell,
+		shellPaused:         false,
 	}
 }
 
@@ -122,13 +132,32 @@ func (c *CLI) ReceiveShellOutput() string {
 	c.shellBufferMu.Lock()
 	defer c.shellBufferMu.Unlock()
 
-	if c.shellBuffer.Len() == 0 {
+	if c.shellPaused || c.shellBuffer.Len() == 0 {
 		return ""
 	}
 
 	content := c.shellBuffer.String()
 	c.shellBuffer.Reset()
 	return content
+}
+
+// ReceiveShellPause starts or stops the polling of shell output.
+// This is used to prevent sending shell output to the AI when it's in a
+// state where it cannot process it (e.g., during a session restart).
+func (c *CLI) ReceiveShellPause(state ShellPauseState) {
+	c.shellBufferMu.Lock()
+	defer c.shellBufferMu.Unlock()
+
+	switch state {
+	case ShellPauseStart:
+		c.shellPaused = true
+		log.Println("CLI system mode shell output paused")
+	case ShellPauseStop:
+		c.shellPaused = false
+		log.Println("CLI system mode shell output released")
+	default:
+		log.Printf("Unknown shell pause state: %s", state)
+	}
 }
 
 // PromptForInput displays a prompt to the user and waits for a line of text input.
@@ -298,23 +327,28 @@ func (c *CLI) Run() {
 	helpers.Verify((*c.bus).SubscribeAsync(config.MainTopic, func(event string) {
 		config.DebugPrintf("CLI received event: %s\n", event)
 
+		// The shell_pause event is now handled by a direct call from LiveAI,
+		// so it is no longer processed here. We parse other events.
+		parts := strings.SplitN(event, ":", 2)
+		command := parts[0]
+
 		c.modeMu.Lock()
 		defer c.modeMu.Unlock()
-		switch {
-		case strings.HasPrefix(event, "mute:"): // Normal flow
+		switch command {
+		case "mute": // Normal flow
 			c.muted = true
-		case strings.HasPrefix(event, "draw:"): // Normal flow
+		case "draw": // Normal flow
 			c.muted = false // The prompt is drawn by the main loop after this.
 			c.drawLocked()  // Next prompts
-		case strings.HasPrefix(event, "block:"): // Critical flow blocking
+		case "block": // Critical flow blocking
 			c.ready = false
 			c.muted = true
-		case strings.HasPrefix(event, "ready:"): // Critical flow unblocking
+		case "ready": // Critical flow unblocking
 			c.ready = true
 			c.muted = false
 			c.drawLocked() // Initial prompt
 		default:
-			config.DebugPrintf("CLI drop event: %s\n", event)
+			config.DebugPrintf("CLI drop event: %s", event)
 		}
 	}, false))
 
@@ -466,7 +500,12 @@ func (c *CLI) command(cmd string) {
 
 	log.Println("CLI command received:", cmd)
 	parts := strings.Fields(cmd)
-	commandName := parts[0]
+	var commandName string
+	if len(parts) == 0 {
+		commandName = ""
+	} else {
+		commandName = parts[0]
+	}
 
 	// The /prompt command is only active in system mode.
 	if c.mode == System && commandName == "prompt" {

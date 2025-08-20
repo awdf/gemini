@@ -540,3 +540,48 @@ func TestCreatePartFromFile(t *testing.T) {
 		}, "should panic when calling upload on a nil client")
 	})
 }
+
+func TestStreamType_String(t *testing.T) {
+	testCases := []struct {
+		name     string
+		st       StreamType
+		expected string
+	}{
+		{
+			name:     "None",
+			st:       None,
+			expected: "None",
+		},
+		{
+			name:     "AudioStream",
+			st:       AudioStream,
+			expected: "AudioStream",
+		},
+		{
+			name:     "ShellStream",
+			st:       ShellStream,
+			expected: "ShellStream",
+		},
+		{
+			name:     "VideoStream",
+			st:       VideoStream,
+			expected: "VideoStream",
+		},
+		{
+			name:     "Audio and Shell",
+			st:       AudioStream | ShellStream,
+			expected: "AudioStream|ShellStream",
+		},
+		{
+			name:     "All",
+			st:       All,
+			expected: "AudioStream|ShellStream|VideoStream",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, tc.st.String())
+		})
+	}
+}
