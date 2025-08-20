@@ -73,12 +73,13 @@ type CLI struct {
 	shellPaused         bool
 	systemCommandBuffer bytes.Buffer
 	originalTermState   *term.State
+	systemAtLineStart   bool
 }
 
 const (
 	// IMPORTANT: On such terminals like KDE Konsole move down is not works without reserved next line.
 	// Sequence: reserve next line for soundbar, move up, print, clear line
-	promptPatern = "\n\033[A%s>\033[K"
+	promptPatern = "\n\033[A\033[1;91m%s\033[0m>\033[K"
 	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
 	soundbarPatern = "\0337\r\033[B\033[K[%s%s]\0338"
 )
@@ -117,6 +118,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		mode:                config.C.Mode,
 		previousMode:        "",
 		promptChan:          make(chan promptRequest),
+		systemAtLineStart:   true,
 		systemInputState:    stateProxyingToShell,
 		shellPaused:         false,
 	}
@@ -262,13 +264,23 @@ func (c *CLI) handleSystemModeInput(inputBytes []byte) {
 	for _, b := range inputBytes {
 		// State: Proxying all input directly to the underlying shell.
 		if c.systemInputState == stateProxyingToShell {
-			if b == '/' {
-				// Detected the start of a CLI command. Switch states.
+			// Only switch to command reading state if '/' is the first character on a new line.
+			if b == '/' && c.systemAtLineStart {
+				// Detected the start of a valid CLI command. Switch states.
 				c.systemInputState = stateReadingCommand
 				c.systemCommandBuffer.Reset()
-				fmt.Print("/") // Echo the slash to the user.
+				fmt.Print("/")              // Echo the slash to the user.
+				c.systemAtLineStart = false // We've started typing the command.
 				continue
 			}
+
+			// Any other character means we are no longer at the start of a line.
+			if b != '\r' && b != '\n' {
+				c.systemAtLineStart = false
+			} else {
+				c.systemAtLineStart = true // Enter marks the end of a line, so the next input will be at the start.
+			}
+
 			// Proxy the byte to the interactive shell.
 			if err := desktop.C.SendToShell(string(b)); err != nil {
 				log.Printf("Error sending input to system shell: %v", err)
@@ -284,6 +296,7 @@ func (c *CLI) handleSystemModeInput(inputBytes []byte) {
 			commandStr := c.systemCommandBuffer.String()
 			c.systemCommandBuffer.Reset()
 			c.systemInputState = stateProxyingToShell // Return to proxying.
+			c.systemAtLineStart = true                // Command finished, next input is at line start.
 			if commandStr != "" {
 				c.command(commandStr)
 			} else {
@@ -299,6 +312,7 @@ func (c *CLI) handleSystemModeInput(inputBytes []byte) {
 			fmt.Println("^C")
 			c.systemCommandBuffer.Reset()
 			c.systemInputState = stateProxyingToShell
+			c.systemAtLineStart = true
 			// Redraw to get a fresh shell prompt.
 			c.draw()
 		default:
@@ -448,13 +462,17 @@ func (c *CLI) Run() {
 			// In "cooked" mode, the terminal driver handles echoing, backspace, etc.
 			// We receive the final, edited text. We just need to process it.
 			// The TrimSpace handles any leading/trailing newlines from the input.
-			trimmedLine := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmedLine, "/") {
+			fullLine := strings.TrimSpace(line)
+			parts := strings.Fields(fullLine)
+
+			if len(parts) > 0 && strings.HasPrefix(parts[0], "/") {
 				// It's a command for the CLI.
-				c.command(trimmedLine[1:])
-			} else if trimmedLine != "" {
+				// Reconstruct the command string without the leading '/' on the first part.
+				parts[0] = strings.TrimPrefix(parts[0], "/")
+				c.command(strings.Join(parts, " "))
+			} else if fullLine != "" {
 				// It's a prompt for the AI.
-				c.cmdChan <- trimmedLine
+				c.cmdChan <- fullLine
 			} else {
 				// The buffer contained only whitespace. Redraw the prompt.
 				c.draw()
@@ -498,26 +516,14 @@ func (c *CLI) command(cmd string) {
 	c.modeMu.Lock()
 	defer c.modeMu.Unlock()
 
+	var commandName string
 	log.Println("CLI command received:", cmd)
 	parts := strings.Fields(cmd)
-	var commandName string
+
 	if len(parts) == 0 {
 		commandName = ""
 	} else {
 		commandName = parts[0]
-	}
-
-	// The /prompt command is only active in system mode.
-	if c.mode == System && commandName == "prompt" {
-		promptText := strings.TrimSpace(strings.Join(parts[1:], " "))
-		if promptText != "" {
-			c.cmdChan <- promptText
-			// Expected model output, so we do not activate new prompt
-		} else {
-			fmt.Println("Usage: /prompt <text for AI>")
-			c.draw()
-		}
-		return // Command handled, exit the function.
 	}
 
 	switch commandName {
@@ -603,22 +609,35 @@ func (c *CLI) command(cmd string) {
 				(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", value))
 			}
 		}
+	case "prompt":
+		// The /prompt command is only active in system mode.
+		if c.mode == System {
+			promptText := strings.TrimSpace(strings.Join(parts[1:], " "))
+			if promptText != "" {
+				c.cmdChan <- promptText
+				// Expected model output, so we do not activate new prompt
+			} else {
+				fmt.Println("Usage: /prompt <text for AI>")
+				c.draw()
+			}
+		}
+		return // Wait for model answer, no prompt draw need
 	case "help":
-		fmt.Println("Available commands:")
-		fmt.Printf("/mode <name>		- Set AI mode (%s, %s, %s, %s)\n", Prompt, System, VoiceMode, ImageMode)
-		fmt.Println("/prompt <text>		- Send a text prompt to the AI (only in 'system' mode)")
-		fmt.Println("/debug      		- Toggle debug mode")
-		fmt.Println("/voice      		- Toggle voice responses")
-		fmt.Println("/tools      		- Toggle AI tools (e.g., Google Search)")
-		fmt.Println("/transcript 		- Toggle separate transcription step for voice chat")
-		fmt.Println("/help       		- Display this help message")
-		fmt.Println("/exit       		- Exit the application")
-		fmt.Println("\nPost AI Commands:")
-		fmt.Printf("/thinking <level> 	- Set AI thinking budget (%s, %s, %s, %s, %s)\n", dynamic, none, low, medium, high)
-		fmt.Println("/thoughts   		- Toggle AI thoughts visibility")
-		fmt.Println("/cache      		- Toggle AI caching")
-		fmt.Println("/save       		- Save conversation history to history.txt")
-		fmt.Println("/history    		- Toggle including voice prompts in conversation history")
+		fmt.Println("Available commands:\r")
+		fmt.Printf("/mode <name>		- Set AI mode (%s, %s, %s, %s)\r\n", Prompt, System, VoiceMode, ImageMode)
+		fmt.Println("/prompt <text>		- Send a text prompt to the AI (only in 'system' mode)\r")
+		fmt.Println("/debug      		- Toggle debug mode\r")
+		fmt.Println("/voice      		- Toggle voice responses\r")
+		fmt.Println("/tools      		- Toggle AI tools (e.g., Google Search)\r")
+		fmt.Println("/transcript 		- Toggle separate transcription step for voice chat\r")
+		fmt.Println("/help       		- Display this help message\r")
+		fmt.Println("/exit       		- Exit the application\r")
+		fmt.Println("\nPost AI Commands:\r")
+		fmt.Printf("/thinking <level> 	- Set AI thinking budget (%s, %s, %s, %s, %s)\r\n", dynamic, none, low, medium, high)
+		fmt.Println("/thoughts   		- Toggle AI thoughts visibility\r")
+		fmt.Println("/cache      		- Toggle AI caching\r")
+		fmt.Println("/save       		- Save conversation history to history.txt\r")
+		fmt.Println("/history    		- Toggle including voice prompts in conversation history\r")
 	default:
 		fmt.Printf("Unknown command: %s\n", commandName)
 	}

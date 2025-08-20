@@ -74,12 +74,12 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 		return fmt.Errorf("could not get current user to find .bashrc: %w", err)
 	}
 	userBashrcPath := filepath.Join(usr.HomeDir, ".bashrc")
-
+	// ':' and '$' is default console text
 	// - \[\033[1;91m\]: Start bold (1) and light red (91) color for "system:".
 	// - \[\033[1;94m\]: Start bold (1) and light blue (94) color for the directory.
 	// - \[\033[0m\]: Reset color to default.
 	// The \[ and \] are crucial to tell bash that the color codes are non-printing characters.
-	ps1 := "PS1='\\[\033[1;91m\\]system:\\[\033[0m\\]\\[\033[1;94m\\]\\w\\[\033[0m\\]\\$ '"
+	ps1 := "PS1='\\[\033[1;91m\\]system\\[\033[0m\\]:\\[\033[1;94m\\]\\w\\[\033[0m\\]\\$ '"
 	rcFileContent := fmt.Sprintf(`
 # Source the user's .bashrc to load their aliases, functions, and custom completions.
 if [ -f %q ]; then
