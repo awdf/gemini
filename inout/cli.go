@@ -587,9 +587,6 @@ func (c *CLI) command(cmd string) {
 
 	// Internal commands
 	switch commandName {
-	case "exit":
-		// The /exit command always terminates the application.
-		flow.Quit()
 	case "save":
 		(*c.bus).Publish(config.AITopic, "save:history.txt")
 		fmt.Println("Conversation history save requested to history.txt.")
@@ -688,6 +685,11 @@ func (c *CLI) command(cmd string) {
 			}
 		}
 		return // Wait for model answer, no prompt draw need
+	case "exit":
+		// The /exit command always terminates the application.
+		flow.Quit()
+		// No need in new prompt, works done
+		return
 	case "help":
 		fmt.Println("Available commands:\r")
 		fmt.Printf("/mode <name>		- Set AI mode (%s, %s, %s, %s)\r\n", Prompt, System, VoiceMode, ImageMode)
