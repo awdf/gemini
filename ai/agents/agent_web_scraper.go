@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/asaskevich/EventBus"
@@ -49,7 +51,8 @@ To do this, you have access to the following tools. Use them strategically:
 - **analyseWebPage**: Use this for a fast, comprehensive text-based analysis of a webpage. It's good for summarizing content and understanding the page's purpose.
 - **getRawHTML**: Use this when you need to inspect the raw source code of a page, for example, to find CSS files or specific meta tags.
 - **getRenderedContent**: Use this for modern, JavaScript-heavy websites where content is loaded dynamically. It provides the final HTML after all scripts have run.
-- **getRenderedScreenshot**: This is your most powerful tool for visual analysis. When a user asks about the **layout, style, colors, or visual appearance** of a page, you MUST use this tool to get a screenshot. This will allow you to "see" the page and answer questions about its design accurately.`
+- **getRenderedScreenshot**: This is your most powerful tool for visual analysis. When a user asks about the **layout, style, colors, or visual appearance** of a page, you MUST use this tool to get a screenshot. This will allow you to "see" the page and answer questions about its design accurately.
+- **downloadWebFile**: Use this to download a file from a URL directly into the workspace. It's like using the 'wget' command.`
 
 	scheme := genai.Schema{
 		Type:        genai.TypeObject,
@@ -124,7 +127,26 @@ To do this, you have access to the following tools. Use them strategically:
 		Behavior: genai.BehaviorNonBlocking,
 	}
 
-	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc, &getRenderedScreenshotFunc)
+	downloadWebFileFunc := genai.FunctionDeclaration{
+		Name:        "downloadWebFile",
+		Description: "WEB BROWSER: Downloads a file from a given URL and saves it to the workspace. Similar to the 'wget' command.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"url": {
+					Type:        genai.TypeString,
+					Description: "The full, URL-encoded URL of the file to download.",
+				},
+				"filename": {
+					Type:        genai.TypeString,
+					Description: "Optional. The name to save the file as in the workspace. If not provided, the name will be derived from the URL.",
+				},
+			},
+			Required: []string{"url"},
+		},
+		Behavior: genai.BehaviorBlocking,
+	}
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc, &getRenderedScreenshotFunc, &downloadWebFileFunc)
 
 	agentConfig := AgentConfig{
 		Name:              AgentWebScraperName,
@@ -159,6 +181,8 @@ func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespon
 		return a.handleGetRenderedContentTool(call)
 	case "getRenderedScreenshot":
 		return a.handleGetRenderedScreenshotTool(call)
+	case "downloadWebFile":
+		return a.handleDownloadWebFileTool(call)
 	default:
 		return a.Agent.Handle(call)
 	}
@@ -334,4 +358,72 @@ func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCa
 	// Immediately return the initial response to acknowledge the request.
 	a.Printf("Acknowledging web page screenshot request. Will report back when complete.")
 	return a.CreateFunctionResponse(call, map[string]any{"status": "Web page screenshot capture started."}, nil, true)
+}
+
+func (a *WebScraperAgent) handleDownloadWebFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	// 1. Parse arguments
+	rawURL, urlOK := call.Args["url"].(string)
+	if !urlOK || rawURL == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
+	}
+	filename, _ := call.Args["filename"].(string) // Optional
+
+	// 2. Decode URL
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
+		decodedURL = rawURL
+	}
+
+	// 3. Fetch content
+	resp, err := http.Get(decodedURL)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to fetch URL %s: %w", decodedURL, err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to fetch URL %s: status code %d", decodedURL, resp.StatusCode))
+	}
+
+	// 4. Determine filename
+	if filename == "" {
+		// If no filename is provided, get it from the URL path.
+		parsedURL, err := url.Parse(decodedURL)
+		if err != nil {
+			return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to parse URL for filename: %w", err))
+		}
+		filename = filepath.Base(parsedURL.Path)
+		if filename == "." || filename == "/" {
+			return a.CreateFunctionResponse(call, nil, fmt.Errorf("could not determine filename from URL: %s", decodedURL))
+		}
+	}
+
+	// 5. Get safe path and save file
+	safePath, err := config.GetSafePath(filename)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, err)
+	}
+
+	file, err := os.Create(safePath)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to create file %s: %w", safePath, err))
+	}
+	defer file.Close()
+
+	bytesCopied, err := io.Copy(file, resp.Body)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to write to file %s: %w", safePath, err))
+	}
+
+	// 6. Return response
+	a.Printf("Successfully downloaded %d bytes to %s", bytesCopied, safePath)
+	result := map[string]any{
+		"status":      "file downloaded successfully",
+		"path":        filename, // Return relative path
+		"bytes_saved": bytesCopied,
+	}
+	return a.CreateFunctionResponse(call, result, nil)
 }
