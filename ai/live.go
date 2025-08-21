@@ -584,6 +584,8 @@ func (l *LiveAI) handleAgentToolResponse(response *genai.FunctionResponse) {
 		return
 	}
 
+	l.handleSendContent(response)
+
 	toolInput := genai.LiveToolResponseInput{FunctionResponses: []*genai.FunctionResponse{response}}
 
 	// Lock for writing to the session.
@@ -592,6 +594,35 @@ func (l *LiveAI) handleAgentToolResponse(response *genai.FunctionResponse) {
 	if err := session.SendToolResponse(toolInput); err != nil {
 		log.Printf("ERROR: failed to send delayed tool response: %v", err)
 	}
+}
+
+// handleSendContent checks for and processes the special "send_content" key in a tool response.
+// It sends the content to the live session and removes the key from the response map.
+func (l *LiveAI) handleSendContent(response *genai.FunctionResponse) {
+	if response == nil || response.Response == nil {
+		return
+	}
+
+	content, ok := response.Response["send_content"].(genai.LiveClientContentInput)
+	if !ok {
+		return
+	}
+
+	// Lock for reading the session pointer.
+	l.mu.RLock()
+	session := l.session
+	l.mu.RUnlock()
+
+	if session != nil {
+		l.writeMu.Lock()
+		if err := session.SendClientContent(content); err != nil {
+			// Use a generic log message that fits both sync and async contexts.
+			log.Printf("ERROR: failed to send agent content to session for tool call '%s': %v", response.Name, err)
+		}
+		l.writeMu.Unlock()
+	}
+
+	delete(response.Response, "send_content")
 }
 
 // handleResponses runs in a dedicated goroutine, processing all messages from the server.
@@ -1223,23 +1254,7 @@ func (l *LiveAI) executeToolCalls(request *genai.LiveServerToolCall) []*genai.Fu
 
 		responses = append(responses, response)
 
-		// Post-processing for special agents that need to interact with the session.
-		if response.Response != nil {
-			if content, ok := response.Response["send_content"].(genai.LiveClientContentInput); ok {
-				l.mu.RLock()
-				session := l.session
-				l.mu.RUnlock()
-				if session != nil {
-					l.writeMu.Lock()
-					if err := session.SendClientContent(content); err != nil {
-						log.Printf("ERROR: failed to send agent content to session: %v", err)
-					}
-					l.writeMu.Unlock()
-				}
-				// Remove the special key from the response so it's not sent to the model.
-				delete(response.Response, "send_content")
-			}
-		}
+		l.handleSendContent(response)
 	}
 	return responses
 }

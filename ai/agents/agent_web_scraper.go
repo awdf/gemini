@@ -3,9 +3,13 @@ package agents
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/asaskevich/EventBus"
+	"github.com/chromedp/chromedp"
 	"google.golang.org/genai"
 
 	"gemini/config"
@@ -26,14 +30,26 @@ func init() {
 
 type WebScraperAgent struct {
 	*Agent
+	bus *EventBus.Bus
 }
 
 // NewWebScraperAgent creates a specialized agent for scraping and analyzing web pages.
-func NewWebScraperAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, _ *EventBus.Bus) *WebScraperAgent {
-	systemInstruction := `You are a web page analysis expert with vision capabilities. 
-Your goal is to extract as much meaningful information as possible from the provided web page URL. 
-Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report. 
-Describe important visual elements like images, charts, and the overall page structure in your analysis.`
+func NewWebScraperAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *WebScraperAgent {
+	// This agent is designed for asynchronous, non-blocking operation in LiveAI mode,
+	// which requires the event bus.
+	if bus == nil {
+		return nil
+	}
+	systemInstruction := `You are a web page analysis expert with vision capabilities.
+Your goal is to extract as much meaningful information as possible from the provided web page URL.
+Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report.
+Describe important visual elements like images, charts, and the overall page structure in your analysis.
+
+To do this, you have access to the following tools. Use them strategically:
+- **analyseWebPage**: Use this for a fast, comprehensive text-based analysis of a webpage. It's good for summarizing content and understanding the page's purpose.
+- **getRawHTML**: Use this when you need to inspect the raw source code of a page, for example, to find CSS files or specific meta tags.
+- **getRenderedContent**: Use this for modern, JavaScript-heavy websites where content is loaded dynamically. It provides the final HTML after all scripts have run.
+- **getRenderedScreenshot**: This is your most powerful tool for visual analysis. When a user asks about the **layout, style, colors, or visual appearance** of a page, you MUST use this tool to get a screenshot. This will allow you to "see" the page and answer questions about its design accurately.`
 
 	scheme := genai.Schema{
 		Type:        genai.TypeObject,
@@ -44,22 +60,71 @@ Describe important visual elements like images, charts, and the overall page str
 		Required: []string{"result"},
 	}
 
-	functions := genai.FunctionDeclaration{
-		Name:        "browseWebPage",
+	analyseFunc := genai.FunctionDeclaration{
+		Name:        "analyseWebPage",
 		Description: "WEB BROWSER: Scrapes and provides a comprehensive analysis of the content of a web page URL.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
 				"url": {
 					Type:        genai.TypeString,
-					Description: "The full URL of the web page to analyze.",
+					Description: "The full, URL-encoded URL of the web page to analyze.",
 				},
 			},
 			Required: []string{"url"},
 		},
 		Behavior: genai.BehaviorNonBlocking,
 	}
-	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &functions)
+
+	getRawHTMLFunc := genai.FunctionDeclaration{
+		Name:        "getRawHTML",
+		Description: "WEB BROWSER: Fetches the raw HTML content of a web page URL without any processing or analysis.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"url": {
+					Type:        genai.TypeString,
+					Description: "The full, URL-encoded URL of the web page to fetch.",
+				},
+			},
+			Required: []string{"url"},
+		},
+		Behavior: genai.BehaviorBlocking,
+	}
+
+	getRenderedContentFunc := genai.FunctionDeclaration{
+		Name:        "getRenderedContent",
+		Description: "WEB BROWSER: Fetches the fully rendered HTML content of a web page after JavaScript execution, using a headless browser.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"url": {
+					Type:        genai.TypeString,
+					Description: "The full, URL-encoded URL of the web page to render.",
+				},
+			},
+			Required: []string{"url"},
+		},
+		Behavior: genai.BehaviorNonBlocking,
+	}
+
+	getRenderedScreenshotFunc := genai.FunctionDeclaration{
+		Name:        "getRenderedScreenshot",
+		Description: "WEB BROWSER: Renders a web page using a headless browser and captures a screenshot of the full page. The screenshot is then uploaded to the session context for visual analysis.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"url": {
+					Type:        genai.TypeString,
+					Description: "The full, URL-encoded URL of the web page to capture.",
+				},
+			},
+			Required: []string{"url"},
+		},
+		Behavior: genai.BehaviorNonBlocking,
+	}
+
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc, &getRenderedScreenshotFunc)
 
 	agentConfig := AgentConfig{
 		Name:              AgentWebScraperName,
@@ -72,7 +137,10 @@ Describe important visual elements like images, charts, and the overall page str
 	}
 	baseAgent := NewAgent(ctx, client, agentConfig)
 
-	webScraperAgent := &WebScraperAgent{Agent: baseAgent}
+	webScraperAgent := &WebScraperAgent{
+		Agent: baseAgent,
+		bus:   bus,
+	}
 
 	return webScraperAgent
 }
@@ -83,36 +151,187 @@ func (a *WebScraperAgent) WarmUp() time.Duration {
 
 func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
-	case "browseWebPage":
-		return a.handleWebScraperTool(call)
+	case "analyseWebPage":
+		return a.handleAnalyseWebPageTool(call)
+	case "getRawHTML":
+		return a.handleGetRawHTMLTool(call)
+	case "getRenderedContent":
+		return a.handleGetRenderedContentTool(call)
+	case "getRenderedScreenshot":
+		return a.handleGetRenderedScreenshotTool(call)
 	default:
 		return a.Agent.Handle(call)
 	}
 }
 
-func (a *WebScraperAgent) handleWebScraperTool(call *genai.FunctionCall) *genai.FunctionResponse {
-	a.Printf(PrintTemplate, call.Name, call.Args)
-
-	var result any
-	var err error
-
+func (a *WebScraperAgent) handleAnalyseWebPageTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	// 1. Parse arguments
-	url, urlOK := call.Args["url"].(string)
-
-	if !urlOK || url == "" {
-		err = fmt.Errorf("'url' argument is required and must be a non-empty string")
-	} else {
-		// 2. Process with the agent. The agent is configured with URLContext,
-		// so we just pass the URL in the prompt. The model will use its tool.
-		prompt := fmt.Sprintf("Please analyze the provided web page and generate a comprehensive report based on your instructions. URL: %s", url)
-		resultText, processErr := a.Process(prompt)
-		if processErr != nil {
-			err = fmt.Errorf("web page processing failed: %w", processErr)
-		} else {
-			a.Printf("Web page analysis successful for url: '%s'", url)
-			result = map[string]any{"result": resultText}
-		}
+	rawURL, urlOK := call.Args["url"].(string)
+	if !urlOK || rawURL == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
 	}
 
-	return a.CreateFunctionResponse(call, result, err)
+	// Decode the URL in case it's URL-encoded by the model.
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		// If decoding fails, it might not have been encoded. Use the raw URL but log a warning.
+		a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
+		decodedURL = rawURL
+	}
+
+	// Start the long-running analysis in a goroutine.
+	go func() {
+		a.Printf("Starting background analysis for web page URL: %s", decodedURL)
+		// 2. Process with the agent. The agent is configured with URLContext,
+		// so we just pass the URL in the prompt. The model will use its tool.
+		prompt := fmt.Sprintf("Please analyze the provided web page and generate a comprehensive report based on your instructions. URL: %s", decodedURL)
+		resultText, processErr := a.Process(prompt)
+
+		var finalResponse *genai.FunctionResponse
+		if processErr != nil {
+			a.Printf("ERROR: Web page processing failed: %v", processErr)
+			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("web page processing failed: %w", processErr))
+		} else {
+			a.Printf("Web page analysis successful for url: '%s'", decodedURL)
+			finalResponse = a.CreateFunctionResponse(call, map[string]any{"result": resultText}, nil)
+		}
+		(*a.bus).Publish(config.AgentTopic, finalResponse)
+	}()
+
+	// Immediately return the initial response to acknowledge the request.
+	a.Printf("Acknowledging web page analysis request. Will report back when complete.")
+	return a.CreateFunctionResponse(call, map[string]any{"status": "Web page analysis started."}, nil, true)
+}
+
+func (a *WebScraperAgent) handleGetRawHTMLTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	// 1. Parse arguments
+	rawURL, urlOK := call.Args["url"].(string)
+	if !urlOK || rawURL == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
+	}
+
+	// 2. Decode URL
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
+		decodedURL = rawURL
+	}
+
+	// 3. Fetch content
+	resp, err := http.Get(decodedURL)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to fetch URL %s: %w", decodedURL, err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to fetch URL %s: status code %d", decodedURL, resp.StatusCode))
+	}
+
+	// 4. Read body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to read response body from %s: %w", decodedURL, err))
+	}
+
+	// 5. Return response
+	return a.CreateFunctionResponse(call, map[string]any{"html_content": string(body)}, nil)
+}
+
+func (a *WebScraperAgent) handleGetRenderedContentTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	// 1. Parse arguments
+	rawURL, urlOK := call.Args["url"].(string)
+	if !urlOK || rawURL == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
+	}
+
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
+		decodedURL = rawURL
+	}
+
+	go func() {
+		a.Printf("Starting background rendering for web page URL: %s", decodedURL)
+		// 3. Use chromedp to get rendered HTML
+		// Create a new context with a timeout to prevent hanging.
+		ctx, cancel := chromedp.NewContext(context.Background())
+		defer cancel()
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second) // 30-second timeout for rendering
+		defer cancel()
+
+		var htmlContent string
+		processErr := chromedp.Run(ctx,
+			chromedp.Navigate(decodedURL),
+			chromedp.Sleep(2*time.Second), // Wait for JS to execute.
+			chromedp.OuterHTML("html", &htmlContent),
+		)
+
+		var finalResponse *genai.FunctionResponse
+		if processErr != nil {
+			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to get rendered content for %s: %w", decodedURL, processErr))
+		} else {
+			finalResponse = a.CreateFunctionResponse(call, map[string]any{"rendered_html_content": htmlContent}, nil)
+		}
+		(*a.bus).Publish(config.AgentTopic, finalResponse)
+	}()
+
+	// Immediately return the initial response to acknowledge the request.
+	a.Printf("Acknowledging web page rendering request. Will report back when complete.")
+	return a.CreateFunctionResponse(call, map[string]any{"status": "Web page rendering started."}, nil, true)
+}
+
+func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	// 1. Parse arguments
+	rawURL, urlOK := call.Args["url"].(string)
+	if !urlOK || rawURL == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
+	}
+
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
+		decodedURL = rawURL
+	}
+
+	go func() {
+		a.Printf("Starting background screenshot capture for web page URL: %s", decodedURL)
+		// 3. Use chromedp to get screenshot
+		ctx, cancel := chromedp.NewContext(context.Background())
+		defer cancel()
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second) // 30-second timeout
+		defer cancel()
+
+		var screenshotBuf []byte
+		// Use FullScreenshot with quality 0 for a full-page PNG.
+		processErr := chromedp.Run(ctx,
+			chromedp.Navigate(decodedURL),
+			chromedp.Sleep(2*time.Second), // Wait for JS
+			chromedp.FullScreenshot(&screenshotBuf, 0),
+		)
+
+		var finalResponse *genai.FunctionResponse
+		if processErr != nil {
+			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to get screenshot for %s: %w", decodedURL, processErr))
+		} else {
+			// 4. Prepare content for the model
+			parts := []*genai.Part{
+				genai.NewPartFromText(fmt.Sprintf("Here is the screenshot of the page at %s that you requested for visual analysis.", decodedURL)),
+				genai.NewPartFromBytes(screenshotBuf, config.MIMEImage), // config.MIMEImage is "image/png"
+			}
+			turn := genai.NewContentFromParts(parts, genai.RoleUser)
+			content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
+
+			a.Println("Successfully prepared screenshot to be sent to live session.")
+			result := map[string]any{"status": "Screenshot captured and prepared for analysis.", "send_content": content}
+			finalResponse = a.CreateFunctionResponse(call, result, nil)
+		}
+		(*a.bus).Publish(config.AgentTopic, finalResponse)
+	}()
+
+	// Immediately return the initial response to acknowledge the request.
+	a.Printf("Acknowledging web page screenshot request. Will report back when complete.")
+	return a.CreateFunctionResponse(call, map[string]any{"status": "Web page screenshot capture started."}, nil, true)
 }
