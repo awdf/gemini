@@ -87,6 +87,7 @@ const (
 	stateProxyingToShell = iota
 	stateReadingCommand
 	stateReadingPassword
+	stateIgnoringEscapeSequence
 
 	promptPatern = "\n\033[A\r\033[1;91m%s\033[0m> \033[K"
 	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
@@ -103,31 +104,31 @@ const (
 
 // CLI handles reading user input from the command line.
 type CLI struct {
-	wg                  *sync.WaitGroup
-	cmdChan             chan<- string // Sends processed text commands from the CLI to the main application for AI processing.
-	bus                 *EventBus.Bus
-	formatter           *Formatter
-	muted               bool
-	isSystemShellActive bool
-	aiEnabled           bool
-	ready               bool
-	modeMu              sync.Mutex // Protects access to mode, previousMode, ready, and muted status.
-	mode                string
-	previousMode        string
-	promptChan          chan promptRequest // Receives requests for sensitive modal prompts.
-	activePrompt        *promptRequest     // The currently active modal prompt
-	shellBuffer         strings.Builder
-	shellBufferMu       sync.Mutex // Protects access to the shellBuffer and shellPaused status.
-	systemInputState    int
-	preEscapeState      int // Remembers the state before an escape sequence
-	shellPaused         bool
-	systemCommandBuffer strings.Builder
-	originalTermState   *term.State
-	systemAtLineStart   bool
-	terminal            *term.Terminal // For prompt mode line editing
-	modeSwitchRequested bool           // Signals a switch between system and prompt loops.
-	drawCompleteChan    chan struct{}  // Signals that AI response drawing is complete, unblocking the prompt loop.
-	shellExitChan       chan struct{}  // Signals that the interactive shell process has exited.
+	wg                    *sync.WaitGroup
+	cmdChan               chan<- string // Sends processed text commands from the CLI to the main application for AI processing.
+	bus                   *EventBus.Bus
+	formatter             *Formatter
+	muted                 bool
+	isSystemShellActive   bool
+	aiEnabled             bool
+	ready                 bool
+	modeMu                sync.Mutex // Protects access to mode, previousMode, ready, and muted status.
+	mode                  string
+	previousMode          string
+	promptChan            chan promptRequest // Receives requests for sensitive modal prompts.
+	activePrompt          *promptRequest     // The currently active modal prompt
+	shellBuffer           strings.Builder
+	shellBufferMu         sync.Mutex // Protects access to the shellBuffer and shellPaused status.
+	systemInputState      int
+	preEscapeState        int // Remembers the state before an escape sequence
+	shellPaused           bool
+	systemCommandBuffer   strings.Builder
+	systemProxyLineBuffer strings.Builder // A small buffer to track the current line in proxy mode to detect commands.
+	originalTermState     *term.State
+	terminal              *term.Terminal // For prompt mode line editing
+	modeSwitchRequested   bool           // Signals a switch between system and prompt loops.
+	drawCompleteChan      chan struct{}  // Signals that AI response drawing is complete, unblocking the prompt loop.
+	shellExitChan         chan struct{}  // Signals that the interactive shell process has exited.
 }
 
 // commandHandler defines the function signature for a CLI command handler.
@@ -201,7 +202,6 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		mode:                config.C.Mode,
 		previousMode:        "",
 		activePrompt:        nil,
-		systemAtLineStart:   true,
 		systemInputState:    stateProxyingToShell,
 		preEscapeState:      stateProxyingToShell, // Default pre-escape state
 		shellPaused:         false,
@@ -328,28 +328,37 @@ func (c *CLI) stopSystemShell() {
 // It's used for both internal commands and modal prompts.
 func (c *CLI) handleSystemLineEditor(b byte) {
 	switch b {
-	case 27, '\t': // ESC key, Tab key
-		// Ignore.
+	case 27: // ESC key - user pressed an arrow, Home, End, etc.
+		// Abort internal command entry and revert to proxying to the shell.
+		// Erase everything the user has typed for the internal command so far.
+		for i := 0; i < c.systemCommandBuffer.Len()+1; i++ { // +1 for the initial '/'
+			fmt.Print("\b \b")
+		}
+		c.systemCommandBuffer.Reset()
+		c.systemInputState = stateProxyingToShell
+
+		// Now, let the main input processor handle this ESC byte in the new state.
+		// This will correctly trigger the stateIgnoringEscapeSequence logic.
+		c.processInputByte(b)
+		return
+	case '\t': // Tab key
+		// Explicitly ignore tab completion in this simple editor.
 	case '\r', '\n': // Enter key
 		fmt.Print("\r\n") // Echo newline.
 		text := c.systemCommandBuffer.String()
 		c.systemCommandBuffer.Reset()
 		c.systemInputState = stateProxyingToShell // Always return to proxying.
-		c.systemAtLineStart = true
+		c.systemProxyLineBuffer.Reset()           // Clear the line buffer after a command.
 		if text != "" {
-			isAIPrompt, exit := c.command(text)
+			// The command function is now responsible for triggering a redraw
+			// via an event if necessary.
+			_, exit := c.command(text)
 			if exit {
-				// An exit was requested. The runSystemModeLoop will
-				// catch the shutdown signal. We just need to stop
-				// processing here to avoid drawing a new prompt.
-				return
-			}
-			// If the command was not an AI prompt, redraw the shell prompt.
-			if !isAIPrompt {
-				c.draw()
+				return // An exit command was issued.
 			}
 		} else {
-			c.draw() // User typed "/" then Enter.
+			// An empty command should still redraw the prompt via the event bus.
+			(*c.bus).Publish(config.MainTopic, "draw:cli.command.empty")
 		}
 	case 127, 8: // Backspace
 		if c.systemCommandBuffer.Len() > 0 {
@@ -363,7 +372,7 @@ func (c *CLI) handleSystemLineEditor(b byte) {
 		fmt.Print("^C\r\n")
 		c.systemCommandBuffer.Reset()
 		c.systemInputState = stateProxyingToShell
-		c.systemAtLineStart = true
+		c.systemProxyLineBuffer.Reset() // Clear the line buffer on abort.
 		// Redraw to get a fresh shell prompt.
 		c.draw()
 	default:
@@ -384,7 +393,7 @@ func (c *CLI) handlePasswordEditor(b byte) {
 		password := c.systemCommandBuffer.String()
 		c.systemCommandBuffer.Reset()
 		c.systemInputState = stateProxyingToShell // Return to normal operation.
-		c.systemAtLineStart = true
+		c.systemProxyLineBuffer.Reset()           // Clear the line buffer after the prompt.
 
 		if c.activePrompt != nil {
 			helpers.SafeSend(c.activePrompt.responseChan, password)
@@ -405,7 +414,7 @@ func (c *CLI) handlePasswordEditor(b byte) {
 		fmt.Print("^C\r\n")
 		c.systemCommandBuffer.Reset()
 		c.systemInputState = stateProxyingToShell
-		c.systemAtLineStart = true
+		c.systemProxyLineBuffer.Reset() // Clear the line buffer on abort.
 		if c.activePrompt != nil {
 			helpers.SafeSend(c.activePrompt.responseChan, "") // Send empty string on abort.
 			close(c.activePrompt.responseChan)
@@ -444,6 +453,22 @@ func (c *CLI) processLine(line string) (isAIPrompt bool, exitRequested bool) {
 func (c *CLI) processInputByte(b byte) {
 	// This state machine is now only used for system mode.
 	switch c.systemInputState {
+	case stateIgnoringEscapeSequence:
+		// We entered this state on an ESC. We proxy all bytes to the shell.
+		// When we see a terminating character (a letter or ~), we assume the
+		// sequence for a special key (like arrows or Home/End) is over.
+		// We reset our line buffer because its state is now unknown due to
+		// un-tracked cursor movement, then return to normal proxying.
+		if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '~' {
+			c.systemInputState = stateProxyingToShell
+			c.systemProxyLineBuffer.Reset()
+		}
+		// Always proxy the byte in this state.
+		if err := desktop.C.SendToShell(string(b)); err != nil {
+			log.Printf("Error sending input to system shell: %v", err)
+		}
+		return // Return immediately.
+
 	case stateProxyingToShell:
 		// Intercept Ctrl+D (EOT character) to gracefully exit the shell
 		// without closing the main application's stdin.
@@ -458,28 +483,50 @@ func (c *CLI) processInputByte(b byte) {
 			// switch back to prompt mode.
 			return
 		}
-		// Only switch to command reading state if '/' is the first character on a new line.
-		// All bytes, including control characters like Ctrl+C and Ctrl+D, are passed
-		// directly to the underlying shell for true interactive behavior. The only
-		// character we intercept is '/' at the beginning of a line to handle
-		// internal commands.
-		if b == '/' && c.systemAtLineStart {
-			c.systemInputState = stateReadingCommand
-			c.systemCommandBuffer.Reset()
-			fmt.Print("/")              // Echo the slash to the user.
-			c.systemAtLineStart = false // We've started typing the command.
-		} else {
-			// A printable character means we are no longer at the start of a line.
-			// Control characters (like arrows, tab, ctrl+d) do not change this state.
-			if b >= 32 && b < 127 {
-				c.systemAtLineStart = false
-			} else if b == '\r' || b == '\n' {
-				c.systemAtLineStart = true // Enter marks the end of a line.
-			}
-			// Proxy the byte to the interactive shell.
+
+		// Intercept ESC (byte 27) to handle special keys like arrows, Home, End, etc.
+		// These keys send escape sequences that we can't track perfectly without a
+		// full terminal emulator. Instead, we enter a state to proxy the sequence
+		// and then reset our line buffer, assuming the user may have moved the
+		// cursor to the start of the line.
+		if b == 27 {
+			c.systemInputState = stateIgnoringEscapeSequence
+			// Proxy the ESC byte itself and then wait for the rest of the sequence.
 			if err := desktop.C.SendToShell(string(b)); err != nil {
 				log.Printf("Error sending input to system shell: %v", err)
 			}
+			return
+		}
+
+		// The logic to detect an internal command (starting with '/') is now based
+		// on a small line buffer that mirrors user input. This correctly handles
+		// cases where the user types and then backspaces to the start of the line.
+		// All bytes are still proxied to the shell to maintain interactivity.
+
+		// If '/' is typed at the beginning of the line, switch to command mode.
+		if b == '/' && c.systemProxyLineBuffer.Len() == 0 {
+			c.systemInputState = stateReadingCommand
+			c.systemCommandBuffer.Reset() // Clear the main command buffer
+			fmt.Print("/")                // Echo the slash to the user.
+			return                        // Don't proxy the '/'
+		}
+
+		// Update the proxy line buffer based on the input byte.
+		if b >= 32 && b < 127 { // Printable characters
+			c.systemProxyLineBuffer.WriteByte(b)
+		} else if b == '\r' || b == '\n' { // Enter
+			c.systemProxyLineBuffer.Reset()
+		} else if b == 127 || b == 8 { // Backspace
+			if c.systemProxyLineBuffer.Len() > 0 {
+				s := c.systemProxyLineBuffer.String()
+				c.systemProxyLineBuffer.Reset()
+				c.systemProxyLineBuffer.WriteString(s[:len(s)-1])
+			}
+		}
+
+		// Proxy the byte to the interactive shell.
+		if err := desktop.C.SendToShell(string(b)); err != nil {
+			log.Printf("Error sending input to system shell: %v", err)
 		}
 	case stateReadingCommand:
 		c.handleSystemLineEditor(b)
@@ -791,7 +838,7 @@ func (c *CLI) drawLocked() {
 		}
 	} else {
 		// We are in a prompt mode, using term.ReadLine.
-		config.DebugPrintln("CLI drawind prompt")
+		config.DebugPrintln("CLI drawing prompt")
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
 		c.terminal.SetPrompt(promptStr)
 		(*c.bus).Publish(config.MainTopic, "show:cli.run")
@@ -987,9 +1034,17 @@ func (c *CLI) command(cmd string) (isAIPrompt bool, exit bool) {
 	commandName = parts[0]
 
 	if handler, ok := commandHandlers[commandName]; ok {
-		return handler(c, parts[1:])
+		isAIPrompt, exit = handler(c, parts[1:])
+		// After a non-AI, non-exit command that does NOT request a mode switch,
+		// we need to unmute and redraw the prompt. Publishing a "draw" event
+		// is the standard way to do this.
+		if !isAIPrompt && !exit && !c.modeSwitchRequested {
+			(*c.bus).Publish(config.MainTopic, "draw:cli.command")
+		}
+		return isAIPrompt, exit
 	}
 
 	fmt.Printf("Unknown command: %s\n", commandName)
+	(*c.bus).Publish(config.MainTopic, "draw:cli.command.unknown")
 	return false, false
 }
