@@ -15,7 +15,7 @@ import (
 	"github.com/go-gst/go-gst/gst/app"
 	"google.golang.org/genai"
 
-	"gemini/ai/agents"
+	"gemini/agents"
 	"gemini/audio"
 	"gemini/config"
 	"gemini/desktop"

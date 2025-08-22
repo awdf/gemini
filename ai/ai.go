@@ -22,7 +22,7 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/genai"
 
-	"gemini/ai/agents"
+	"gemini/agents"
 	"gemini/audio"
 	"gemini/config"
 	"gemini/desktop"
