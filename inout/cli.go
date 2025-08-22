@@ -1,13 +1,65 @@
 package inout
 
+/*
+Package inout - CLI Component Design Notes for Future Visits
+
+This file implements a complex Command-Line Interface (CLI) with several key
+design decisions made to handle concurrency, state management, and different
+input modes robustly. These notes summarize the resolutions to challenges
+encountered during development to prevent re-litigating them.
+
+1.  Dual-Mode Input Handling:
+    The CLI supports two fundamentally different modes: 'system' (for raw shell
+    proxying) and 'prompt' (for rich line editing).
+    - Resolution: The main Run() function acts as a dispatcher, switching
+      between two dedicated loops: runSystemModeLoop() and runPromptModeLoop().
+      This cleanly separates the logic for each mode.
+
+2.  Handling Sensitive Input (e.g., Passwords):
+    The PromptForInput() function must read sensitive data in 'system' mode
+    without echoing it to the screen and without freezing the application.
+    - Challenge: A simple blocking call like term.ReadPassword() would deadlock
+      the event loop, making the app unresponsive to shutdown signals.
+    - Resolution: A custom, non-blocking password editor (handlePasswordEditor)
+      is implemented. The system loop enters a special 'stateReadingPassword'
+      where it processes input bytes without echoing them, ensuring the main
+      event loop remains active and responsive.
+
+3.  Startup Synchronization:
+    The CLI must not attempt to read user input until the entire application,
+    including external components like VAD, is ready.
+    - Challenge: A race condition caused the input loop to start and block
+      before the initial prompt could be drawn.
+    - Resolution: The main Run() loop polls a 'c.ready' flag and waits until
+      it is set by a system-wide 'ready' event from the event bus. This
+      ensures the prompt is drawn before the first ReadLine() call.
+
+4.  Command Dispatching for Readability:
+    The original command handler was a large, monolithic switch statement that
+    was difficult to read and maintain.
+    - Resolution: The logic was refactored into a dispatcher pattern. A map
+      (commandHandlers) routes command strings to small, single-purpose
+      handler functions (e.g., handleMode, handleHelp), dramatically
+      improving code clarity and testability.
+
+5.  Communication Patterns:
+    The CLI's interaction with the rest of the system is clearly defined to
+    manage coupling and concurrency.
+    - Inbound (to CLI): Other components can call CLI methods directly for
+      synchronous tasks (e.g., `PromptForInput`).
+    - Outbound (from CLI): The CLI communicates its results and state changes
+      asynchronously by publishing events to the event bus, avoiding direct
+      dependencies on other components.
+*/
+
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/asaskevich/EventBus"
 	"golang.org/x/term"
@@ -40,36 +92,30 @@ type promptRequest struct {
 	responseChan chan string
 }
 
-var modes = map[string]string{
-	Prompt:    Prompt,
-	System:    System,
-	VoiceMode: VoiceMode,
-	ImageMode: ImageMode,
-}
-
 const (
 	// Defines the input state when in system mode.
 	stateProxyingToShell = iota
 	stateReadingCommand
-	stateReadingModalPrompt
+	stateReadingPassword
 )
 
 // CLI handles reading user input from the command line.
 type CLI struct {
 	wg                  *sync.WaitGroup
-	cmdChan             chan<- string
+	cmdChan             chan<- string // Sends processed text commands from the CLI to the main application for AI processing.
 	bus                 *EventBus.Bus
+	formatter           *Formatter
 	muted               bool
 	isSystemShellActive bool
 	aiEnabled           bool
 	ready               bool
-	modeMu              sync.Mutex
+	modeMu              sync.Mutex // Protects access to mode, previousMode, ready, and muted status.
 	mode                string
 	previousMode        string
-	promptChan          chan promptRequest // Receives requests for modal prompts
+	promptChan          chan promptRequest // Receives requests for sensitive modal prompts.
 	activePrompt        *promptRequest     // The currently active modal prompt
 	shellBuffer         strings.Builder
-	shellBufferMu       sync.Mutex
+	shellBufferMu       sync.Mutex // Protects access to the shellBuffer and shellPaused status.
 	systemInputState    int
 	preEscapeState      int // Remembers the state before an escape sequence
 	shellPaused         bool
@@ -77,15 +123,19 @@ type CLI struct {
 	originalTermState   *term.State
 	systemAtLineStart   bool
 	terminal            *term.Terminal // For prompt mode line editing
-	modeSwitchRequested bool           // To signal a switch between system and prompt loops
-	drawCompleteChan    chan struct{}
-	shellExitChan       chan struct{}
+	modeSwitchRequested bool           // Signals a switch between system and prompt loops.
+	drawCompleteChan    chan struct{}  // Signals that AI response drawing is complete, unblocking the prompt loop.
+	shellExitChan       chan struct{}  // Signals that the interactive shell process has exited.
 }
+
+// commandHandler defines the function signature for a CLI command handler.
+type commandHandler func(c *CLI, args []string) (isAIPrompt bool, exit bool)
 
 const (
 	promptPatern = "\n\033[A\r\033[1;91m%s\033[0m> \033[K"
 	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
-	soundbarPatern = "\0337\r\033[B\033[K[%s%s]\0338"
+	soundbarPatern   = "\0337\r\033[B\033[K[%s%s]\0338"
+	helpFormatString = "* `%s` - %s\n"
 )
 
 const (
@@ -96,13 +146,39 @@ const (
 	high    = "high"
 )
 
-var thinkingLevels = map[string]int32{
-	dynamic: -1,
-	none:    0,
-	low:     512,
-	medium:  8192,
-	high:    24576,
-}
+var (
+	modes = map[string]string{
+		Prompt:    Prompt,
+		System:    System,
+		VoiceMode: VoiceMode,
+		ImageMode: ImageMode,
+	}
+
+	thinkingLevels = map[string]int32{
+		dynamic: -1,
+		none:    0,
+		low:     512,
+		medium:  8192,
+		high:    24576,
+	}
+
+	// commandHandlers maps command names to their handler functions.
+	commandHandlers = map[string]commandHandler{
+		"save":       handleSave,
+		"debug":      handleDebug,
+		"voice":      handleVoice,
+		"tools":      handleTools,
+		"transcript": handleTranscript,
+		"history":    handleHistory,
+		"cache":      handleCache,
+		"thoughts":   handleThoughts,
+		"thinking":   handleThinking,
+		"mode":       handleMode,
+		"prompt":     handlePrompt,
+		"exit":       handleExit,
+		"help":       handleHelp,
+	}
+)
 
 // NewCLI creates a new CLI instance.
 func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnabled bool) *CLI {
@@ -114,6 +190,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		wg:                  wg,
 		cmdChan:             cmdChan,
 		bus:                 bus,
+		formatter:           NewFormatter(),
 		muted:               true,
 		isSystemShellActive: false,
 		aiEnabled:           aiEnabled,
@@ -121,13 +198,13 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		modeMu:              sync.Mutex{},
 		mode:                config.C.Mode,
 		previousMode:        "",
-		promptChan:          make(chan promptRequest),
 		activePrompt:        nil,
 		systemAtLineStart:   true,
 		systemInputState:    stateProxyingToShell,
 		preEscapeState:      stateProxyingToShell, // Default pre-escape state
 		shellPaused:         false,
 		modeSwitchRequested: false,
+		promptChan:          make(chan promptRequest),
 		drawCompleteChan:    make(chan struct{}, 1), // Buffered to be non-blocking
 		shellExitChan:       make(chan struct{}, 1),
 	}
@@ -187,7 +264,7 @@ func (c *CLI) PromptForInput(prompt string) string {
 		prompt:       prompt,
 		responseChan: make(chan string, 1), // Buffered to prevent blocking.
 	}
-	c.promptChan <- req
+	helpers.SafeSend(c.promptChan, req)
 	log.Printf("Waiting for user text input for prompt: '%s'", prompt)
 	return <-req.responseChan
 }
@@ -214,10 +291,7 @@ func (c *CLI) startSystemShell() {
 		log.Println("CLI shell output publisher finished.")
 		// When the shell exits, its output channel is closed. Signal the main
 		// system mode loop that it's time to exit.
-		select {
-		case c.shellExitChan <- struct{}{}:
-		default:
-		}
+		helpers.SafeSend(c.shellExitChan, struct{}{})
 	}()
 	if err := desktop.C.StartInteractiveShell(outputChan); err != nil {
 		fmt.Printf("Error starting system shell: %v\n", err)
@@ -250,7 +324,7 @@ func (c *CLI) stopSystemShell() {
 
 // handleSystemLineEditor provides a minimal line editor for raw terminal mode.
 // It's used for both internal commands and modal prompts.
-func (c *CLI) handleSystemLineEditor(b byte, isModal bool) {
+func (c *CLI) handleSystemLineEditor(b byte) {
 	switch b {
 	case 27, '\t': // ESC key, Tab key
 		// Ignore.
@@ -260,31 +334,20 @@ func (c *CLI) handleSystemLineEditor(b byte, isModal bool) {
 		c.systemCommandBuffer.Reset()
 		c.systemInputState = stateProxyingToShell // Always return to proxying.
 		c.systemAtLineStart = true
-
-		if isModal {
-			if c.activePrompt != nil {
-				c.activePrompt.responseChan <- text
-				close(c.activePrompt.responseChan)
-				c.activePrompt = nil
+		if text != "" {
+			isAIPrompt, exit := c.command(text)
+			if exit {
+				// An exit was requested. The runSystemModeLoop will
+				// catch the shutdown signal. We just need to stop
+				// processing here to avoid drawing a new prompt.
+				return
 			}
-			(*c.bus).Publish(config.MainTopic, "ready:cli.prompt.done")
-			c.draw() // Redraw shell prompt
-		} else { // It's a regular command
-			if text != "" {
-				isAIPrompt, exit := c.command(text)
-				if exit {
-					// An exit was requested. The runSystemModeLoop will
-					// catch the shutdown signal. We just need to stop
-					// processing here to avoid drawing a new prompt.
-					return
-				}
-				// If the command was not an AI prompt, redraw the shell prompt.
-				if !isAIPrompt {
-					c.draw()
-				}
-			} else {
-				c.draw() // User typed "/" then Enter.
+			// If the command was not an AI prompt, redraw the shell prompt.
+			if !isAIPrompt {
+				c.draw()
 			}
+		} else {
+			c.draw() // User typed "/" then Enter.
 		}
 	case 127, 8: // Backspace
 		if c.systemCommandBuffer.Len() > 0 {
@@ -299,15 +362,6 @@ func (c *CLI) handleSystemLineEditor(b byte, isModal bool) {
 		c.systemCommandBuffer.Reset()
 		c.systemInputState = stateProxyingToShell
 		c.systemAtLineStart = true
-
-		if isModal {
-			if c.activePrompt != nil {
-				c.activePrompt.responseChan <- "" // Send empty string on abort
-				close(c.activePrompt.responseChan)
-				c.activePrompt = nil
-			}
-			(*c.bus).Publish(config.MainTopic, "ready:cli.prompt.done")
-		}
 		// Redraw to get a fresh shell prompt.
 		c.draw()
 	default:
@@ -315,6 +369,52 @@ func (c *CLI) handleSystemLineEditor(b byte, isModal bool) {
 		if b >= 32 && b < 127 {
 			c.systemCommandBuffer.WriteByte(b)
 			fmt.Print(string(b))
+		}
+	}
+}
+
+// handlePasswordEditor is a special-purpose line editor for reading sensitive
+// information. It processes input bytes without echoing them to the terminal.
+func (c *CLI) handlePasswordEditor(b byte) {
+	switch b {
+	case '\r', '\n': // Enter key
+		fmt.Print("\r\n") // Echo newline to confirm input.
+		password := c.systemCommandBuffer.String()
+		c.systemCommandBuffer.Reset()
+		c.systemInputState = stateProxyingToShell // Return to normal operation.
+		c.systemAtLineStart = true
+
+		if c.activePrompt != nil {
+			helpers.SafeSend(c.activePrompt.responseChan, password)
+			close(c.activePrompt.responseChan)
+			c.activePrompt = nil
+		}
+		(*c.bus).Publish(config.MainTopic, "ready:cli.prompt.done")
+		c.draw() // Redraw the normal shell prompt.
+
+	case 127, 8: // Backspace
+		if c.systemCommandBuffer.Len() > 0 {
+			s := c.systemCommandBuffer.String()
+			c.systemCommandBuffer.Reset()
+			c.systemCommandBuffer.WriteString(s[:len(s)-1])
+			// Do not echo anything for backspace.
+		}
+	case 3: // Ctrl+C
+		fmt.Print("^C\r\n")
+		c.systemCommandBuffer.Reset()
+		c.systemInputState = stateProxyingToShell
+		c.systemAtLineStart = true
+		if c.activePrompt != nil {
+			helpers.SafeSend(c.activePrompt.responseChan, "") // Send empty string on abort.
+			close(c.activePrompt.responseChan)
+			c.activePrompt = nil
+		}
+		(*c.bus).Publish(config.MainTopic, "ready:cli.prompt.done")
+		c.draw()
+	default:
+		// Add printable characters to buffer, but do not echo them.
+		if b >= 32 && b < 127 {
+			c.systemCommandBuffer.WriteByte(b)
 		}
 	}
 }
@@ -331,7 +431,7 @@ func (c *CLI) processLine(line string) (isAIPrompt bool, exitRequested bool) {
 		isAIPrompt, exit := c.command(strings.Join(parts, " "))
 		return isAIPrompt, exit
 	} else if fullLine != "" {
-		c.cmdChan <- fullLine
+		helpers.SafeSend(c.cmdChan, fullLine)
 		return true, false // This is a standard AI prompt.
 	}
 	return false, false // Empty line, not a prompt, not an exit.
@@ -380,9 +480,7 @@ func (c *CLI) processInputByte(b byte) {
 			}
 		}
 	case stateReadingCommand:
-		c.handleSystemLineEditor(b, false)
-	case stateReadingModalPrompt:
-		c.handleSystemLineEditor(b, true)
+		c.handleSystemLineEditor(b)
 	}
 }
 
@@ -407,10 +505,7 @@ func (c *CLI) handleBusEvents(event string) {
 			c.drawLocked()
 		} else {
 			// We are in prompt mode. Signal the prompt loop to continue.
-			select {
-			case c.drawCompleteChan <- struct{}{}:
-			default: // Avoid blocking if the channel is full or no one is listening
-			}
+			helpers.SafeSend(c.drawCompleteChan, struct{}{})
 		}
 	case "block": // Critical flow blocking
 		c.ready = false
@@ -425,21 +520,76 @@ func (c *CLI) handleBusEvents(event string) {
 }
 
 // startStdinReader starts a goroutine to read from standard input and send the data to a channel.
-func (c *CLI) startStdinReader(inputChan chan<- []byte) {
+// It is designed to be cancellable via the 'done' channel.
+func (c *CLI) startStdinReader(inputChan chan<- []byte, done <-chan struct{}) {
 	go func() {
 		defer close(inputChan)
-		reader := bufio.NewReader(os.Stdin)
+
+		// First, try to set a deadline to see if the file descriptor supports it.
+		err := os.Stdin.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+		_ = os.Stdin.SetReadDeadline(time.Time{}) // Immediately cancel it.
+
+		if err != nil {
+			// The file type does not support deadlines. Log this and fall back
+			// to a simple blocking read loop. This loop will not be cancellable
+			// via the 'done' channel while it's blocked on Read().
+			log.Println("stdin does not support deadlines; sensitive prompts in system mode may not be interruptible.")
+			for {
+				// We can check for cancellation *before* the blocking call.
+				select {
+				case <-done:
+					return
+				default:
+				}
+				buf := make([]byte, 128)
+				n, readErr := os.Stdin.Read(buf)
+				if readErr != nil {
+					if readErr != io.EOF {
+						log.Printf("Stdin read error: %v", readErr)
+					}
+					return
+				}
+				if n > 0 {
+					data := make([]byte, n)
+					copy(data, buf[:n])
+					inputChan <- data
+				}
+			}
+		}
+
+		// If we are here, deadlines are supported. Use the non-blocking loop.
 		buf := make([]byte, 128)
 		for {
-			n, err := reader.Read(buf)
-			if err != nil {
-				log.Printf("Stdin read error: %v", err)
+			select {
+			case <-done:
+				return
+			default:
+			}
+
+			// Set a deadline on the read to make it non-blocking. This allows the
+			// loop to periodically check the 'done' channel for cancellation.
+			readErr := os.Stdin.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			if readErr != nil {
+				// This shouldn't happen if the initial check passed, but handle it.
+				log.Printf("Failed to set read deadline on stdin: %v", err)
 				return
 			}
+
+			n, readErr := os.Stdin.Read(buf)
+
+			// A zero-time deadline effectively cancels the deadline.
+			_ = os.Stdin.SetReadDeadline(time.Time{})
+
+			if readErr != nil {
+				if os.IsTimeout(readErr) {
+					continue // This is an expected error when no input is available.
+				}
+				// If the error is not a timeout, it's a real issue.
+				log.Printf("Stdin read error: %v", readErr)
+				return
+			}
+
 			if n > 0 {
-				// Create a new slice with the exact size of the data read.
-				// This prevents a data race where the buffer could be overwritten
-				// before the receiver has processed the previous chunk.
 				data := make([]byte, n)
 				copy(data, buf[:n])
 				inputChan <- data
@@ -453,10 +603,12 @@ func (c *CLI) runSystemModeLoop() {
 	c.startSystemShell()
 	c.systemInputState = stateProxyingToShell
 
-	inputChan := make(chan []byte)
-	c.startStdinReader(inputChan)
+	inputChan := make(chan []byte, 1) // Use a small buffer
+	doneChan := make(chan struct{})
+	c.startStdinReader(inputChan, doneChan)
 
 	shutdownListener := flow.GetListener()
+
 	for {
 		if c.modeSwitchRequested {
 			c.stopSystemShell()
@@ -472,7 +624,7 @@ func (c *CLI) runSystemModeLoop() {
 			return
 		case req := <-c.promptChan:
 			c.activePrompt = &req
-			c.systemInputState = stateReadingModalPrompt
+			c.systemInputState = stateReadingPassword
 			c.systemCommandBuffer.Reset()
 			(*c.bus).Publish(config.MainTopic, "block:cli.prompt.start")
 			fmt.Printf("\n%s: ", req.prompt)
@@ -486,13 +638,20 @@ func (c *CLI) runSystemModeLoop() {
 				return
 			}
 
-			if !c.ready {
+			// The CLI should only drop input if it's not in a special input
+			// state (like reading a password) that must be handled even when
+			// the rest of the system is "blocked".
+			if c.systemInputState != stateReadingPassword && !c.ready {
 				log.Println("CLI dropping input received during blocked state.")
 				continue
 			}
 
 			for _, b := range inputBytes {
-				c.processInputByte(b)
+				if c.systemInputState == stateReadingPassword {
+					c.handlePasswordEditor(b)
+				} else {
+					c.processInputByte(b)
+				}
 			}
 		}
 	}
@@ -579,10 +738,6 @@ func (c *CLI) Run() {
 
 	helpers.Verify((*c.bus).SubscribeAsync(config.MainTopic, c.handleBusEvents, false))
 
-	// The CLI is now ready to draw its prompt.
-	c.ready = true
-	c.muted = false
-
 	shutdownListener := flow.GetListener()
 
 	// This is now a dispatcher loop that switches between system and prompt mode handlers.
@@ -595,8 +750,17 @@ func (c *CLI) Run() {
 		}
 
 		c.modeMu.Lock()
+		isReady := c.ready
 		currentMode := c.mode
 		c.modeMu.Unlock()
+
+		// The main loop must wait until the application signals it's ready.
+		// This prevents a race condition where the input loop starts and blocks
+		// before the initial prompt can be drawn.
+		if !isReady {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
 
 		c.modeSwitchRequested = false
 
@@ -629,10 +793,180 @@ func (c *CLI) drawLocked() {
 		}
 	} else {
 		// We are in a prompt mode, using term.ReadLine.
+		config.DebugPrintln("CLI drawind prompt")
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
 		c.terminal.SetPrompt(promptStr)
 		(*c.bus).Publish(config.MainTopic, "show:cli.run")
 	}
+}
+
+func handleSave(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	(*c.bus).Publish(config.AITopic, "save:history.txt")
+	fmt.Println("Conversation history save requested to history.txt.")
+	return false, false
+}
+
+func handleDebug(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	config.C.Debug = !config.C.Debug
+	log.Printf("Debug mode set to: %t", config.C.Debug)
+	return false, false
+}
+
+func handleVoice(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	config.C.AI.VoiceEnabled = !config.C.AI.VoiceEnabled
+	log.Printf("Voice output set to: %t", config.C.AI.VoiceEnabled)
+	(*c.bus).Publish(config.AITopic, "restart_session:voice_toggle")
+	return false, false
+}
+
+func handleTools(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	config.C.AI.EnableTools = !config.C.AI.EnableTools
+	log.Printf("AI tools enabled set to: %t", config.C.AI.EnableTools)
+	(*c.bus).Publish(config.AITopic, "restart_session:tools_toggle")
+	return false, false
+}
+
+func handleTranscript(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	config.C.AI.Transcript = !config.C.AI.Transcript
+	log.Printf("Separate transcription step set to: %t", config.C.AI.Transcript)
+	(*c.bus).Publish(config.AITopic, "restart_session:transcript_toggle")
+	return false, false
+}
+
+func handleHistory(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	config.C.AI.VoiceHistory = !config.C.AI.VoiceHistory
+	log.Printf("Voice history set to: %t", config.C.AI.VoiceHistory)
+	return false, false
+}
+
+func handleCache(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	config.C.AI.EnableCache = !config.C.AI.EnableCache
+	log.Printf("AI caching set to: %t", config.C.AI.EnableCache)
+	return false, false
+}
+
+func handleThoughts(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	config.C.AI.Thoughts = !config.C.AI.Thoughts
+	log.Printf("AI thoughts set to: %t", config.C.AI.Thoughts)
+	return false, false
+}
+
+func handleThinking(_ *CLI, args []string) (isAIPrompt bool, exit bool) {
+	hint := func() {
+		fmt.Printf("Available levels: %s, %s, %s, %s, %s\n", dynamic, none, low, medium, high)
+	}
+	if len(args) != 1 {
+		fmt.Println("Usage: /thinking <level>")
+		hint()
+	} else {
+		level := strings.ToLower(args[0])
+		if value, ok := thinkingLevels[level]; !ok {
+			fmt.Printf("Unknown thinking level: %s\n", level)
+			hint()
+		} else {
+			config.C.AI.Thinking = value
+			log.Printf("AI thinking budget set to: %s (%d)", level, value)
+		}
+	}
+	return false, false
+}
+
+func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
+	hint := func() {
+		fmt.Printf("Available AI modes: %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode)
+	}
+	if len(args) != 1 {
+		fmt.Println("Usage: /mode <name>")
+		hint()
+	} else {
+		mode := strings.ToLower(args[0])
+		if value, ok := modes[mode]; !ok {
+			fmt.Printf("Unknown AI mode: %s\n", mode)
+			hint()
+		} else {
+			if value == System {
+				c.previousMode = c.mode
+			} else if c.mode == System { // Switching out of system mode
+				if err := desktop.C.SendToShell("exit\n"); err != nil {
+					log.Printf("Error sending exit command to system shell: %v", err)
+				}
+			}
+			c.mode = value
+			config.C.Mode = value
+			c.modeSwitchRequested = true
+			log.Printf("CLI mode set to: %s", value)
+			(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", value))
+		}
+	}
+	return false, false
+}
+
+func handlePrompt(c *CLI, args []string) (isAIPrompt bool, exit bool) {
+	if c.mode == System {
+		promptText := strings.TrimSpace(strings.Join(args, " "))
+		if promptText != "" {
+			helpers.SafeSend(c.cmdChan, promptText)
+			return true, false
+		}
+		fmt.Println("Usage: /prompt <text for AI>")
+		c.draw()
+	}
+	return false, false
+}
+
+func handleExit(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	flow.Quit()
+	return false, true
+}
+
+func handleHelp(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	type helpEntry struct {
+		command     string
+		description string
+	}
+
+	mainCommands := []helpEntry{
+		{"/mode <name>", fmt.Sprintf("Set AI mode (%s, %s, %s, %s)", Prompt, System, VoiceMode, ImageMode)},
+		{"/debug", "Toggle debug mode"},
+		{"/voice", "Toggle voice responses"},
+		{"/tools", "Toggle AI tools (e.g., Google Search)"},
+		{"/transcript", "Toggle separate transcription step for voice chat"},
+		{"/help", "Display this help message"},
+		{"/exit", "Exit the application"},
+	}
+
+	systemCommands := []helpEntry{
+		{"/prompt <text>", "Send a text prompt to the AI"},
+	}
+
+	postAICommands := []helpEntry{
+		{"/thinking <level>", fmt.Sprintf("Set AI thinking budget (%s, %s, %s, %s, %s)", dynamic, none, low, medium, high)},
+		{"/thoughts", "Toggle AI thoughts visibility"},
+		{"/cache", "Toggle AI caching"},
+		{"/save", "Save conversation history to history.txt"},
+		{"/history", "Toggle including voice prompts in conversation history"},
+	}
+
+	var builder strings.Builder
+
+	builder.WriteString("**Available commands:**\n\n")
+	for _, cmd := range mainCommands {
+		builder.WriteString(fmt.Sprintf(helpFormatString, cmd.command, cmd.description))
+	}
+
+	builder.WriteString("\n**System Mode Commands:**\n\n")
+	for _, cmd := range systemCommands {
+		builder.WriteString(fmt.Sprintf(helpFormatString, cmd.command, cmd.description))
+	}
+
+	builder.WriteString("\n**Post AI Commands:**\n\n")
+	for _, cmd := range postAICommands {
+		builder.WriteString(fmt.Sprintf(helpFormatString, cmd.command, cmd.description))
+	}
+
+	c.formatter.Print(builder.String())
+
+	return false, false
 }
 
 // command handles internal CLI commands. It returns (isAIPrompt, exit) to signal
@@ -646,127 +980,14 @@ func (c *CLI) command(cmd string) (isAIPrompt bool, exit bool) {
 	parts := strings.Fields(cmd)
 
 	if len(parts) == 0 {
-		commandName = ""
-	} else {
-		commandName = parts[0]
+		return false, false // No command entered.
+	}
+	commandName = parts[0]
+
+	if handler, ok := commandHandlers[commandName]; ok {
+		return handler(c, parts[1:])
 	}
 
-	// Internal commands
-	switch commandName {
-	case "save":
-		(*c.bus).Publish(config.AITopic, "save:history.txt")
-		fmt.Println("Conversation history save requested to history.txt.")
-	case "debug":
-		config.C.Debug = !config.C.Debug
-		log.Printf("Debug mode set to: %t", config.C.Debug)
-	case "voice":
-		config.C.AI.VoiceEnabled = !config.C.AI.VoiceEnabled
-		log.Printf("Voice output set to: %t", config.C.AI.VoiceEnabled)
-		// In live mode, changing this requires a session restart.
-		(*c.bus).Publish(config.AITopic, "restart_session:voice_toggle")
-	case "tools":
-		config.C.AI.EnableTools = !config.C.AI.EnableTools
-		log.Printf("AI tools enabled set to: %t", config.C.AI.EnableTools)
-		// In live mode, changing this requires a session restart.
-		(*c.bus).Publish(config.AITopic, "restart_session:tools_toggle")
-	case "transcript":
-		config.C.AI.Transcript = !config.C.AI.Transcript
-		log.Printf("Separate transcription step set to: %t", config.C.AI.Transcript)
-		// In live mode, changing this requires a session restart.
-		(*c.bus).Publish(config.AITopic, "restart_session:transcript_toggle")
-	case "history":
-		config.C.AI.VoiceHistory = !config.C.AI.VoiceHistory
-		log.Printf("Voice history set to: %t", config.C.AI.VoiceHistory)
-	case "cache":
-		config.C.AI.EnableCache = !config.C.AI.EnableCache
-		log.Printf("AI caching set to: %t", config.C.AI.EnableCache)
-	case "thoughts":
-		config.C.AI.Thoughts = !config.C.AI.Thoughts
-		log.Printf("AI thoughts set to: %t", config.C.AI.Thoughts)
-	case "thinking":
-		hint := func() {
-			fmt.Printf("Available levels: %s, %s, %s, %s, %s\n", dynamic, none, low, medium, high)
-		}
-		if len(parts) != 2 {
-			fmt.Println("Usage: /thinking <level>")
-			hint()
-		} else {
-			level := strings.ToLower(parts[1])
-			value, ok := thinkingLevels[level]
-			if !ok {
-				fmt.Printf("Unknown thinking level: %s\n", level)
-				hint()
-			} else {
-				config.C.AI.Thinking = value
-				log.Printf("AI thinking budget set to: %s (%d)", level, value)
-			}
-		}
-	case "mode":
-		hint := func() {
-			fmt.Printf("Available AI modes: %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode)
-		}
-		if len(parts) != 2 {
-			fmt.Println("Usage: /mode <name>")
-			hint()
-		} else {
-			mode := strings.ToLower(parts[1])
-			value, ok := modes[mode]
-			if !ok {
-				fmt.Printf("Unknown AI mode: %s\n", mode)
-				hint()
-			} else {
-				if value == System {
-					c.previousMode = c.mode
-				} else {
-					if c.mode == System { // Switching out of system mode
-						// The exit command is now sent by the Ctrl+D handler or mode switch logic.
-						if err := desktop.C.SendToShell("exit\n"); err != nil {
-							log.Printf("Error sending exit command to system shell: %v", err)
-						}
-					}
-				}
-				c.mode = value
-				config.C.Mode = value
-				c.modeSwitchRequested = true
-				log.Printf("CLI mode set to: %s", value)
-				(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", value))
-			}
-		}
-	case "prompt":
-		// The /prompt command is only active in system mode.
-		if c.mode == System {
-			promptText := strings.TrimSpace(strings.Join(parts[1:], " "))
-			if promptText != "" {
-				c.cmdChan <- promptText
-				return true, false
-			} else {
-				fmt.Println("Usage: /prompt <text for AI>")
-				c.draw()
-			}
-		}
-		return false, false
-	case "exit":
-		// The /exit command always terminates the application.
-		flow.Quit()
-		return false, true
-	case "help":
-		fmt.Println("Available commands:\r")
-		fmt.Printf("/mode <name>		- Set AI mode (%s, %s, %s, %s)\r\n", Prompt, System, VoiceMode, ImageMode)
-		fmt.Println("/prompt <text>		- Send a text prompt to the AI (only in 'system' mode)\r")
-		fmt.Println("/debug      		- Toggle debug mode\r")
-		fmt.Println("/voice      		- Toggle voice responses\r")
-		fmt.Println("/tools      		- Toggle AI tools (e.g., Google Search)\r")
-		fmt.Println("/transcript 		- Toggle separate transcription step for voice chat\r")
-		fmt.Println("/help       		- Display this help message\r")
-		fmt.Println("/exit       		- Exit the application\r")
-		fmt.Println("\nPost AI Commands:\r")
-		fmt.Printf("/thinking <level> 	- Set AI thinking budget (%s, %s, %s, %s, %s)\r\n", dynamic, none, low, medium, high)
-		fmt.Println("/thoughts   		- Toggle AI thoughts visibility\r")
-		fmt.Println("/cache      		- Toggle AI caching\r")
-		fmt.Println("/save       		- Save conversation history to history.txt\r")
-		fmt.Println("/history    		- Toggle including voice prompts in conversation history\r")
-	default:
-		fmt.Printf("Unknown command: %s\n", commandName)
-	}
+	fmt.Printf("Unknown command: %s\n", commandName)
 	return false, false
 }

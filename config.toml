@@ -2,7 +2,7 @@
 LogFile = "gemini.log"
 
 # Enable or disable debug logging for all modules.
-Debug = false
+Debug = true
 Trace = false
 LiveAI = false
 Mode = "prompt"
@@ -98,7 +98,7 @@ SilenceThreshold = 0.02 # Range 0.0 - 1.0
 HangoverDurationSec = 2.0
 # Duration to ignore audio at startup to allow the pipeline to stabilize.
 # This prevents initial hardware "pops" from triggering a recording.
-WarmupDuration = "2500ms"
+WarmupDuration = "5000ms"
 # Disable the native VAD in the Gemini Live API. When true, the application's
 # VAD is used to send explicit start/stop signals. When false, the API handles
 # voice activity detection automatically.
