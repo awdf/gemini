@@ -42,6 +42,7 @@ type Config struct {
 	Display  DisplayConfig  `toml:"display"`
 	Google   GoogleConfig   `toml:"google"`
 	Pipeline PipelineConfig `toml:"pipeline"`
+	Video    VideoConfig    `toml:"video"`
 }
 
 // AIConfig holds settings related to the AI model.
@@ -110,6 +111,18 @@ type PipelineConfig struct {
 	Device       string `toml:"Device"`
 }
 
+// VideoConfig holds settings for the video streaming component.
+type VideoConfig struct {
+	Enabled   bool   `toml:"Enabled"`
+	Source    string `toml:"Source"`
+	Device    string `toml:"Device"`
+	MonitorID int    `toml:"MonitorID"`
+	Width     int    `toml:"Width"`
+	Height    int    `toml:"Height"`
+	FrameRate int    `toml:"FrameRate"`
+	Quality   int    `toml:"Quality"`
+}
+
 // RetryConfig holds settings for API call retries.
 type RetryConfig struct {
 	MaxRetries     int `toml:"MaxRetries"`
@@ -164,6 +177,19 @@ func Load(path string) {
 	expandedContent := os.ExpandEnv(string(content))
 	if _, err := toml.Decode(expandedContent, &C); err != nil {
 		log.Fatalf("Error decoding config from %s: %v", path, err)
+	}
+
+	// After loading, apply sensible defaults for critical zero-value fields
+	// to prevent panics if the user has an old config file missing new sections.
+	if C.Video.FrameRate == 0 {
+		log.Println("Video.FrameRate not set, applying default value of 10.")
+		C.Video.FrameRate = 10
+	}
+	if C.Video.Width == 0 {
+		C.Video.Width = 1280
+	}
+	if C.Video.Height == 0 {
+		C.Video.Height = 720
 	}
 }
 
@@ -231,6 +257,14 @@ func createDefaultConfig(path string) {
 	defaultConfig.Google.CredentialsFile = "client_secret.json"
 	defaultConfig.Google.TokenFile = "token.json"
 	defaultConfig.Pipeline.BufferTimeUs = 500000
+	defaultConfig.Video.Enabled = false
+	defaultConfig.Video.Source = "gnomescreencast"
+	defaultConfig.Video.Device = "/dev/video0"
+	defaultConfig.Video.MonitorID = -1
+	defaultConfig.Video.Width = 1280
+	defaultConfig.Video.Height = 720
+	defaultConfig.Video.FrameRate = 10
+	defaultConfig.Video.Quality = 85
 
 	f, err := os.Create(path)
 	if err != nil {

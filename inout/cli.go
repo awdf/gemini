@@ -70,33 +70,35 @@ import (
 	"gemini/helpers"
 )
 
-const (
-	Prompt    = "prompt" // {Prompt} = Allow voice and txt prompts
-	VoiceMode = "voice"  // Allow voice output for AI and {Prompt}
-	ImageMode = "image"  // Allow send screenshot images with each {Prompt}
-	System    = "system" // System CLI integration mode. Allow execute system commands and stream output to AI
-)
-
 // ShellPauseState defines the states for pausing shell output.
 type ShellPauseState string
 
 const (
+	Prompt    = "prompt" // {Prompt} = Allow voice and txt prompts
+	VoiceMode = "voice"  // Allow voice output for AI and {Prompt}
+	ImageMode = "image"  // Allow send screenshot images with each {Prompt}
+	VideoMode = "video"  // Allow send video stream
+	System    = "system" // System CLI integration mode. Allow execute system commands and stream output to AI
+
 	ShellPauseStart ShellPauseState = "start"
 	ShellPauseStop  ShellPauseState = "stop"
-)
 
-// promptRequest is used to pass a text prompt and receive a string response
-// between the blocking PromptForInput method and the non-blocking Run loop.
-type promptRequest struct {
-	prompt       string
-	responseChan chan string
-}
-
-const (
 	// Defines the input state when in system mode.
 	stateProxyingToShell = iota
 	stateReadingCommand
 	stateReadingPassword
+
+	promptPatern = "\n\033[A\r\033[1;91m%s\033[0m> \033[K"
+	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
+	soundbarPatern   = "\0337\r\033[B\033[K[%s%s]\0338"
+	helpFormatString = "* `%s` - %s\n"
+
+	// Thinking levels
+	dynamic = "dynamic"
+	none    = "none"
+	low     = "low"
+	medium  = "medium"
+	high    = "high"
 )
 
 // CLI handles reading user input from the command line.
@@ -131,20 +133,19 @@ type CLI struct {
 // commandHandler defines the function signature for a CLI command handler.
 type commandHandler func(c *CLI, args []string) (isAIPrompt bool, exit bool)
 
-const (
-	promptPatern = "\n\033[A\r\033[1;91m%s\033[0m> \033[K"
-	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
-	soundbarPatern   = "\0337\r\033[B\033[K[%s%s]\0338"
-	helpFormatString = "* `%s` - %s\n"
-)
+// promptRequest is used to pass a text prompt and receive a string response
+// between the blocking PromptForInput method and the non-blocking Run loop.
+type promptRequest struct {
+	prompt       string
+	responseChan chan string
+}
 
-const (
-	dynamic = "dynamic"
-	none    = "none"
-	low     = "low"
-	medium  = "medium"
-	high    = "high"
-)
+// stdInOut is a helper struct that combines io.Reader and io.Writer.
+// It's used to create a terminal instance that reads from stdin and writes to stdout.
+type stdInOut struct {
+	io.Reader
+	io.Writer
+}
 
 var (
 	modes = map[string]string{
@@ -152,6 +153,7 @@ var (
 		System:    System,
 		VoiceMode: VoiceMode,
 		ImageMode: ImageMode,
+		VideoMode: VideoMode,
 	}
 
 	thinkingLevels = map[string]int32{
@@ -730,10 +732,6 @@ func (c *CLI) Run() {
 		defer term.Restore(fd, c.originalTermState)
 	}
 	// Create the terminal instance for prompt mode.
-	type stdInOut struct {
-		io.Reader
-		io.Writer
-	}
 	c.terminal = term.NewTerminal(&stdInOut{os.Stdin, os.Stdout}, "")
 
 	helpers.Verify((*c.bus).SubscribeAsync(config.MainTopic, c.handleBusEvents, false))
@@ -873,31 +871,35 @@ func handleThinking(_ *CLI, args []string) (isAIPrompt bool, exit bool) {
 
 func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	hint := func() {
-		fmt.Printf("Available AI modes: %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode)
+		fmt.Printf("Available AI modes: %s, %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode, VideoMode)
 	}
 	if len(args) != 1 {
 		fmt.Println("Usage: /mode <name>")
 		hint()
-	} else {
-		mode := strings.ToLower(args[0])
-		if value, ok := modes[mode]; !ok {
-			fmt.Printf("Unknown AI mode: %s\n", mode)
-			hint()
-		} else {
-			if value == System {
-				c.previousMode = c.mode
-			} else if c.mode == System { // Switching out of system mode
-				if err := desktop.C.SendToShell("exit\n"); err != nil {
-					log.Printf("Error sending exit command to system shell: %v", err)
-				}
-			}
-			c.mode = value
-			config.C.Mode = value
-			c.modeSwitchRequested = true
-			log.Printf("CLI mode set to: %s", value)
-			(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", value))
+		return false, false
+	}
+
+	mode := strings.ToLower(args[0])
+	value, ok := modes[mode]
+	if !ok {
+		fmt.Printf("Unknown AI mode: %s\n", mode)
+		hint()
+		return false, false
+	}
+
+	// Handle transitions to/from system mode
+	if value == System {
+		c.previousMode = c.mode
+	} else if c.mode == System { // Switching out of system mode
+		if err := desktop.C.SendToShell("exit\n"); err != nil {
+			log.Printf("Error sending exit command to system shell: %v", err)
 		}
 	}
+	c.mode = value
+	config.C.Mode = value
+	c.modeSwitchRequested = true
+	log.Printf("CLI mode set to: %s", value)
+	(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", value))
 	return false, false
 }
 
@@ -926,7 +928,7 @@ func handleHelp(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	}
 
 	mainCommands := []helpEntry{
-		{"/mode <name>", fmt.Sprintf("Set AI mode (%s, %s, %s, %s)", Prompt, System, VoiceMode, ImageMode)},
+		{"/mode <name>", fmt.Sprintf("Set AI mode (%s, %s, %s, %s, %s)", Prompt, System, VoiceMode, ImageMode, VideoMode)},
 		{"/debug", "Toggle debug mode"},
 		{"/voice", "Toggle voice responses"},
 		{"/tools", "Toggle AI tools (e.g., Google Search)"},

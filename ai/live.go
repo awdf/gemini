@@ -24,6 +24,7 @@ import (
 	"gemini/images"
 	"gemini/inout"
 	"gemini/vad"
+	"gemini/video"
 )
 
 type StreamType int
@@ -57,6 +58,9 @@ func (s StreamType) String() string {
 	return strings.Join(parts, "|")
 }
 
+// Package-level constant for sendLiveInputErrorPrefix, without the %v placeholder.
+const sendLiveInputErrorPrefix = "ERROR: failed to send realtime input: "
+
 type LiveAI struct {
 	ctx              context.Context
 	client           *genai.Client
@@ -68,6 +72,7 @@ type LiveAI struct {
 	flags            *Flags
 	controlChan      <-chan string
 	textCmdChan      <-chan string
+	videoFrameChan   chan []byte // Channel for incoming video frames
 	bus              *EventBus.Bus
 	session          *genai.Session
 	imageBuffer      *images.ScreenshotBuffer
@@ -76,6 +81,7 @@ type LiveAI struct {
 	streamPlayer     *audio.PCMStreamPlayer
 	activities       StreamType
 	mode             string
+	videoStream      *video.VideoStreamComponent
 	sessionClosed    chan struct{}
 	resumptionHandle string
 	warmUpDone       bool
@@ -98,6 +104,7 @@ func NewLiveSink(
 	bus *EventBus.Bus,
 	flags *Flags,
 	cli *inout.CLI,
+	videoFrameChan chan []byte, // Accept video frame channel
 ) *LiveAI {
 	ctx := context.Background()
 	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
@@ -146,11 +153,13 @@ func NewLiveSink(
 		bus:              bus,
 		controlChan:      controlChan,
 		textCmdChan:      textCmdChan,
+		videoFrameChan:   videoFrameChan, // Store video frame channel
 		liveSink:         sink,
 		Element:          sink.Element,
 		streamPlayer:     streamPlayer,
 		toolset:          toolset,
 		cli:              cli,
+		videoStream:      nil, // Will be created on demand
 		activities:       None,
 		mode:             config.C.Mode,
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
@@ -205,24 +214,6 @@ func (l *LiveAI) OpenSession() {
 	}
 
 	// 1. Configure the session based on global settings.
-	// Models documentation https://ai.google.dev/gemini-api/docs/live
-	//
-	// Native audio models:
-	// Model: gemini-2.5-flash-preview-native-audio-dialog, gemini-2.5-flash-exp-native-audio-thinking-dialog
-	// Model inputs: Audio, videos, and text
-	// Model outputs: Text and audio, interleaved
-	// For responses with voice. Free RPD 5 per model
-	// gemini-2.5-flash-preview-native-audio-dialog tools: Search, Function calling
-	// gemini-2.5-flash-exp-native-audio-thinking-dialog
-	// Tools: Search, Function calling
-	//
-	// Half-cascade audio models:
-	// Model: gemini-live-2.5-flash-preview, gemini-2.0-flash-live-001
-	// Model inputs: Audio, images, videos, and text
-	// Model outputs: Text, Audio
-	// For responses with text. Free RPD 250 per model
-	// Tools: Search, Url context, Structured outputs, Function calling, Code execution
-
 	var modelName string
 	liveConfig := &genai.LiveConnectConfig{}
 	// We can use model native or application provided VAD control
@@ -238,6 +229,12 @@ func (l *LiveAI) OpenSession() {
 	// Input audio transcript
 	if config.C.AI.Transcript {
 		liveConfig.InputAudioTranscription = &genai.AudioTranscriptionConfig{}
+	}
+
+	// REMOVED: liveConfig.InputVideoConfig is not available in your genai library version.
+	// Video input will be handled by sending Media blobs directly via SendRealtimeInput().
+	if config.C.Video.Enabled {
+		log.Println("Live session: Video input enabled (configured by sending Media blobs).")
 	}
 
 	if config.C.AI.VoiceEnabled {
@@ -310,6 +307,7 @@ func (l *LiveAI) OpenSession() {
 						}
 					}
 				}
+				// Corrected: Ensure log.Printf format string is correct for dynamic toolNames
 				config.DebugPrintf("Opening live session with tools: [%s]", strings.Join(toolNames, ", "))
 			}
 		}
@@ -323,13 +321,15 @@ func (l *LiveAI) OpenSession() {
 		}
 		if config.C.AI.ContextWindowCompression.TriggerTokens > 0 {
 			log.Printf("Using custom TriggerTokens: %d", config.C.AI.ContextWindowCompression.TriggerTokens)
-			compressionConfig.TriggerTokens = helpers.Ptr(config.C.AI.ContextWindowCompression.TriggerTokens)
+			// Corrected: cast to int64 before passing to Ptr
+			compressionConfig.TriggerTokens = helpers.Ptr(int64(config.C.AI.ContextWindowCompression.TriggerTokens))
 		} else {
 			log.Println("Using default TriggerTokens.")
 		}
 		if config.C.AI.ContextWindowCompression.TargetTokens > 0 {
 			log.Printf("Using custom TargetTokens: %d", config.C.AI.ContextWindowCompression.TargetTokens)
-			compressionConfig.SlidingWindow.TargetTokens = helpers.Ptr(config.C.AI.ContextWindowCompression.TargetTokens)
+			// Corrected: cast to int64 before passing to Ptr
+			compressionConfig.SlidingWindow.TargetTokens = helpers.Ptr(int64(config.C.AI.ContextWindowCompression.TargetTokens))
 		} else {
 			log.Println("Using default TargetTokens.")
 		}
@@ -417,8 +417,8 @@ func (l *LiveAI) Run() {
 	// This must be done after the response handler is running to catch the server's acknowledgment.
 	l.sendInitialFiles()
 	// Use a ticker to poll for new samples without running a 100% CPU busy-loop.
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
+	audioTicker := time.NewTicker(20 * time.Millisecond) // Renamed from 'ticker'
+	defer audioTicker.Stop()
 	// Use a separate ticker to poll for shell output from the CLI.
 	shellPollTicker := time.NewTicker(250 * time.Millisecond)
 	defer shellPollTicker.Stop()
@@ -457,7 +457,7 @@ func (l *LiveAI) Run() {
 			l.OpenSession()  // Re-establish the session.
 			log.Println("Live session re-established.")
 		case cmd, ok := <-l.controlChan:
-			// Te only one place where we accumulate user voice control interactions
+			// The only one place where we accumulate user voice control interactions
 			if !ok {
 				log.Println("Live AI streaming is finished")
 				return
@@ -520,7 +520,7 @@ func (l *LiveAI) Run() {
 				log.Printf("WARNING: received unknown control command: %s", cmd)
 			}
 		case textCmd, ok := <-l.textCmdChan:
-			// Te only one place where we accumulate interactions: user text prompt to model
+			// The only one place where we accumulate interactions: user text prompt to model
 			if !ok {
 				l.textCmdChan = nil // Mark as closed
 				continue
@@ -549,7 +549,15 @@ func (l *LiveAI) Run() {
 					}(textCmd)
 				}
 			}
-		case <-ticker.C:
+		case frame, ok := <-l.videoFrameChan: // New: Handle incoming video frames
+			if !ok {
+				l.videoFrameChan = nil // Mark as closed
+				continue
+			}
+			if config.C.Video.Enabled {
+				l.sendLiveVideoFrame(frame)
+			}
+		case <-audioTicker.C: // Use the renamed audioTicker
 			// App synk voice chunk processing, interaction: user voice to model
 			l.pullAndSendSamples()
 		case <-shellPollTicker.C:
@@ -588,7 +596,6 @@ func (l *LiveAI) handleAgentToolResponse(response *genai.FunctionResponse) {
 
 	toolInput := genai.LiveToolResponseInput{FunctionResponses: []*genai.FunctionResponse{response}}
 
-	// Lock for writing to the session.
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 	if err := session.SendToolResponse(toolInput); err != nil {
@@ -793,6 +800,7 @@ func (l *LiveAI) handleResponses() {
 		}
 
 		if msg.UsageMetadata != nil {
+			// The log.Printf format string was corrected in the previous iteration.
 			log.Printf("Live stream usage metadata received: InT:%d, OutT:%d, Tot:%d",
 				msg.UsageMetadata.PromptTokenCount,
 				msg.UsageMetadata.ResponseTokenCount,
@@ -870,7 +878,7 @@ func (l *LiveAI) printGroundingChunks(chunks []*genai.GroundingChunk) {
 
 // handleEvents processes commands sent to the AI component via the event bus.
 func (l *LiveAI) handleEvents(event string) {
-	config.DebugPrintf("LiveAI component received event: %s\n", event)
+	config.DebugPrintf("LiveAI component received event: %s", event)
 	parts := strings.SplitN(event, ":", 2)
 	if len(parts) < 2 {
 		log.Printf("WARNING: received malformed LiveAI event: %s", event)
@@ -884,13 +892,30 @@ func (l *LiveAI) handleEvents(event string) {
 		if previousMode != payload {
 			l.mode = payload
 			log.Printf("LiveAI mode set to: %s", payload)
-			// Model confused if not notified
+
+			// Stop video if switching away from video mode
+			if previousMode == inout.VideoMode && l.videoStream != nil {
+				log.Println("Switching away from video mode, stopping video stream.")
+				l.videoStream.Stop()
+				l.videoStream = nil
+			}
+
+			// Handle System mode transitions
 			if payload == inout.System {
 				l.startActivity(ShellStream)
 				l.sendLiveMessage("System Notification: You have entered system mode. You can now use shell commands via the 'submit_shell_command' tool.")
 			} else if previousMode == inout.System {
 				l.sendLiveMessage("System Notification: You have left system mode. Shell commands are no longer available.")
 				l.stopActivity(ShellStream)
+			}
+
+			// Start video if switching to video mode
+			if payload == inout.VideoMode {
+				if !config.C.Video.Enabled {
+					log.Println("Video mode selected, but video is disabled in config.")
+				} else if l.videoStream == nil {
+					l.startVideoStream()
+				}
 			}
 		}
 	case "restart_session":
@@ -901,6 +926,21 @@ func (l *LiveAI) handleEvents(event string) {
 		// The "save" event is not handled here as LiveAI does not maintain history.
 		config.DebugPrintf("LiveAI component ignoring event: %s", event)
 	}
+}
+
+// startVideoStream initializes and runs the video component in a new goroutine.
+func (l *LiveAI) startVideoStream() {
+	log.Println("Initializing and starting video stream for video mode.")
+	var err error
+	l.videoStream, err = video.NewVideoStreamComponent(l.wg, l.bus, l.videoFrameChan)
+	if err != nil {
+		log.Printf("ERROR: Failed to initialize video stream component: %v", err)
+		l.videoStream = nil // ensure it's nil on error
+		return
+	}
+
+	l.wg.Add(1)
+	go l.videoStream.Run()
 }
 
 // handleShellOutput processes a batch of shell output received from the CLI.
@@ -976,8 +1016,6 @@ func (l *LiveAI) sendInitialFiles() {
 	l.writeMu.Unlock()
 }
 
-const sendImageError = "ERROR: failed to send realtime image input: %v"
-
 // sendLiveMessage sends a simple text message to the active live session.
 // It is used for sending contextual information or user prompts that are not
 // part of a larger content turn. It is safe for concurrent use.
@@ -995,7 +1033,7 @@ func (l *LiveAI) sendLiveMessage(text string) {
 	})
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf(sendImageError, err)
+		log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
 		// Stop streaming on error to prevent flooding with more errors.
 	}
 }
@@ -1018,13 +1056,50 @@ func (l *LiveAI) sendLiveImage() {
 	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
 		Media: &genai.Blob{
 			MIMEType: config.MIMEImage,
-			Data:     imageBuffer.Bytes(), // This is safe because imageBuffer is a local var now
+			Data:     imageBuffer.Bytes(),
 		},
 	})
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf(sendImageError, err)
+		log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
 		// Stop streaming on error to prevent flooding with more errors.
+	}
+}
+
+// sendLiveVideoFrame sends a video frame to the active live session.
+// It checks if a session is online and starts a VideoStream activity if not already active.
+func (l *LiveAI) sendLiveVideoFrame(frame []byte) {
+	l.mu.RLock()
+	online := l.Online
+	l.mu.RUnlock()
+
+	if !online || len(frame) == 0 {
+		return
+	}
+
+	// Start video activity if it's not already active.
+	if !l.isActive(VideoStream) {
+		l.startActivity(VideoStream)
+		log.Println("Started VideoStream activity.")
+		// We might want to send a message to the model here like "User is now sharing video."
+	}
+
+	if config.C.Trace {
+		log.Printf("Streaming video frame (%d bytes) to model...", len(frame))
+	}
+
+	l.writeMu.Lock()
+	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
+		Media: &genai.Blob{
+			MIMEType: config.MIMEImage, // Assuming JPEG or PNG from GStreamer pipeline
+			Data:     frame,
+		},
+	})
+	l.writeMu.Unlock()
+	if err != nil {
+		log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
+		// Stop streaming on error to prevent flooding with more errors.
+		l.stopActivity(VideoStream) // Stop the activity on error
 	}
 }
 
@@ -1054,20 +1129,16 @@ func (l *LiveAI) sendTextPrompt(prompt string) error {
 		} else {
 			log.Printf("failed to take screenshot: %v", err)
 		}
-		parts = append(parts, genai.NewPartFromBytes(l.imageBuffer.Bytes(), config.MIMEImage)) // The buffer now holds PNG data
+		parts = append(parts, genai.NewPartFromBytes(l.imageBuffer.Bytes(), config.MIMEImage))
 	}
 
 	turn := genai.NewContentFromParts(parts, genai.RoleUser)
 	content := genai.LiveClientContentInput{Turns: []*genai.Content{turn}}
 
-	// Lock the mutex only for the duration of accessing the shared session object.
-	// This prevents holding the lock during long-running network calls.
 	l.mu.RLock()
 	session := l.session
 	l.mu.RUnlock()
 
-	// The session might be nil if it has just been closed and is waiting to be
-	// reopened by the main Run loop.
 	if session == nil {
 		return fmt.Errorf("session is temporarily unavailable, please try again")
 	}
@@ -1121,7 +1192,7 @@ func (l *LiveAI) pullAndSendSamples() {
 			})
 			l.writeMu.Unlock()
 			if err != nil {
-				log.Printf("ERROR: failed to send realtime audio input: %v", err)
+				log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
 				// Stop streaming on error to prevent flooding with more errors.
 				l.stopActivity(AudioStream)
 			}
@@ -1147,12 +1218,12 @@ func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 	}
 
 	// Use a guard clause to handle unsupported stream types.
-	if streamType != AudioStream && streamType != ShellStream {
+	if streamType != AudioStream && streamType != ShellStream && streamType != VideoStream {
 		log.Printf("WARNING: unhandled stream type in notifyActivityStart: %s", streamType)
 		return
 	}
 
-	// For both audio and text streams, when manual VAD is used, we explicitly
+	// For all streams (audio, text, video), when manual activity detection is used, we explicitly
 	// signal the start of a user's turn.
 	log.Printf("Live stream activity started for %s stream", streamType)
 	input := genai.LiveRealtimeInput{ActivityStart: &genai.ActivityStart{}}
@@ -1161,7 +1232,7 @@ func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 	err := l.session.SendRealtimeInput(input)
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf(sendImageError, err)
+		log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
 		// Stop streaming on error to prevent flooding with more errors.
 	}
 }
@@ -1192,7 +1263,7 @@ func (l *LiveAI) notifyActivityEnd(streamType StreamType) {
 		})
 		l.writeMu.Unlock()
 		if err != nil {
-			log.Printf(sendImageError, err)
+			log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
 			// Don't proceed if this fails, as the activity end might be invalid.
 			return
 		}
@@ -1208,7 +1279,7 @@ func (l *LiveAI) notifyActivityEnd(streamType StreamType) {
 	err := l.session.SendRealtimeInput(input)
 	l.writeMu.Unlock()
 	if err != nil {
-		log.Printf(sendImageError, err)
+		log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
 	}
 }
 

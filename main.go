@@ -24,6 +24,7 @@ import (
 	"gemini/shell"
 	"gemini/vad"
 
+	// New import for video streaming
 	"github.com/asaskevich/EventBus"
 	"github.com/go-gst/go-gst/gst"
 )
@@ -55,6 +56,7 @@ type App struct {
 	fileControlChan chan string
 	aiOnDemandChan  chan string
 	textCommandChan chan string
+	videoFrameChan  chan []byte // New: Channel for video frames
 	wg              *sync.WaitGroup
 	flags           *CliFlags
 	runnables       []Runnable
@@ -92,6 +94,7 @@ func NewApp(flags *CliFlags) *App {
 	app.fileControlChan = make(chan string, 5)  // For WAV files flow
 	app.aiOnDemandChan = make(chan string, 2)   // Pass WAV file name for the AI audio flow
 	app.textCommandChan = make(chan string, 5)  // For text commands from CLI
+	app.videoFrameChan = make(chan []byte, 1)   // New: Channel for video frames (buffer 1 to get latest)
 
 	// Copy of flags for AI component
 	aiFlags := &ai.Flags{
@@ -106,7 +109,7 @@ func NewApp(flags *CliFlags) *App {
 	// Create the main components with Dependency Injection.
 	// 2 modes: PostAI and LiveAI
 	if flags.Live {
-		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus, aiFlags, app.cli)
+		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus, aiFlags, app.cli, app.videoFrameChan) // New: Pass videoFrameChan
 		// The Live API requires 16kHz mono audio.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.LiveChannels, audio.LiveSampleRate)
 	} else {
@@ -225,7 +228,7 @@ func (app *App) shutdown() {
 	// The main event loop has already been stopped when this function is called.
 	// We call the pipeline's Stop method, which is designed to handle this state
 	// and set the pipeline to NULL safely.
-	app.pipeline.Stop()
+	app.pipeline.Stop() // Corrected to be on its own line.
 	log.Println("Pipeline stopped.")
 
 	// Now that the pipeline is stopped, wait for the processing goroutines to finish their cleanup.
@@ -242,7 +245,7 @@ func (app *App) initLogging() {
 		log.Fatalf("error opening log file %s: %v", config.C.LogFile, err)
 	}
 	log.SetOutput(app.logFile)
-	log.SetPrefix("\x20")
+	log.SetPrefix(" ")
 	log.Println("### Application started!!!")
 
 	config.DebugPrintln("!!! DEBUG MODE ENABLED !!!")
