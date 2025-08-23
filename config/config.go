@@ -157,7 +157,15 @@ type GoogleConfig struct {
 }
 
 type ShellConfig struct {
-	CommandEndMarker string `toml:"command_end_marker"`
+	CommandEndMarkerCore string `toml:"command_end_marker_core"`
+}
+
+// GetCommandEndMarker constructs the full, unique command end marker from the core string.
+func (sc *ShellConfig) GetCommandEndMarker() string {
+	if sc.CommandEndMarkerCore == "" {
+		return "__" + "GEMINI_CMD_DONE" + "__" // A safe fallback
+	}
+	return fmt.Sprintf("__%s__", sc.CommandEndMarkerCore)
 }
 
 // Load reads the configuration from the specified file path.
@@ -270,7 +278,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.Video.Height = 720
 	defaultConfig.Video.FrameRate = 10
 	defaultConfig.Video.Quality = 85
-	defaultConfig.Shell.CommandEndMarker = "__GEMINI_CMD_DONE__"
+	defaultConfig.Shell.CommandEndMarkerCore = "GEMINI_CMD_DONE"
 
 	f, err := os.Create(path)
 	if err != nil {

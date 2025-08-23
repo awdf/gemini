@@ -51,7 +51,7 @@ To execute commands requiring a password (like 'sudo'), you MUST use the followi
 6. If the password was wrong, sudo will likely ask for it again. In this case, repeat step 5.
 
 **Checking Command Status:**
-After you run a command, the shell will automatically print a special marker line: '%s:[exit_code]'. You must look for this line in the shell output to determine if the command succeeded. An exit code of '0' indicates success. Any non-zero exit code indicates an error. You no longer need to run 'echo $?' manually.`, config.C.Shell.CommandEndMarker)
+After you run a command, the shell will automatically print a special marker line: '%s:[exit_code]'. You must look for this line in the shell output to determine if the command succeeded. An exit code of '0' indicates success. Any non-zero exit code indicates an error. You no longer need to run 'echo $?' manually.`, config.C.Shell.GetCommandEndMarker())
 
 	agentConfig := AgentConfig{
 		Name:              AgentSystemName,

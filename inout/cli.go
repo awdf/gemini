@@ -125,6 +125,7 @@ type CLI struct {
 	originalTermState     *term.State
 	terminal              *term.Terminal // For prompt mode line editing
 	modeSwitchRequested   bool           // Signals a switch between system and prompt loops.
+	systemAFK             bool           // Auto-finish turn in system mode.
 	drawCompleteChan      chan struct{}  // Signals that AI response drawing is complete, unblocking the prompt loop.
 }
 
@@ -176,6 +177,7 @@ var (
 		"mode":       handleMode,
 		"prompt":     handlePrompt,
 		"exit":       handleExit,
+		"afk":        handleAfk,
 		"help":       handleHelp,
 	}
 )
@@ -203,6 +205,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		shellPaused:         false,
 		modeSwitchRequested: false,
 		promptChan:          make(chan promptRequest),
+		systemAFK:           false,
 		drawCompleteChan:    make(chan struct{}, 1), // Buffered to be non-blocking
 	}
 }
@@ -603,6 +606,12 @@ func (c *CLI) runSystemModeLoop() {
 			c.shellBuffer.WriteString(line + "\n")
 			c.shellBufferMu.Unlock()
 
+			// Check for command end marker to auto-finish turn in AFK mode.
+			if c.systemAFK && strings.HasPrefix(line, config.C.Shell.GetCommandEndMarker()) {
+				log.Println("AFK mode: Command finished, auto-submitting turn.")
+				helpers.SafeSend(c.cmdChan, "command execution done")
+			}
+
 		case req := <-c.promptChan:
 			c.activePrompt = &req
 			c.systemInputState = stateReadingPassword
@@ -872,6 +881,17 @@ func handlePrompt(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	return false, false
 }
 
+func handleAfk(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+	c.systemAFK = !c.systemAFK
+	log.Printf("System AFK mode set to: %t", c.systemAFK)
+	if c.systemAFK {
+		fmt.Println("System AFK mode enabled. Turns will be auto-submitted after each command.")
+	} else {
+		fmt.Println("System AFK mode disabled.")
+	}
+	return false, false
+}
+
 func handleExit(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	flow.Quit()
 	return false, true
@@ -895,6 +915,7 @@ func handleHelp(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 
 	systemCommands := []helpEntry{
 		{"/prompt <text>", "Send a text prompt to the AI"},
+		{"/afk", "Toggle AFK mode to auto-submit turns after each command"},
 	}
 
 	postAICommands := []helpEntry{

@@ -146,5 +146,5 @@ Quality = 75         # Good balance of quality and size
 
 [shell]
 # A unique string that the shell will print after every command to signal its completion.
-# This should be a string that is very unlikely to appear in normal command output.
-command_end_marker = "__GEMINI_CMD_DONE__"
+# This should be a core string that is very unlikely to appear in normal command output.
+command_end_marker_core = "GEMINI_CMD_DONE"

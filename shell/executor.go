@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,65 @@ import (
 	"gemini/config"
 	"gemini/flow"
 )
+
+// filteringWriter is an io.Writer that wraps another writer. It buffers
+// incoming data, splits it into lines, and filters out any lines that
+// start with a specific marker string before passing the rest to the
+// underlying writer. This is used to hide command status markers from the
+// user's terminal while still sending them to the application's internal parser.
+type filteringWriter struct {
+	w      io.Writer
+	marker string
+	// A buffer to hold partial lines between Write calls.
+	buffer *bytes.Buffer
+}
+
+// newFilteringWriter creates a new writer that filters out lines with the given marker.
+func newFilteringWriter(w io.Writer, marker string) *filteringWriter {
+	return &filteringWriter{
+		w:      w,
+		marker: marker,
+		buffer: new(bytes.Buffer),
+	}
+}
+
+// Write implements the io.Writer interface. It buffers data and writes
+// only complete lines that do not match the marker.
+func (fw *filteringWriter) Write(p []byte) (n int, err error) {
+	// Add the new data to the internal buffer.
+	if _, err = fw.buffer.Write(p); err != nil {
+		return 0, err
+	}
+
+	// Process all complete lines currently in the buffer.
+	for {
+		line, err := fw.buffer.ReadBytes('\n')
+		if err != nil { // This means io.EOF was reached, 'line' contains the remainder.
+			// The remainder could be a prompt or a partial marker.
+			// If it's a prefix of the marker, put it back and wait for more data.
+			if strings.HasPrefix(fw.marker, string(line)) {
+				fw.buffer.Write(line)
+			} else {
+				// It's not a partial marker, so it's a prompt or other output. Write it.
+				if _, wErr := fw.w.Write(line); wErr != nil {
+					return 0, wErr // Can't do much else.
+				}
+			}
+			break // Exit the loop since we've processed the remainder.
+		}
+
+		// Check if the line (trimmed of whitespace) starts with the marker.
+		if !strings.HasPrefix(strings.TrimSpace(string(line)), fw.marker) { // If it's not the marker, write it to the underlying writer.
+			if _, err = fw.w.Write(line); err != nil {
+				return 0, err
+			}
+		}
+		// If it is the marker, we simply do nothing with it, effectively filtering it out.
+	}
+
+	// We report that we've processed all the input bytes successfully.
+	return len(p), nil
+}
 
 // Executor is responsible for executing shell commands in a pseudo-terminal.
 type Executor struct {
@@ -83,7 +143,7 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 	// PROMPT_COMMAND is executed just before the shell displays the prompt (PS1).
 	// We use it to print a unique marker with the exit code of the last command.
 	// This allows the model to programmatically detect when a command has finished.
-	promptCommand := fmt.Sprintf(`PROMPT_COMMAND='printf "%s:%%d\n" $?'`, config.C.Shell.CommandEndMarker)
+	promptCommand := fmt.Sprintf(`PROMPT_COMMAND='printf "%s:%%d\n" $?'`, config.C.Shell.GetCommandEndMarker())
 	rcFileContent := fmt.Sprintf(`
 # Source the user's .bashrc to load their aliases, functions, and custom completions.
 if [ -f %q ]; then
@@ -182,8 +242,11 @@ export %s
 			}
 		}()
 
-		// Create a MultiWriter to simultaneously write to the user's stdout and the pipe.
-		multiWriter := io.MultiWriter(os.Stdout, pw)
+		// Create a custom writer to filter the command-end marker from stdout,
+		// so the user doesn't see it, but the AI does.
+		stdoutFilter := newFilteringWriter(os.Stdout, config.C.Shell.GetCommandEndMarker())
+		// Create a MultiWriter to simultaneously write to the user's (filtered) stdout and the internal pipe.
+		multiWriter := io.MultiWriter(stdoutFilter, pw)
 
 		// This will block until the command is done, copying output to both writers.
 		// We can ignore the error, as it will be an expected one (EIO or EOF)
