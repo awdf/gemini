@@ -112,7 +112,6 @@ type CLI struct {
 	isSystemShellActive   bool
 	aiEnabled             bool
 	ready                 bool
-	modeMu                sync.Mutex // Protects access to mode, previousMode, ready, and muted status.
 	mode                  string
 	previousMode          string
 	promptChan            chan promptRequest // Receives requests for sensitive modal prompts.
@@ -128,7 +127,6 @@ type CLI struct {
 	terminal              *term.Terminal // For prompt mode line editing
 	modeSwitchRequested   bool           // Signals a switch between system and prompt loops.
 	drawCompleteChan      chan struct{}  // Signals that AI response drawing is complete, unblocking the prompt loop.
-	shellExitChan         chan struct{}  // Signals that the interactive shell process has exited.
 }
 
 // commandHandler defines the function signature for a CLI command handler.
@@ -198,7 +196,6 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		isSystemShellActive: false,
 		aiEnabled:           aiEnabled,
 		ready:               false,
-		modeMu:              sync.Mutex{},
 		mode:                config.C.Mode,
 		previousMode:        "",
 		activePrompt:        nil,
@@ -208,7 +205,6 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		modeSwitchRequested: false,
 		promptChan:          make(chan promptRequest),
 		drawCompleteChan:    make(chan struct{}, 1), // Buffered to be non-blocking
-		shellExitChan:       make(chan struct{}, 1),
 	}
 }
 
@@ -253,9 +249,7 @@ func (c *CLI) ReceiveShellPause(state ShellPauseState) {
 // PromptForInput displays a prompt to the user and waits for a line of text input.
 // It's a blocking call that communicates with the main Run loop via a channel.
 func (c *CLI) PromptForInput(prompt string) string {
-	c.modeMu.Lock()
 	isSystemMode := c.mode == System
-	c.modeMu.Unlock()
 
 	if !isSystemMode {
 		log.Println("WARNING: PromptForInput called outside of system mode. This is not supported.")
@@ -272,29 +266,13 @@ func (c *CLI) PromptForInput(prompt string) string {
 }
 
 // startSystemShell starts the interactive shell for system mode.
-func (c *CLI) startSystemShell() {
+func (c *CLI) startSystemShell(outputChan chan<- string) {
 	if c.isSystemShellActive {
 		return
 	}
 
 	// The terminal is already in raw mode, managed by the main Run() loop.
 
-	// This channel will receive output from the interactive shell.
-	outputChan := make(chan string, 100)
-	go func() {
-		// Exit from shell on Ctrl+D or exit command
-		for line := range outputChan {
-			c.shellBufferMu.Lock()
-			// The PTY is already connected to the user's terminal, so it handles displaying the output.
-			// We just need to capture it for the AI, not print it again.
-			c.shellBuffer.WriteString(line + "\n")
-			c.shellBufferMu.Unlock()
-		}
-		log.Println("CLI shell output publisher finished.")
-		// When the shell exits, its output channel is closed. Signal the main
-		// system mode loop that it's time to exit.
-		helpers.SafeSend(c.shellExitChan, struct{}{})
-	}()
 	if err := desktop.C.StartInteractiveShell(outputChan); err != nil {
 		fmt.Printf("Error starting system shell: %v\n", err)
 	} else {
@@ -542,8 +520,6 @@ func (c *CLI) handleBusEvents(event string) {
 	parts := strings.SplitN(event, ":", 2)
 	command := parts[0]
 
-	c.modeMu.Lock()
-	defer c.modeMu.Unlock()
 	switch command {
 	case "mute": // Normal flow
 		c.muted = true
@@ -551,7 +527,7 @@ func (c *CLI) handleBusEvents(event string) {
 		config.DebugPrintln("CLI received draw event, preparing to draw prompt.")
 		c.muted = false
 		if c.mode == System {
-			c.drawLocked()
+			c.draw()
 		} else {
 			// We are in prompt mode. Signal the prompt loop to continue.
 			helpers.SafeSend(c.drawCompleteChan, struct{}{})
@@ -562,7 +538,7 @@ func (c *CLI) handleBusEvents(event string) {
 	case "ready": // Critical flow unblocking
 		c.ready = true
 		c.muted = false
-		c.drawLocked() // Initial prompt
+		c.draw() // Initial prompt
 	default:
 		config.DebugPrintf("CLI drop event: %s", event)
 	}
@@ -649,11 +625,14 @@ func (c *CLI) startStdinReader(inputChan chan<- []byte, done <-chan struct{}) {
 
 // runSystemModeLoop handles all input and events when the CLI is in 'system' mode.
 func (c *CLI) runSystemModeLoop() {
-	c.startSystemShell()
+	// This channel will receive output from the interactive shell.
+	outputChan := make(chan string, 100)
+	c.startSystemShell(outputChan)
 	c.systemInputState = stateProxyingToShell
 
 	inputChan := make(chan []byte, 1) // Use a small buffer
 	doneChan := make(chan struct{})
+	defer close(doneChan) // Ensure the stdin reader goroutine is stopped on exit.
 	c.startStdinReader(inputChan, doneChan)
 
 	shutdownListener := flow.GetListener()
@@ -667,10 +646,16 @@ func (c *CLI) runSystemModeLoop() {
 		select {
 		case <-*shutdownListener:
 			return
-		case <-c.shellExitChan:
-			log.Println("Shell exited, terminating system mode loop.")
-			c.stopSystemShell()
-			return
+		case line, ok := <-outputChan:
+			if !ok {
+				log.Println("Shell exited, terminating system mode loop.")
+				c.stopSystemShell()
+				return
+			}
+			c.shellBufferMu.Lock()
+			c.shellBuffer.WriteString(line + "\n")
+			c.shellBufferMu.Unlock()
+
 		case req := <-c.promptChan:
 			c.activePrompt = &req
 			c.systemInputState = stateReadingPassword
@@ -794,10 +779,8 @@ func (c *CLI) Run() {
 		default:
 		}
 
-		c.modeMu.Lock()
 		isReady := c.ready
 		currentMode := c.mode
-		c.modeMu.Unlock()
 
 		// The main loop must wait until the application signals it's ready.
 		// This prevents a race condition where the input loop starts and blocks
@@ -818,14 +801,6 @@ func (c *CLI) Run() {
 }
 
 func (c *CLI) draw() {
-	c.modeMu.Lock()
-	defer c.modeMu.Unlock()
-	c.drawLocked()
-}
-
-// drawLocked performs the drawing without acquiring a lock.
-// It assumes the caller already holds c.modeMu.
-func (c *CLI) drawLocked() {
 	if c.muted || !c.ready {
 		return
 	}
@@ -937,10 +912,6 @@ func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	// Handle transitions to/from system mode
 	if value == System {
 		c.previousMode = c.mode
-	} else if c.mode == System { // Switching out of system mode
-		if err := desktop.C.SendToShell("exit\n"); err != nil {
-			log.Printf("Error sending exit command to system shell: %v", err)
-		}
 	}
 	c.mode = value
 	config.C.Mode = value
@@ -1021,9 +992,6 @@ func handleHelp(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 // command handles internal CLI commands. It returns (isAIPrompt, exit) to signal
 // the calling loop's next action.
 func (c *CLI) command(cmd string) (isAIPrompt bool, exit bool) {
-	c.modeMu.Lock()
-	defer c.modeMu.Unlock()
-
 	var commandName string
 	log.Println("CLI command received:", cmd)
 	parts := strings.Fields(cmd)
