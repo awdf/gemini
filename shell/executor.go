@@ -80,6 +80,10 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 	// - \[\033[0m\]: Reset color to default.
 	// The \[ and \] are crucial to tell bash that the color codes are non-printing characters.
 	ps1 := "PS1='\\[\033[1;91m\\]system\\[\033[0m\\]:\\[\033[1;94m\\]\\w\\[\033[0m\\]\\$ '"
+	// PROMPT_COMMAND is executed just before the shell displays the prompt (PS1).
+	// We use it to print a unique marker with the exit code of the last command.
+	// This allows the model to programmatically detect when a command has finished.
+	promptCommand := fmt.Sprintf(`PROMPT_COMMAND='printf "%s:%%d\n" $?'`, config.C.Shell.CommandEndMarker)
 	rcFileContent := fmt.Sprintf(`
 # Source the user's .bashrc to load their aliases, functions, and custom completions.
 if [ -f %q ]; then
@@ -87,7 +91,8 @@ if [ -f %q ]; then
 fi
 # Set our custom prompt, overriding any from the user's .bashrc.
 export %s
-`, userBashrcPath, userBashrcPath, ps1)
+export %s
+`, userBashrcPath, userBashrcPath, ps1, promptCommand)
 
 	// Using os.CreateTemp is safer than ioutil.TempFile.
 	tmpfile, err := os.CreateTemp("", "gemini-bashrc-*.sh")

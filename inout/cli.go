@@ -298,7 +298,7 @@ func (c *CLI) stopSystemShell() {
 		c.mode = Prompt // Default fallback.
 	}
 	// When Ctrl+D prssed, we need draw prompt for user
-	c.draw()
+	(*c.bus).Publish(config.MainTopic, "draw:cli.stopSystemShell")
 }
 
 // handleSystemLineEditor provides a minimal line editor for raw terminal mode.
@@ -321,7 +321,7 @@ func (c *CLI) handleSystemLineEditor(b byte) {
 	case '\t': // Tab key
 		// Explicitly ignore tab completion in this simple editor.
 	case '\r', '\n': // Enter key
-		fmt.Print("\r\n") // Echo newline.
+		c.formatter.Reset() // Echo newline.
 		text := c.systemCommandBuffer.String()
 		c.systemCommandBuffer.Reset()
 		c.systemInputState = stateProxyingToShell // Always return to proxying.
@@ -333,7 +333,7 @@ func (c *CLI) handleSystemLineEditor(b byte) {
 			}
 		} else {
 			// An empty command should still redraw the prompt via the event bus.
-			(*c.bus).Publish(config.MainTopic, "draw:cli.command.empty")
+			(*c.bus).Publish(config.MainTopic, "draw:cli.handleSystemLineEditor")
 		}
 	case 127, 8: // Backspace
 		if c.systemCommandBuffer.Len() > 0 {
@@ -375,7 +375,7 @@ func (c *CLI) handlePasswordEditor(b byte) {
 			close(c.activePrompt.responseChan)
 			c.activePrompt = nil
 		}
-		(*c.bus).Publish(config.MainTopic, "ready:cli.prompt.done")
+		(*c.bus).Publish(config.MainTopic, "ready:cli.handlePasswordEditor")
 		c.draw() // Redraw the normal shell prompt.
 
 	case 127, 8: // Backspace
@@ -395,7 +395,7 @@ func (c *CLI) handlePasswordEditor(b byte) {
 			close(c.activePrompt.responseChan)
 			c.activePrompt = nil
 		}
-		(*c.bus).Publish(config.MainTopic, "ready:cli.prompt.done")
+		(*c.bus).Publish(config.MainTopic, "ready:cli.handlePasswordEditor")
 		c.draw()
 	default:
 		// Add printable characters to buffer, but do not echo them.
@@ -607,7 +607,7 @@ func (c *CLI) runSystemModeLoop() {
 			c.activePrompt = &req
 			c.systemInputState = stateReadingPassword
 			c.systemCommandBuffer.Reset()
-			(*c.bus).Publish(config.MainTopic, "block:cli.prompt.start")
+			(*c.bus).Publish(config.MainTopic, "block:cli.runSystemModeLoop")
 			c.formatter.PrintNl(req.prompt)
 
 		case inputBytes, ok := <-inputChan:
@@ -751,7 +751,7 @@ func (c *CLI) draw() {
 		config.DebugPrintln("CLI drawing prompt")
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
 		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
-		(*c.bus).Publish(config.MainTopic, "show:cli.run")
+		(*c.bus).Publish(config.MainTopic, "show:cli.draw")
 		helpers.SafeSend(c.drawCompleteChan, struct{}{}) // Signal the prompt loop to continue.
 	}
 }
@@ -771,21 +771,21 @@ func handleDebug(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
 func handleVoice(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	config.C.AI.VoiceEnabled = !config.C.AI.VoiceEnabled
 	log.Printf("Voice output set to: %t", config.C.AI.VoiceEnabled)
-	(*c.bus).Publish(config.AITopic, "restart_session:voice_toggle")
+	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleVoice")
 	return false, false
 }
 
 func handleTools(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	config.C.AI.EnableTools = !config.C.AI.EnableTools
 	log.Printf("AI tools enabled set to: %t", config.C.AI.EnableTools)
-	(*c.bus).Publish(config.AITopic, "restart_session:tools_toggle")
+	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleTools")
 	return false, false
 }
 
 func handleTranscript(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	config.C.AI.Transcript = !config.C.AI.Transcript
 	log.Printf("Separate transcription step set to: %t", config.C.AI.Transcript)
-	(*c.bus).Publish(config.AITopic, "restart_session:transcript_toggle")
+	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleTranscript")
 	return false, false
 }
 

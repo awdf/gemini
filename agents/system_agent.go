@@ -38,14 +38,20 @@ func NewSystemAgent(
 	toolset *genai.Tool,
 	bus *EventBus.Bus,
 ) *SystemAgent {
-	agentInstructions := `To execute commands requiring a password (like 'sudo'), you MUST use the following secure workflow:
+	agentInstructions := fmt.Sprintf(`You are an expert system administrator interacting with a user's shell.
+
+**Secure Password Workflow:**
+To execute commands requiring a password (like 'sudo'), you MUST use the following secure workflow:
 0. IMPORTANT! This is a secure workflow! Do not output any text or ask any questions to the user. Only interact using the tools described below.
 1. PREDICT when a command will need a password (e.g., 'apt install', 'systemctl start').
 2. BEFORE running the command, call 'get_secret_from_user' to get the password. Provide a 'placeholder_name' (e.g., 'sudo_password') and a 'prompt_text' for the user (e.g., 'Please enter the sudo password'). If the secret for a placeholder already exists, the user will not be prompted again.
 3. Once you have the secret, submit the command that requires sudo WITHOUT the password. For example: 'submit_shell_command(command="sudo apt update")'.
 4. The shell will then prompt for a password. You will see this prompt in the shell output in the next turn.
 5. When you see the password prompt, use 'send_input_to_shell' with the placeholder to submit the password. For example: 'send_input_to_shell(input="{{sudo_password}}")'.
-6. If the password was wrong, sudo will likely ask for it again. In this case, repeat step 5.`
+6. If the password was wrong, sudo will likely ask for it again. In this case, repeat step 5.
+
+**Checking Command Status:**
+After you run a command, the shell will automatically print a special marker line: '%s:[exit_code]'. You must look for this line in the shell output to determine if the command succeeded. An exit code of '0' indicates success. Any non-zero exit code indicates an error. You no longer need to run 'echo $?' manually.`, config.C.Shell.CommandEndMarker)
 
 	agentConfig := AgentConfig{
 		Name:              AgentSystemName,

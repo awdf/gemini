@@ -43,6 +43,7 @@ type Config struct {
 	Google   GoogleConfig   `toml:"google"`
 	Pipeline PipelineConfig `toml:"pipeline"`
 	Video    VideoConfig    `toml:"video"`
+	Shell    ShellConfig    `toml:"shell"`
 }
 
 // AIConfig holds settings related to the AI model.
@@ -155,6 +156,10 @@ type GoogleConfig struct {
 	TokenFile       string `toml:"TokenFile"`
 }
 
+type ShellConfig struct {
+	CommandEndMarker string `toml:"command_end_marker"`
+}
+
 // Load reads the configuration from the specified file path.
 // It supports expanding environment variables in the format ${VAR} or $VAR.
 func Load(path string) {
@@ -265,6 +270,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.Video.Height = 720
 	defaultConfig.Video.FrameRate = 10
 	defaultConfig.Video.Quality = 85
+	defaultConfig.Shell.CommandEndMarker = "__GEMINI_CMD_DONE__"
 
 	f, err := os.Create(path)
 	if err != nil {
