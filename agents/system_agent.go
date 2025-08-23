@@ -39,13 +39,13 @@ func NewSystemAgent(
 	bus *EventBus.Bus,
 ) *SystemAgent {
 	agentInstructions := `To execute commands requiring a password (like 'sudo'), you MUST use the following secure workflow:
-0. IMPORTANT! This is secure workflow! No output! No responses to user! No any other questions! Only interaction by 'get_secret_from_user' tool allowed.
-1. When you see a password prompt (the secure workflow started), call 'get_secret_from_user'. Provide a 'placeholder_name' (e.g., 'sudo_password') and a 'prompt_text' for the user.
-2. The tool will securely get the password from the user and confirm it's stored.
-3. Once confirmed, use 'send_input_to_shell' with 'input': '{{sudo_password}}'} to submit the password.
-4. For subsequent commands, you can reuse the placeholder directly, e.g., by providing a base64-encoded command string like 'submit_shell_command(command='ZWNobyAie3tzdWRvX3Bhc3N3b3JkfX0iIHwgc3VkbyAtUyBvdGhlcl9jb21tYW5k')'.
-5. Continue execution of password depended command interrupted by this secure workflow (the secure workflow finished).
-6. User may to enter wrong password, in this case repeat secure workflow from scratch`
+0. IMPORTANT! This is a secure workflow! Do not output any text or ask any questions to the user. Only interact using the tools described below.
+1. PREDICT when a command will need a password (e.g., 'apt install', 'systemctl start').
+2. BEFORE running the command, call 'get_secret_from_user' to get the password. Provide a 'placeholder_name' (e.g., 'sudo_password') and a 'prompt_text' for the user (e.g., 'Please enter the sudo password'). If the secret for a placeholder already exists, the user will not be prompted again.
+3. Once you have the secret, submit the command that requires sudo WITHOUT the password. For example: 'submit_shell_command(command="sudo apt update")'.
+4. The shell will then prompt for a password. You will see this prompt in the shell output in the next turn.
+5. When you see the password prompt, use 'send_input_to_shell' with the placeholder to submit the password. For example: 'send_input_to_shell(input="{{sudo_password}}")'.
+6. If the password was wrong, sudo will likely ask for it again. In this case, repeat step 5.`
 
 	agentConfig := AgentConfig{
 		Name:              AgentSystemName,
@@ -145,8 +145,8 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 		command := string(decodedBytes)
 		a.Printf("Submitting shell command: %s", command)
 		// Begin from 'Enter' as shell prompt have overridden by model answer
-		// Append a newline to simulate the user pressing 'Enter'.
-		if err := desktop.C.SendToShell("\n" + substitutePlaceholders(command) + "\n"); err != nil {
+		// Append a newline to simulate the user pressing 'Enter'. Placeholders are NOT substituted here for security.
+		if err := desktop.C.SendToShell("\n" + command + "\n"); err != nil {
 			// This will fail if the user is not in system mode, which is correct.
 			return a.CreateFunctionResponse(call, nil, err)
 		}

@@ -297,6 +297,8 @@ func (c *CLI) stopSystemShell() {
 	} else {
 		c.mode = Prompt // Default fallback.
 	}
+	// When Ctrl+D prssed, we need draw prompt for user
+	c.draw()
 }
 
 // handleSystemLineEditor provides a minimal line editor for raw terminal mode.
@@ -606,7 +608,7 @@ func (c *CLI) runSystemModeLoop() {
 			c.systemInputState = stateReadingPassword
 			c.systemCommandBuffer.Reset()
 			(*c.bus).Publish(config.MainTopic, "block:cli.prompt.start")
-			fmt.Printf("\n%s: ", req.prompt)
+			c.formatter.PrintNl(req.prompt)
 
 		case inputBytes, ok := <-inputChan:
 			if !ok {
@@ -654,7 +656,8 @@ func (c *CLI) runPromptModeLoop() {
 		line, err := c.terminal.ReadLine()
 		if err != nil {
 			if err == io.EOF {
-				log.Println("Exiting due to EOF from terminal (Ctrl+D).")
+				log.Println("Exiting due to EOF from terminal (Ctrl+C, Ctrl+D).")
+				c.formatter.Reset()
 				flow.Quit()
 				<-*shutdownListener
 			} else {
@@ -717,19 +720,11 @@ func (c *CLI) Run() {
 		default:
 		}
 
-		// isReady := c.ready
 		currentMode := c.mode
-
-		// The main loop must wait until the application signals it's ready.
-		// This prevents a race condition where the input loop starts and blocks
-		// before the initial prompt can be drawn.
-		// if !isReady {
-		// 	time.Sleep(50 * time.Millisecond)
-		// 	continue
-		// }
 
 		c.modeSwitchRequested = false
 
+		// Both calls is blocking and provide full input processing
 		if currentMode == System {
 			c.runSystemModeLoop()
 		} else {
