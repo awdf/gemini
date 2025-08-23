@@ -140,7 +140,6 @@ export %s
 		// Ensure the temporary rcfile is cleaned up when the shell process exits.
 		defer os.Remove(tmpfile.Name())
 		// Defer closing the channel to ensure it's closed when the goroutine exits.
-		(*e.bus).Publish(config.MainTopic, "mute:shell.interactive.start")
 
 		// --- Resize Handling ---
 		// Get a channel for window resize signals from the flow package.
@@ -230,7 +229,6 @@ func (e *Executor) StopInteractive() error {
 		e.activeCmd = nil
 	}
 	// The channel is now closed by the writer goroutine in StartInteractive.
-	(*e.bus).Publish(config.MainTopic, "draw:shell.interactive.done")
 	log.Println("Interactive shell session resources cleaned up.")
 
 	return err

@@ -59,7 +59,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/asaskevich/EventBus"
 	"golang.org/x/term"
@@ -298,8 +297,6 @@ func (c *CLI) stopSystemShell() {
 	} else {
 		c.mode = Prompt // Default fallback.
 	}
-	// When leaving system mode, the main loop will switch to prompt mode.
-	c.draw()
 }
 
 // handleSystemLineEditor provides a minimal line editor for raw terminal mode.
@@ -327,11 +324,9 @@ func (c *CLI) handleSystemLineEditor(b byte) {
 		c.systemCommandBuffer.Reset()
 		c.systemInputState = stateProxyingToShell // Always return to proxying.
 		c.systemProxyLineBuffer.Reset()           // Clear the line buffer after a command.
-		if text != "" {
-			// The command function is now responsible for triggering a redraw
+		if text != "" {                           // The command function is now responsible for triggering a redraw
 			// via an event if necessary.
-			_, exit := c.command(text)
-			if exit {
+			if exit := c.command(text); exit {
 				return // An exit command was issued.
 			}
 		} else {
@@ -410,20 +405,19 @@ func (c *CLI) handlePasswordEditor(b byte) {
 
 // processLine handles a line of input received from the prompt mode editor.
 // It returns (isAIPrompt, exitRequested) to the calling loop.
-func (c *CLI) processLine(line string) (isAIPrompt bool, exitRequested bool) {
+func (c *CLI) processLine(line string) (exitRequested bool) {
 	fullLine := strings.TrimSpace(line)
 	parts := strings.Fields(fullLine)
 
 	if len(parts) > 0 && strings.HasPrefix(parts[0], "/") {
 		parts[0] = strings.TrimPrefix(parts[0], "/")
 		// A command can be an AI prompt (like /prompt) or an exit command.
-		isAIPrompt, exit := c.command(strings.Join(parts, " "))
-		return isAIPrompt, exit
+		return c.command(strings.Join(parts, " "))
 	} else if fullLine != "" {
 		helpers.SafeSend(c.cmdChan, fullLine)
-		return true, false // This is a standard AI prompt.
+		return false // This is a standard AI prompt.
 	}
-	return false, false // Empty line, not a prompt, not an exit.
+	return false // Empty line, not a prompt, not an exit.
 }
 
 // processInputByte is the core of the raw mode input state machine. It processes
@@ -526,12 +520,7 @@ func (c *CLI) handleBusEvents(event string) {
 	case "draw": // Normal flow
 		config.DebugPrintln("CLI received draw event, preparing to draw prompt.")
 		c.muted = false
-		if c.mode == System {
-			c.draw()
-		} else {
-			// We are in prompt mode. Signal the prompt loop to continue.
-			helpers.SafeSend(c.drawCompleteChan, struct{}{})
-		}
+		c.draw()
 	case "block": // Critical flow blocking
 		c.ready = false
 		c.muted = true
@@ -549,68 +538,24 @@ func (c *CLI) handleBusEvents(event string) {
 func (c *CLI) startStdinReader(inputChan chan<- []byte, done <-chan struct{}) {
 	go func() {
 		defer close(inputChan)
-
-		// First, try to set a deadline to see if the file descriptor supports it.
-		err := os.Stdin.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
-		_ = os.Stdin.SetReadDeadline(time.Time{}) // Immediately cancel it.
-
-		if err != nil {
-			// The file type does not support deadlines. Log this and fall back
-			// to a simple blocking read loop. This loop will not be cancellable
-			// via the 'done' channel while it's blocked on Read().
-			log.Println("stdin does not support deadlines; sensitive prompts in system mode may not be interruptible.")
-			for {
-				// We can check for cancellation *before* the blocking call.
-				select {
-				case <-done:
-					return
-				default:
-				}
-				buf := make([]byte, 128)
-				n, readErr := os.Stdin.Read(buf)
-				if readErr != nil {
-					if readErr != io.EOF {
-						log.Printf("Stdin read error: %v", readErr)
-					}
-					return
-				}
-				if n > 0 {
-					data := make([]byte, n)
-					copy(data, buf[:n])
-					inputChan <- data
-				}
-			}
-		}
-
-		// If we are here, deadlines are supported. Use the non-blocking loop.
-		buf := make([]byte, 128)
+		// This is a simple blocking read loop. It is not perfectly cancellable
+		// while blocked on Read(), but it checks for cancellation between reads.
+		// This is a pragmatic approach for interactive TTY input, where using
+		// SetReadDeadline is not supported and causes a confusing error log.
+		// This change removes the error and simplifies the logic by removing the
+		// unsupported non-blocking path.
 		for {
 			select {
 			case <-done:
 				return
 			default:
 			}
-
-			// Set a deadline on the read to make it non-blocking. This allows the
-			// loop to periodically check the 'done' channel for cancellation.
-			readErr := os.Stdin.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-			if readErr != nil {
-				// This shouldn't happen if the initial check passed, but handle it.
-				log.Printf("Failed to set read deadline on stdin: %v", err)
-				return
-			}
-
+			buf := make([]byte, 128)
 			n, readErr := os.Stdin.Read(buf)
-
-			// A zero-time deadline effectively cancels the deadline.
-			_ = os.Stdin.SetReadDeadline(time.Time{})
-
 			if readErr != nil {
-				if os.IsTimeout(readErr) {
-					continue // This is an expected error when no input is available.
+				if readErr != io.EOF {
+					log.Printf("Stdin read error: %v", readErr)
 				}
-				// If the error is not a timeout, it's a real issue.
-				log.Printf("Stdin read error: %v", readErr)
 				return
 			}
 
@@ -701,7 +646,10 @@ func (c *CLI) runPromptModeLoop() {
 			return
 		}
 
-		c.draw()
+		// CLI owns prompt. In a reason of event based prompt drawing
+		// We must wait for draw event fired to show prompt and collect
+		// user input
+		<-c.drawCompleteChan
 
 		line, err := c.terminal.ReadLine()
 		if err != nil {
@@ -715,23 +663,13 @@ func (c *CLI) runPromptModeLoop() {
 			return
 		}
 
-		isAIPrompt, exitRequested := c.processLine(line)
-
-		if exitRequested {
+		if exitRequested := c.processLine(line); exitRequested {
 			<-*shutdownListener
 			return
 		}
 
 		if c.modeSwitchRequested {
 			return
-		}
-
-		if isAIPrompt {
-			select {
-			case <-c.drawCompleteChan:
-			case <-*shutdownListener:
-				return
-			}
 		}
 	}
 }
@@ -779,16 +717,16 @@ func (c *CLI) Run() {
 		default:
 		}
 
-		isReady := c.ready
+		// isReady := c.ready
 		currentMode := c.mode
 
 		// The main loop must wait until the application signals it's ready.
 		// This prevents a race condition where the input loop starts and blocks
 		// before the initial prompt can be drawn.
-		if !isReady {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
+		// if !isReady {
+		// 	time.Sleep(50 * time.Millisecond)
+		// 	continue
+		// }
 
 		c.modeSwitchRequested = false
 
@@ -802,10 +740,12 @@ func (c *CLI) Run() {
 
 func (c *CLI) draw() {
 	if c.muted || !c.ready {
+		config.DebugPrintf("CLI prompt drawing blocked when Muted: %t, Ready: %t", c.muted, c.ready)
 		return
 	}
 
 	if c.mode == System {
+		config.DebugPrintln("CLI prompt drawing deligated to shell")
 		// In system mode, the shell provides its own prompt. We send a newline
 		// to ensure it's redrawn after AI output.
 		if err := desktop.C.SendToShell("\n"); err != nil {
@@ -815,8 +755,9 @@ func (c *CLI) draw() {
 		// We are in a prompt mode, using term.ReadLine.
 		config.DebugPrintln("CLI drawing prompt")
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
-		c.terminal.SetPrompt(promptStr)
+		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
 		(*c.bus).Publish(config.MainTopic, "show:cli.run")
+		helpers.SafeSend(c.drawCompleteChan, struct{}{}) // Signal the prompt loop to continue.
 	}
 }
 
@@ -910,6 +851,8 @@ func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	}
 
 	// Handle transitions to/from system mode
+	// User able exit system mode by other ways like exit, Ctrl+D
+	// We need to apply auto mode change
 	if value == System {
 		c.previousMode = c.mode
 	}
@@ -991,28 +934,28 @@ func handleHelp(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 
 // command handles internal CLI commands. It returns (isAIPrompt, exit) to signal
 // the calling loop's next action.
-func (c *CLI) command(cmd string) (isAIPrompt bool, exit bool) {
+func (c *CLI) command(cmd string) (exit bool) {
 	var commandName string
 	log.Println("CLI command received:", cmd)
 	parts := strings.Fields(cmd)
 
 	if len(parts) == 0 {
-		return false, false // No command entered.
+		return false // No command entered.
 	}
 	commandName = parts[0]
 
 	if handler, ok := commandHandlers[commandName]; ok {
-		isAIPrompt, exit = handler(c, parts[1:])
+		isAIPrompt, exit := handler(c, parts[1:])
 		// After a non-AI, non-exit command that does NOT request a mode switch,
 		// we need to unmute and redraw the prompt. Publishing a "draw" event
 		// is the standard way to do this.
 		if !isAIPrompt && !exit && !c.modeSwitchRequested {
 			(*c.bus).Publish(config.MainTopic, "draw:cli.command")
 		}
-		return isAIPrompt, exit
+		return exit
 	}
 
 	fmt.Printf("Unknown command: %s\n", commandName)
 	(*c.bus).Publish(config.MainTopic, "draw:cli.command.unknown")
-	return false, false
+	return false
 }
