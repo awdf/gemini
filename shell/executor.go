@@ -20,62 +20,61 @@ import (
 	"gemini/flow"
 )
 
-// filteringWriter is an io.Writer that wraps another writer. It buffers
-// incoming data, splits it into lines, and filters out any lines that
-// start with a specific marker string before passing the rest to the
-// underlying writer. This is used to hide command status markers from the
-// user's terminal while still sending them to the application's internal parser.
+const (
+	markerStartByte = 0x01 // SOH (Start of Heading)
+	markerEndByte   = 0x02 // STX (Start of Text)
+)
+
+// filteringWriter is an io.Writer that wraps another writer. It scans the
+// incoming byte stream for a special marker sequence framed by SOH and STX
+// bytes. It filters out this marker sequence and passes all other data to the
+// underlying writer. This is more robust than line-based filtering.
 type filteringWriter struct {
-	w      io.Writer
-	marker string
-	// A buffer to hold partial lines between Write calls.
-	buffer *bytes.Buffer
+	w        io.Writer
+	inMarker bool         // State flag to track if we are currently inside a marker sequence.
+	buffer   bytes.Buffer // Reusable buffer to reduce allocations in the Write method.
 }
 
-// newFilteringWriter creates a new writer that filters out lines with the given marker.
+// newFilteringWriter creates a new writer that filters out framed markers.
 func newFilteringWriter(w io.Writer, marker string) *filteringWriter {
 	return &filteringWriter{
-		w:      w,
-		marker: marker,
-		buffer: new(bytes.Buffer),
+		w:        w,
+		inMarker: false,
+		// buffer is zero-valued and ready to use.
 	}
 }
 
-// Write implements the io.Writer interface. It buffers data and writes
-// only complete lines that do not match the marker.
+// Write implements the io.Writer interface. It scans for and removes
+// marker sequences from the byte stream.
 func (fw *filteringWriter) Write(p []byte) (n int, err error) {
-	// Add the new data to the internal buffer.
-	if _, err = fw.buffer.Write(p); err != nil {
-		return 0, err
-	}
+	// Reset the buffer for this write call, but keep the underlying allocated memory.
+	fw.buffer.Reset()
 
-	// Process all complete lines currently in the buffer.
-	for {
-		line, err := fw.buffer.ReadBytes('\n')
-		if err != nil { // This means io.EOF was reached, 'line' contains the remainder.
-			// The remainder could be a prompt or a partial marker.
-			// If it's a prefix of the marker, put it back and wait for more data.
-			if strings.HasPrefix(fw.marker, string(line)) {
-				fw.buffer.Write(line)
+	for _, b := range p {
+		if fw.inMarker {
+			if b == markerEndByte {
+				fw.inMarker = false // End of marker sequence.
+			}
+			// Discard the byte, as it's part of the marker.
+		} else {
+			if b == markerStartByte {
+				fw.inMarker = true // Start of a new marker sequence.
 			} else {
-				// It's not a partial marker, so it's a prompt or other output. Write it.
-				if _, wErr := fw.w.Write(line); wErr != nil {
-					return 0, wErr // Can't do much else.
-				}
-			}
-			break // Exit the loop since we've processed the remainder.
-		}
-
-		// Check if the line (trimmed of whitespace) starts with the marker.
-		if !strings.HasPrefix(strings.TrimSpace(string(line)), fw.marker) { // If it's not the marker, write it to the underlying writer.
-			if _, err = fw.w.Write(line); err != nil {
-				return 0, err
+				// This byte is not part of a marker, so we should write it.
+				fw.buffer.WriteByte(b)
 			}
 		}
-		// If it is the marker, we simply do nothing with it, effectively filtering it out.
 	}
 
-	// We report that we've processed all the input bytes successfully.
+	// Write the collected non-marker bytes to the actual writer.
+	if fw.buffer.Len() > 0 {
+		if _, err := fw.w.Write(fw.buffer.Bytes()); err != nil {
+			// If the write fails, we can't do much else. We've processed the input bytes.
+			return len(p), err
+		}
+	}
+
+	// We report that we've processed all the input bytes, regardless of filtering.
 	return len(p), nil
 }
 
@@ -83,10 +82,9 @@ func (fw *filteringWriter) Write(p []byte) (n int, err error) {
 type Executor struct {
 	workspaceDir string
 	bus          *EventBus.Bus
-	// State for the interactive session
-	ptyMutex  sync.Mutex
-	activePty *os.File
-	activeCmd *exec.Cmd
+	ptyMutex     sync.Mutex
+	activePty    *os.File
+	activeCmd    *exec.Cmd
 }
 
 // NewExecutor creates a new shell command executor.
@@ -142,8 +140,9 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 	ps1 := "PS1='\\[\033[1;91m\\]system\\[\033[0m\\]:\\[\033[1;94m\\]\\w\\[\033[0m\\]\\$ '"
 	// PROMPT_COMMAND is executed just before the shell displays the prompt (PS1).
 	// We use it to print a unique marker with the exit code of the last command.
-	// This allows the model to programmatically detect when a command has finished.
-	promptCommand := fmt.Sprintf(`PROMPT_COMMAND='printf "%s:%%d\n" $?'`, config.C.Shell.GetCommandEndMarker())
+	// We frame the marker with non-printable SOH (0x01) and STX (0x02) bytes.
+	// This allows for robust, byte-level filtering instead of fragile line-based parsing.
+	promptCommand := fmt.Sprintf(`PROMPT_COMMAND='printf "\x01%s:%%d\x02" $?'`, config.C.Shell.GetCommandEndMarker())
 	rcFileContent := fmt.Sprintf(`
 # Source the user's .bashrc to load their aliases, functions, and custom completions.
 if [ -f %q ]; then
@@ -233,6 +232,7 @@ export %s
 		// and is responsible for closing the channel when it's done.
 		go func() {
 			defer close(outputChan)
+			// The scanner is still useful for the internal channel to get line-by-line updates.
 			scanner := bufio.NewScanner(pr)
 			for scanner.Scan() {
 				outputChan <- scanner.Text()

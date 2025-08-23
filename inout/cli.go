@@ -88,6 +88,10 @@ const (
 	stateReadingPassword
 	stateIgnoringEscapeSequence
 
+	// Marker detection constants, must match shell/executor.go
+	markerStartByte = 0x01 // SOH (Start of Heading)
+	markerEndByte   = 0x02 // STX (Start of Text)
+
 	promptPatern = "\n\033[A\r\033[1;91m%s\033[0m> \033[K"
 	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
 	soundbarPatern   = "\0337\r\033[B\033[K[%s%s]\0338"
@@ -606,9 +610,8 @@ func (c *CLI) runSystemModeLoop() {
 			c.shellBuffer.WriteString(line + "\n")
 			c.shellBufferMu.Unlock()
 
-			// Check for command end marker to auto-finish turn in AFK mode.
-			if c.systemAFK && strings.HasPrefix(line, config.C.Shell.GetCommandEndMarker()) {
-				log.Println("AFK mode: Command finished, auto-submitting turn.")
+			if c.systemAFK && isCommandEndMarker(line) {
+				log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
 				helpers.SafeSend(c.cmdChan, "command execution done")
 			}
 
@@ -974,4 +977,30 @@ func (c *CLI) command(cmd string) (exit bool) {
 	fmt.Printf("Unknown command: %s\n", commandName)
 	(*c.bus).Publish(config.MainTopic, "draw:cli.command.unknown")
 	return false
+}
+
+// isCommandEndMarker checks if a line from the shell output contains the special
+// command-end marker. This is used by AFK mode to detect when a command has finished.
+func isCommandEndMarker(line string) bool {
+	// The marker is framed by SOH (0x01) and STX (0x02) bytes, which are defined
+	// in the shell executor. We use the same values here for detection.
+
+	// The marker can be anywhere in the line, as the prompt might be appended.
+	startIndex := strings.IndexByte(line, markerStartByte)
+	if startIndex == -1 {
+		return false
+	}
+
+	// Search for the end byte *after* the start byte.
+	endIndex := strings.IndexByte(line[startIndex:], markerEndByte)
+	if endIndex == -1 {
+		return false
+	}
+
+	// Extract the full marker content, e.g., "__GEMINI_CMD_DONE__:0"
+	// The endIndex is relative to the slice starting at startIndex.
+	markerContent := line[startIndex+1 : startIndex+endIndex]
+
+	// Check if the extracted content starts with the configured core marker string.
+	return strings.HasPrefix(markerContent, config.C.Shell.GetCommandEndMarker())
 }

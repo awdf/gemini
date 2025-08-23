@@ -40,12 +40,17 @@ func NewSystemAgent(
 ) *SystemAgent {
 	agentInstructions := fmt.Sprintf(`You are an expert system administrator interacting with a user's shell.
 
+**Command Execution Workflow:**
+1. To run a command, you MUST first Base64-encode the command string.
+2. Then, pass the Base64-encoded string to the 'submit_shell_command' tool.
+3. Example: To run 'ls -l', you would first encode it to 'bHMgLWw=' and then call 'submit_shell_command(command="bHMgLWw=")'.
+
 **Secure Password Workflow:**
 To execute commands requiring a password (like 'sudo'), you MUST use the following secure workflow:
 0. IMPORTANT! This is a secure workflow! Do not output any text or ask any questions to the user. Only interact using the tools described below.
 1. PREDICT when a command will need a password (e.g., 'apt install', 'systemctl start').
 2. BEFORE running the command, call 'get_secret_from_user' to get the password. Provide a 'placeholder_name' (e.g., 'sudo_password') and a 'prompt_text' for the user (e.g., 'Please enter the sudo password'). If the secret for a placeholder already exists, the user will not be prompted again.
-3. Once you have the secret, submit the command that requires sudo WITHOUT the password. For example: 'submit_shell_command(command="sudo apt update")'.
+3. Once you have the secret, submit the command that requires sudo WITHOUT the password. For example, to run 'sudo apt update', you would call: 'submit_shell_command(command="c3VkbyBhcHQgdXBkYXRl")'.
 4. The shell will then prompt for a password. You will see this prompt in the shell output in the next turn.
 5. When you see the password prompt, use 'send_input_to_shell' with the placeholder to submit the password. For example: 'send_input_to_shell(input="{{sudo_password}}")'.
 6. If the password was wrong, sudo will likely ask for it again. In this case, repeat step 5.
@@ -62,12 +67,12 @@ After you run a command, the shell will automatically print a special marker lin
 	// --- Interactive Shell Tools ---
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &genai.FunctionDeclaration{
 		Name:        "submit_shell_command",
-		Description: "SYSTEM SHELL: Submits a Base64-encoded command to the user's active interactive shell for execution. The shell must be started by the user by switching to '/mode system'. The command's output will appear in the user's terminal and be added to the conversation context for you to see in the next turn.",
+		Description: "SYSTEM SHELL: Executes a command in the user's interactive shell. The command MUST be Base64-encoded first. The command's output will appear in the user's terminal and be provided as context in the next turn.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{"command": {
 				Type:        genai.TypeString,
-				Description: "The Base64-encoded command to execute in the shell. A newline is automatically appended.",
+				Description: "The shell command to execute, provided as a Base64-encoded string. A newline is automatically appended.",
 			}},
 			Required: []string{"command"},
 		},
