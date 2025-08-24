@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -80,11 +81,13 @@ func (fw *filteringWriter) Write(p []byte) (n int, err error) {
 
 // Executor is responsible for executing shell commands in a pseudo-terminal.
 type Executor struct {
-	workspaceDir string
-	bus          *EventBus.Bus
-	ptyMutex     sync.Mutex
-	activePty    *os.File
-	activeCmd    *exec.Cmd
+	workspaceDir    string
+	bus             *EventBus.Bus
+	ptyMutex        sync.Mutex
+	activePty       *os.File
+	activeCmd       *exec.Cmd
+	commandDoneChan chan int
+	commandMutex    sync.Mutex
 }
 
 // NewExecutor creates a new shell command executor.
@@ -235,7 +238,17 @@ export %s
 			// The scanner is still useful for the internal channel to get line-by-line updates.
 			scanner := bufio.NewScanner(pr)
 			for scanner.Scan() {
-				outputChan <- scanner.Text()
+				line := scanner.Text()
+				outputChan <- line
+				if exitCode, isMarker := e.extractExitCodeFromMarker(line); isMarker {
+					e.commandMutex.Lock()
+					if e.commandDoneChan != nil {
+						e.commandDoneChan <- exitCode
+						close(e.commandDoneChan)
+						e.commandDoneChan = nil
+					}
+					e.commandMutex.Unlock()
+				}
 			}
 			if err := scanner.Err(); err != nil {
 				config.DebugPrintf("Interactive shell pipe scanner stopped: %v", err)
@@ -256,9 +269,48 @@ export %s
 		// After io.Copy returns, the command has finished. We must close the pipe
 		// writer to signal EOF to the scanner goroutine, allowing it to exit gracefully.
 		pw.Close()
+
+		// If a command was running when the shell died, notify the waiter.
+		e.commandMutex.Lock()
+		if e.commandDoneChan != nil {
+			log.Println("Interactive shell exited while a command was in progress. Notifying waiter.")
+			// We don't have an exit code, so we just close the channel.
+			// This will result in a read of (0, false) on the other side.
+			close(e.commandDoneChan)
+			e.commandDoneChan = nil
+		}
+		e.commandMutex.Unlock()
 	}()
 
 	return nil
+}
+
+// SendCommand sends a command to the interactive shell and returns a channel
+// that is closed when the command has finished executing. The command's exit
+// code is sent on the channel before it is closed.
+func (e *Executor) SendCommand(command string) (<-chan int, error) {
+	e.commandMutex.Lock()
+	defer e.commandMutex.Unlock()
+
+	if e.commandDoneChan != nil {
+		return nil, fmt.Errorf("another command is already in progress")
+	}
+
+	// Use a buffered channel of size 1. This allows the sender goroutine
+	// to send the exit code and close the channel without blocking, even if
+	// the receiver isn't ready yet.
+	doneChan := make(chan int, 1)
+	e.commandDoneChan = doneChan
+
+	// Send the command to the shell. A newline is required to execute it.
+	if err := e.SendInput(command + "\n"); err != nil {
+		// If sending fails, clean up and return the error.
+		e.commandDoneChan = nil
+		close(doneChan) // Close it so the caller doesn't block forever.
+		return nil, err
+	}
+
+	return doneChan, nil
 }
 
 // SendInput sends a string to the active interactive shell's stdin.
@@ -300,4 +352,39 @@ func (e *Executor) StopInteractive() error {
 	log.Println("Interactive shell session resources cleaned up.")
 
 	return err
+}
+
+// extractExitCodeFromMarker checks if a line from the shell output contains the special
+// command-end marker and extracts the exit code if it does.
+func (e *Executor) extractExitCodeFromMarker(line string) (exitCode int, isMarker bool) {
+	// The marker is framed by SOH (0x01) and STX (0x02) bytes.
+	startIndex := strings.IndexByte(line, markerStartByte)
+	if startIndex == -1 {
+		return 0, false
+	}
+
+	// Search for the end byte *after* the start byte.
+	endIndex := strings.IndexByte(line[startIndex:], markerEndByte)
+	if endIndex == -1 {
+		return 0, false
+	}
+
+	// Extract the full marker content, e.g., "__GEMINI_CMD_DONE__:0"
+	// The endIndex is relative to the slice starting at startIndex.
+	markerContent := line[startIndex+1 : startIndex+endIndex]
+
+	prefix := config.C.Shell.GetCommandEndMarker() + ":"
+	// Check if the extracted content starts with the configured core marker string.
+	if !strings.HasPrefix(markerContent, prefix) {
+		return 0, false
+	}
+
+	// Extract the exit code part.
+	exitCodeStr := strings.TrimPrefix(markerContent, prefix)
+	exitCode, err := strconv.Atoi(exitCodeStr)
+	if err != nil {
+		log.Printf("WARNING: could not parse exit code from shell marker: '%s'", line)
+		return -1, true // It's a marker, but we couldn't parse the code.
+	}
+	return exitCode, true
 }

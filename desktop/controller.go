@@ -24,6 +24,7 @@ type Controller interface {
 	// Shell functions
 	StartInteractiveShell(outputChan chan<- string) error
 	SendToShell(input string) error
+	SendCommandToShell(command string) (<-chan int, error)
 	StopInteractiveShell() error
 
 	// Cleanup

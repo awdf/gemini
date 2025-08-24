@@ -79,6 +79,12 @@ func (wc *WaylandController) SendToShell(input string) error {
 	return wc.shellExec.SendInput(input)
 }
 
+// SendCommandToShell sends a command to the shell and returns a channel that
+// is closed when the command finishes.
+func (wc *WaylandController) SendCommandToShell(command string) (<-chan int, error) {
+	return wc.shellExec.SendCommand(command)
+}
+
 // StopInteractiveShell stops the active shell session.
 func (wc *WaylandController) StopInteractiveShell() error {
 	return wc.shellExec.StopInteractive()

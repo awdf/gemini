@@ -76,7 +76,7 @@ After you run a command, the shell will automatically print a special marker lin
 			}},
 			Required: []string{"command"},
 		},
-		Behavior: genai.BehaviorBlocking,
+		Behavior: genai.BehaviorNonBlocking,
 	}, &genai.FunctionDeclaration{
 		Name:        "send_input_to_shell",
 		Description: "SYSTEM SHELL: Sends a line of text to the active interactive shell's standard input. Use this to respond to prompts like passwords or confirmations.",
@@ -149,23 +149,62 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 		if !ok || encodedCommand == "" {
 			return a.CreateFunctionResponse(call, nil, fmt.Errorf("invalid 'command' argument, must be a non-empty string"))
 		}
-		decodedBytes, err := base64.StdEncoding.DecodeString(encodedCommand)
-		if err != nil {
+		decodedBytes, err := base64.StdEncoding.DecodeString(encodedCommand) // No changes here
+		if err != nil {                                                      // No changes here
 			return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to decode base64 command: %w", err))
 		}
 		command := string(decodedBytes)
 		a.Printf("Submitting shell command: %s", command)
-		// Begin from 'Enter' as shell prompt have overridden by model answer
-		// Append a newline to simulate the user pressing 'Enter'. Placeholders are NOT substituted here for security.
-		if err := desktop.C.SendToShell("\n" + command + "\n"); err != nil {
-			// This will fail if the user is not in system mode, which is correct.
+
+		// SendCommandToShell sends the command and returns a channel that closes upon completion.
+		// We prepend a newline to clear any existing input on the shell prompt,
+		// mimicking the original behavior of ensuring a clean execution slate.
+		doneChan, err := desktop.C.SendCommandToShell("\n" + command)
+		if err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
 		}
-		// The output will be streamed to the user's terminal and sent to the AI
-		// as context via the 'shell_output' event by the CLI.
-		// This tool call is now "fire and forget". The model will see the output
-		// in the subsequent context.
-		return a.CreateFunctionResponse(call, map[string]any{"status": "command sent to user's shell"}, nil)
+
+		// Start a goroutine to wait for completion and send the final response.
+		// This is essential for non-blocking tool execution in LiveAI mode.
+		go func() {
+			exitCode, ok := <-doneChan // Block until the command is complete.
+			if !ok {
+				// This can happen if the shell exits unexpectedly while a command is running.
+				a.Printf("Shell command '%s' was interrupted because the shell exited.", command)
+				finalResponse := a.CreateFunctionResponse(
+					call,
+					map[string]any{"status": "command interrupted, shell exited", "exit_code": -1},
+					nil,
+					false, // willContinue is false, as this is the final response for this tool call.
+				)
+				(*a.bus).Publish(config.AgentTopic, finalResponse)
+				return
+			}
+			a.Printf("Shell command '%s' completed with exit code %d.", command, exitCode)
+
+			// Create the final response indicating completion.
+			statusMsg := "command executed successfully"
+			if exitCode != 0 {
+				statusMsg = fmt.Sprintf("command failed with exit code %d", exitCode)
+			}
+			finalResponse := a.CreateFunctionResponse(
+				call,
+				map[string]any{"status": statusMsg, "exit_code": exitCode},
+				nil,
+				false, // willContinue is false, as this is the final response for this tool call.
+			)
+
+			// Publish the final response to the event bus.
+			(*a.bus).Publish(config.AgentTopic, finalResponse)
+		}()
+
+		// Immediately return an initial, non-blocking response.
+		return a.CreateFunctionResponse(
+			call,
+			map[string]any{"status": "command submitted, waiting for completion..."},
+			nil,
+			true, // willContinue is true, allowing the model to proceed.
+		)
 
 	case "send_input_to_shell":
 		input, ok := call.Args["input"].(string)
