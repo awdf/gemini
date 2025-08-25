@@ -15,42 +15,38 @@ import (
 	"gemini/config"
 )
 
+const (
+	workspaceDir = "/tmp/gemini_test_workspace_shell"
+)
+
 func TestMain(m *testing.M) {
-	// Create a dummy config for tests to avoid dependency on a real file.
-	dummyConfigContent := `
-[video]
-Enabled = false
-
-[ai]
-WorkspaceDir = "/tmp/gemini_test_workspace_shell" # Use a unique dir
-
-[shell]
-command_end_marker = "GEMINI_CMD_DONE"
-`
-	tmpfile, err := os.CreateTemp("", "config-*.toml")
+	var err error
+	logFile, err := os.OpenFile("test.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("error opening log file %s: %v", config.C.LogFile, err)
 	}
-	defer os.Remove(tmpfile.Name()) // clean up
+	log.SetOutput(logFile)
+	log.SetPrefix(" ")
+	log.Println("### Test: Executor started!!!")
 
-	if _, err := tmpfile.Write([]byte(dummyConfigContent)); err != nil {
-		log.Fatal(err)
-	}
-	if err := tmpfile.Close(); err != nil {
-		log.Fatal(err)
-	}
+	// Load a default config and then override values needed for this test.
+	// This avoids creating and reading a temporary file.
+	config.Load("dummy-config.toml") // Creates default config in memory.
+	os.Remove("dummy-config.toml")   // Clean up the dummy file created by Load.
+	config.C.LogFile = "Test.log"
+	config.C.Video.Enabled = false
+	config.C.Shell.CommandEndMarkerCore = "GEMINI_CMD_DONE"
 
-	config.Load(tmpfile.Name())
 	// Clean up the workspace dir after tests
 	code := m.Run()
-	os.RemoveAll(config.C.AI.WorkspaceDir)
+	os.RemoveAll(workspaceDir)
 	os.Exit(code)
 }
 
 // newTestExecutor creates a new Executor for testing purposes.
 func newTestExecutor(t *testing.T) *Executor {
 	bus := EventBus.New()
-	executor, err := NewExecutor(&bus)
+	executor, err := NewExecutor(&bus, workspaceDir)
 	require.NoError(t, err)
 	return executor
 }
@@ -77,7 +73,7 @@ func TestExecutor_SendCommand_Echo(t *testing.T) {
 		}
 	}()
 
-	command := "echo 'hello world'"
+	command := "echo 'hello world' & sleep 5"
 	doneChan, err := executor.SendCommand(command)
 	require.NoError(t, err)
 	require.NotNil(t, doneChan)

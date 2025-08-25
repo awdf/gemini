@@ -14,25 +14,25 @@ import (
 	"github.com/asaskevich/EventBus"
 	"github.com/creack/pty"
 
-	"gemini/config"
 	"gemini/flow"
 )
 
 // Executor is responsible for executing shell commands in a pseudo-terminal.
 type Executor struct {
-	workspaceDir    string
-	bus             *EventBus.Bus
-	ptyMutex        sync.Mutex
-	activePty       *os.File
-	activeCmd       *exec.Cmd
-	commandDoneChan chan int
-	commandMutex    sync.Mutex
+	workspaceDir      string
+	bus               *EventBus.Bus
+	ptyMutex          sync.Mutex
+	activePty         *os.File
+	activeCmd         *exec.Cmd
+	commandDoneChan   chan int
+	commandInProgress bool
+	commandMutex      sync.Mutex
+	rcFilePath        string
 }
 
 // NewExecutor creates a new shell command executor.
-func NewExecutor(bus *EventBus.Bus) (*Executor, error) {
+func NewExecutor(bus *EventBus.Bus, workspaceDir string) (*Executor, error) {
 	// Resolve the workspace directory path, expanding tilde.
-	workspaceDir := config.C.AI.WorkspaceDir
 	if strings.HasPrefix(workspaceDir, "~/") {
 		usr, err := user.Current()
 		if err != nil {
@@ -54,13 +54,27 @@ func NewExecutor(bus *EventBus.Bus) (*Executor, error) {
 	}, nil
 }
 
-// buildRCFileContent generates the content for a temporary bash rcfile.
-// This file sources the user's existing .bashrc and then sets a custom
-// prompt (PS1) and a PROMPT_COMMAND to inject command-end markers.
-func buildRCFileContent() (string, error) {
+// removeRCFile removes the temporary rcfile and clears its path from the executor.
+// It is designed to be called from the manageSessionLifecycle goroutine's defer statement,
+// ensuring cleanup happens regardless of how the session ends.
+func (e *Executor) removeRCFile() {
+	path := e.rcFilePath
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("Warning: failed to remove temporary file %s: %v", path, err)
+	}
+	e.rcFilePath = ""
+}
+
+// createRCFile builds the content for a temporary bash rcfile, writes it to disk,
+// and stores the path in the executor. This method encapsulates the setup logic
+// for the interactive shell environment.
+func (e *Executor) createRCFile() error {
 	usr, err := user.Current()
 	if err != nil {
-		return "", fmt.Errorf("could not get current user to find .bashrc: %w", err)
+		return fmt.Errorf("could not get current user to find .bashrc: %w", err)
 	}
 	userBashrcPath := filepath.Join(usr.HomeDir, ".bashrc")
 
@@ -80,7 +94,7 @@ func buildRCFileContent() (string, error) {
 
 	// The rcfile content first sources the user's personal .bashrc to load their
 	// complete environment, then exports our custom prompt and command marker.
-	return fmt.Sprintf(`
+	rcFileContent := fmt.Sprintf(`
 # Source the user's .bashrc to load their aliases, functions, and custom completions.
 if [ -f %q ]; then
     . %q
@@ -88,51 +102,42 @@ fi
 # Set our custom prompt, overriding any from the user's .bashrc.
 export %s
 export %s
-`, userBashrcPath, userBashrcPath, ps1, promptCommand), nil
-}
+`, userBashrcPath, userBashrcPath, ps1, promptCommand)
 
-// createAndWriteRCFile creates a temporary bash rcfile and writes the provided content to it.
-// It returns the path to the created file, which the caller is responsible for deleting.
-func createAndWriteRCFile(content string) (string, error) {
 	tmpfile, err := os.CreateTemp("", "gemini-bashrc-*.sh")
 	if err != nil {
-		return "", fmt.Errorf("could not create temporary rcfile: %w", err)
+		return fmt.Errorf("could not create temporary rcfile: %w", err)
 	}
 
-	if _, err := tmpfile.WriteString(content); err != nil {
+	if _, err := tmpfile.WriteString(rcFileContent); err != nil {
 		tmpfile.Close()
 		os.Remove(tmpfile.Name()) // Clean up on write error
-		return "", fmt.Errorf("could not write to temporary rcfile: %w", err)
+		return fmt.Errorf("could not write to temporary rcfile: %w", err)
 	}
 
 	if err := tmpfile.Close(); err != nil {
 		os.Remove(tmpfile.Name()) // Clean up on close error
-		return "", fmt.Errorf("could not close temporary rcfile: %w", err)
+		return fmt.Errorf("could not close temporary rcfile: %w", err)
 	}
 
-	return tmpfile.Name(), nil
+	e.rcFilePath = tmpfile.Name()
+	return nil
 }
 
 // prepareBashCommand creates a temporary rcfile and prepares an exec.Cmd to start
 // an interactive bash session using that file. It returns the command and the path
 // to the temporary rcfile which must be cleaned up by the caller.
-func (e *Executor) prepareBashCommand() (*exec.Cmd, string, error) {
-	rcFileContent, err := buildRCFileContent()
-	if err != nil {
-		return nil, "", fmt.Errorf("could not build rcfile content: %w", err)
-	}
-
-	rcFilePath, err := createAndWriteRCFile(rcFileContent)
-	if err != nil {
-		return nil, "", err // The error from createAndWriteRCFile is already descriptive.
+func (e *Executor) prepareBashCommand() (*exec.Cmd, error) {
+	if err := e.createRCFile(); err != nil {
+		return nil, err
 	}
 
 	// Use --rcfile to load our custom config and -i to run in interactive mode,
 	// which is necessary for completion to work.
-	cmd := exec.Command("bash", "--rcfile", rcFilePath, "-i")
+	cmd := exec.Command("bash", "--rcfile", e.rcFilePath, "-i")
 	cmd.Dir = e.workspaceDir
 
-	return cmd, rcFilePath, nil
+	return cmd, nil
 }
 
 // StartInteractive starts a persistent `sh` process in a PTY.
@@ -145,7 +150,7 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 		return fmt.Errorf("an interactive session is already running")
 	}
 
-	cmd, rcFilePath, err := e.prepareBashCommand()
+	cmd, err := e.prepareBashCommand()
 	if err != nil {
 		return err
 	}
@@ -159,7 +164,7 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		os.Remove(rcFilePath) // Clean up on pty start failure.
+		e.removeRCFile() // Clean up on pty start failure.
 		return fmt.Errorf("failed to start interactive pty: %w", err)
 	}
 
@@ -176,7 +181,7 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 	log.Println("Interactive shell session started.")
 
 	// This goroutine manages the I/O and lifecycle for the active PTY session.
-	go e.manageSessionLifecycle(rcFilePath, ptmx, outputChan)
+	go e.manageSessionLifecycle(ptmx, outputChan)
 
 	return nil
 }
@@ -188,7 +193,7 @@ func (e *Executor) SendCommand(command string) (<-chan int, error) {
 	e.commandMutex.Lock()
 	defer e.commandMutex.Unlock()
 
-	if e.commandDoneChan != nil {
+	if e.commandInProgress {
 		return nil, fmt.Errorf("another command is already in progress")
 	}
 
@@ -197,11 +202,13 @@ func (e *Executor) SendCommand(command string) (<-chan int, error) {
 	// the receiver isn't ready yet.
 	doneChan := make(chan int, 1)
 	e.commandDoneChan = doneChan
+	e.commandInProgress = true
 
 	// Send the command to the shell. A newline is required to execute it.
 	if err := e.SendInput(command + "\n"); err != nil {
 		// If sending fails, clean up and return the error.
 		e.commandDoneChan = nil
+		e.commandInProgress = false
 		close(doneChan) // Close it so the caller doesn't block forever.
 		return nil, err
 	}
@@ -244,6 +251,10 @@ func (e *Executor) StopInteractive() error {
 		_ = e.activeCmd.Wait()
 		e.activeCmd = nil
 	}
+
+	// The rcfile is cleaned up by the deferred call in manageSessionLifecycle,
+	// which is guaranteed to run when the process is killed.
+
 	// The channel is now closed by the writer goroutine in StartInteractive.
 	log.Println("Interactive shell session resources cleaned up.")
 
@@ -252,9 +263,10 @@ func (e *Executor) StopInteractive() error {
 
 // manageSessionLifecycle handles the I/O and lifecycle for an active PTY session.
 // It runs in a dedicated goroutine.
-func (e *Executor) manageSessionLifecycle(rcfilePath string, ptmx *os.File, outputChan chan<- string) {
+func (e *Executor) manageSessionLifecycle(ptmx *os.File, outputChan chan<- string) {
 	// Ensure the temporary rcfile is cleaned up when the shell process exits.
-	defer os.Remove(rcfilePath)
+	// This acts as a fallback if StopInteractive is not called (e.g., user types 'exit').
+	defer e.removeRCFile()
 
 	// --- Resize Handling ---
 	// Get a channel for window resize signals from the flow package.
@@ -281,11 +293,11 @@ func (e *Executor) manageSessionLifecycle(rcfilePath string, ptmx *os.File, outp
 
 	// Create a custom provider to filter the command-end marker from stdout,
 	// so the user doesn't see it, but the AI does.
-	stdoutFilter := NewFilteringProvider(os.Stdout, config.C.Shell.GetCommandEndMarker())
+	stdoutFilter := NewFilteringProvider(os.Stdout)
 
 	// This goroutine reads from the pipe, sends line-by-line to the channel,
 	// and is responsible for closing the channel when it's done.
-	go stdoutFilter.Read(outputChan, e, pr)
+	go stdoutFilter.Send(outputChan, e, pr)
 
 	// Create a MultiWriter to simultaneously write to the user's (filtered) stdout and the internal pipe.
 	multiWriter := io.MultiWriter(stdoutFilter, pw)
@@ -301,12 +313,15 @@ func (e *Executor) manageSessionLifecycle(rcfilePath string, ptmx *os.File, outp
 
 	// If a command was running when the shell died, notify the waiter.
 	e.commandMutex.Lock()
-	if e.commandDoneChan != nil {
+	if e.commandInProgress {
 		log.Println("Interactive shell exited while a command was in progress. Notifying waiter.")
-		// We don't have an exit code, so we just close the channel.
-		// This will result in a read of (0, false) on the other side.
-		close(e.commandDoneChan)
+		if e.commandDoneChan != nil {
+			// We don't have an exit code, so we just close the channel.
+			// This will result in a read of (0, false) on the other side.
+			close(e.commandDoneChan)
+		}
 		e.commandDoneChan = nil
+		e.commandInProgress = false
 	}
 	e.commandMutex.Unlock()
 }

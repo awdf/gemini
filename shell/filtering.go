@@ -17,6 +17,7 @@ const (
 	markerEndByte   = 0x02 // STX (Start of Text)
 )
 
+// Contains constants above SOH \x01 and STX \x02
 func promptCommand() string {
 	return fmt.Sprintf(`PROMPT_COMMAND='printf "\x01%s:%%d\x02" $?'`, config.C.Shell.GetCommandEndMarker())
 }
@@ -26,15 +27,15 @@ func promptCommand() string {
 // bytes. It filters out this marker sequence and passes all other data to the
 // underlying writer. This is more robust than line-based filtering.
 type FilteringProvider struct {
-	w        io.Writer
+	writer   io.Writer
 	inMarker bool         // State flag to track if we are currently inside a marker sequence.
 	buffer   bytes.Buffer // Reusable buffer to reduce allocations in the Write method.
 }
 
 // newFilteringWriter creates a new writer that filters out framed markers.
-func NewFilteringProvider(w io.Writer, marker string) *FilteringProvider {
+func NewFilteringProvider(w io.Writer) *FilteringProvider {
 	return &FilteringProvider{
-		w:        w,
+		writer:   w,
 		inMarker: false,
 		// buffer is zero-valued and ready to use.
 	}
@@ -64,7 +65,7 @@ func (fw *FilteringProvider) Write(p []byte) (n int, err error) {
 
 	// Write the collected non-marker bytes to the actual writer.
 	if fw.buffer.Len() > 0 {
-		if _, err := fw.w.Write(fw.buffer.Bytes()); err != nil {
+		if _, err := fw.writer.Write(fw.buffer.Bytes()); err != nil {
 			// If the write fails, we can't do much else. We've processed the input bytes.
 			return len(p), err
 		}
@@ -74,7 +75,7 @@ func (fw *FilteringProvider) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (fw *FilteringProvider) Read(outputChan chan<- string, e *Executor, pr io.Reader) {
+func (fw *FilteringProvider) Send(outputChan chan<- string, e *Executor, pr io.Reader) {
 	defer close(outputChan)
 	// The scanner is still useful for the internal channel to get line-by-line updates.
 	scanner := bufio.NewScanner(pr)
@@ -83,10 +84,13 @@ func (fw *FilteringProvider) Read(outputChan chan<- string, e *Executor, pr io.R
 		outputChan <- line
 		if exitCode, isMarker := fw.extractExitCodeFromMarker(line); isMarker {
 			e.commandMutex.Lock()
-			if e.commandDoneChan != nil {
-				e.commandDoneChan <- exitCode
-				close(e.commandDoneChan)
+			if e.commandInProgress {
+				if e.commandDoneChan != nil {
+					e.commandDoneChan <- exitCode
+					close(e.commandDoneChan)
+				}
 				e.commandDoneChan = nil
+				e.commandInProgress = false
 			}
 			e.commandMutex.Unlock()
 		}

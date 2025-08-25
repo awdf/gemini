@@ -78,7 +78,7 @@ func NewApp(flags *CliFlags) *App {
 
 	// The shell executor is a shared component used by the CLI (for direct user commands)
 	// and the AI (for tool-based command execution). It is wrapped by the desktop controller.
-	shellExecutor, err := shell.NewExecutor(app.bus)
+	shellExecutor, err := shell.NewExecutor(app.bus, config.C.AI.WorkspaceDir)
 	if err != nil {
 		log.Fatalf("Failed to initialize shell executor: %v", err)
 	}
