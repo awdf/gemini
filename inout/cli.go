@@ -130,7 +130,7 @@ type CLI struct {
 	terminal              *term.Terminal // For prompt mode line editing
 	modeSwitchRequested   bool           // Signals a switch between system and prompt loops.
 	systemAFK             bool           // Auto-finish turn in system mode.
-	drawCompleteChan      chan struct{}  // Signals that AI response drawing is complete, unblocking the prompt loop.
+	drawCompleteChan      chan struct{}  // Only for draw() method use! Signals that AI response drawing is complete, unblocking the prompt loop.
 }
 
 // commandHandler defines the function signature for a CLI command handler.
@@ -426,7 +426,10 @@ func (c *CLI) processLine(line string) (exitRequested bool) {
 		helpers.SafeSend(c.cmdChan, fullLine)
 		return false // This is a standard AI prompt.
 	}
-	return false // Empty line, not a prompt, not an exit.
+	// Signal the prompt loop to continue.
+	(*c.bus).Publish(config.MainTopic, "draw:cli.processLine")
+	// Empty line, not a prompt, not an exit.
+	return false
 }
 
 // processInputByte is the core of the raw mode input state machine. It processes
@@ -762,9 +765,10 @@ func (c *CLI) draw() {
 		// We are in a prompt mode, using term.ReadLine.
 		config.DebugPrintln("CLI drawing prompt")
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
-		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
-		(*c.bus).Publish(config.MainTopic, "show:cli.draw")
-		helpers.SafeSend(c.drawCompleteChan, struct{}{}) // Signal the prompt loop to continue.
+		c.terminal.SetPrompt(promptStr)                     // Update the prompt for the next ReadLine call.
+		c.terminal.Write([]byte{'\n'})                      // Abort current prompt.
+		helpers.SafeSend(c.drawCompleteChan, struct{}{})    // Signal the prompt loop to continue.
+		(*c.bus).Publish(config.MainTopic, "show:cli.draw") // Draw soundbar
 	}
 }
 
