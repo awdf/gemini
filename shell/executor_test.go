@@ -51,60 +51,62 @@ func newTestExecutor(t *testing.T) *Executor {
 	return executor
 }
 
-func TestExecutor_SendCommand_Echo(t *testing.T) {
+func TestExecutor_SendCommand_Fail(t *testing.T) {
 	executor := newTestExecutor(t)
 
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = devNull.Close() })
+
 	outputChan := make(chan string, 100)
-	err := executor.StartInteractive(outputChan)
+	err = executor.StartInteractive(outputChan, devNull)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = executor.StopInteractive() })
 
-	var wg sync.WaitGroup
-	wg.Add(1)
 	var receivedOutput []string
 	var outputMutex sync.Mutex
 	go func() {
-		defer wg.Done()
 		for line := range outputChan {
 			outputMutex.Lock()
 			receivedOutput = append(receivedOutput, line)
 			outputMutex.Unlock()
-			t.Logf("Shell output: %s", line)
 		}
 	}()
 
-	command := "echo 'hello world' & sleep 5"
+	command := "a-command-that-does-not-exist"
 	doneChan, err := executor.SendCommand(command)
 	require.NoError(t, err)
 	require.NotNil(t, doneChan)
 
 	select {
 	case exitCode, ok := <-doneChan:
-		require.True(t, ok, "doneChan was closed prematurely")
-		assert.Equal(t, 0, exitCode)
+		require.True(t, ok, "doneChan was closed without sending an exit code")
+		assert.Equal(t, 127, exitCode, "Expected exit code 127 for 'command not found'")
 	case <-time.After(2 * time.Second):
-		t.Fatal("Test timed out waiting for 'echo' to complete.")
+		t.Fatal("Test timed out waiting for command to complete.")
 	}
+
+	// Check that channel is closed now
+	_, ok := <-doneChan
+	require.False(t, ok, "doneChan was not closed after receiving the exit code")
 
 	// Give a moment for the output to be processed by the goroutine
 	time.Sleep(100 * time.Millisecond)
 
 	outputMutex.Lock()
-	// The output will contain the command itself, the output, and the prompt.
+	defer outputMutex.Unlock()
+
 	// We just check that the expected output is present somewhere.
-	var found bool
-	for _, line := range receivedOutput {
-		if strings.Contains(line, "hello world") {
-			found = true
-			break
-		}
+	var foundErrorOutput bool
+	fullOutput := strings.Join(receivedOutput, "\n")
+	if strings.Contains(fullOutput, "command not found") {
+		foundErrorOutput = true
 	}
-	outputMutex.Unlock()
-	assert.True(t, found, "Expected 'hello world' to be in the shell output")
+
+	assert.True(t, foundErrorOutput, "Expected 'command not found' to be in the shell output. Got: %s", fullOutput)
 
 	err = executor.StopInteractive()
 	require.NoError(t, err)
-	wg.Wait()
 }
 
 func TestExecutor_SendCommand_Sleep(t *testing.T) {
@@ -113,38 +115,44 @@ func TestExecutor_SendCommand_Sleep(t *testing.T) {
 	}
 
 	executor := newTestExecutor(t)
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = devNull.Close() })
+
 	outputChan := make(chan string, 100)
-	err := executor.StartInteractive(outputChan)
+	err = executor.StartInteractive(outputChan, devNull)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = executor.StopInteractive() })
 
-	var wg sync.WaitGroup
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		for line := range outputChan {
-			t.Logf("Shell output: %s", line)
+		for range outputChan {
+			// Do not use t.Logf from a background goroutine as it can cause
+			// deadlocks. The test will time out if there's an issue, which is
+			// sufficient for debugging.
 		}
 	}()
 
+	// Test a simple long-running command.
 	command := "sleep 5"
 	startTime := time.Now()
 	doneChan, err := executor.SendCommand(command)
 	require.NoError(t, err)
 	require.NotNil(t, doneChan)
 
+	var exitCode int
 	select {
-	case exitCode, ok := <-doneChan:
-		require.True(t, ok, "doneChan was closed prematurely, indicating an issue with the shell or marker detection")
-		duration := time.Since(startTime)
-		assert.Equal(t, 0, exitCode, "Exit code should be 0 for successful sleep")
-		assert.GreaterOrEqual(t, duration, 5*time.Second, "Command should have taken at least 5 seconds")
-		assert.Less(t, duration, 6*time.Second, "Command should not take significantly more than 5 seconds")
+	case code, ok := <-doneChan:
+		require.True(t, ok, "doneChan was closed without sending an exit code")
+		exitCode = code
 	case <-time.After(7 * time.Second):
 		t.Fatal("Test timed out waiting for 'sleep 5' to complete. The command-end marker was likely not detected.")
 	}
 
+	duration := time.Since(startTime)
+	assert.Equal(t, 0, exitCode, "Exit code should be 0 for successful sleep")
+	assert.GreaterOrEqual(t, duration, 5*time.Second, "Command should have taken at least 5 seconds")
+	assert.Less(t, duration, 6*time.Second, "Command should not take significantly more than 5 seconds")
+
 	err = executor.StopInteractive()
 	require.NoError(t, err)
-	wg.Wait()
 }

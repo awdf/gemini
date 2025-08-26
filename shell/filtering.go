@@ -3,7 +3,6 @@ package shell
 import (
 	"bufio"
 	"bytes"
-	"fmt"
 	"io"
 	"log"
 	"strconv"
@@ -16,11 +15,6 @@ const (
 	markerStartByte = 0x01 // SOH (Start of Heading)
 	markerEndByte   = 0x02 // STX (Start of Text)
 )
-
-// Contains constants above SOH \x01 and STX \x02
-func promptCommand() string {
-	return fmt.Sprintf(`PROMPT_COMMAND='printf "\x01%s:%%d\x02" $?'`, config.C.Shell.GetCommandEndMarker())
-}
 
 // FilteringProvider is an io.Writer that wraps another writer. It scans the
 // incoming byte stream for a special marker sequence framed by SOH and STX
@@ -83,14 +77,36 @@ func (fw *FilteringProvider) Send(outputChan chan<- string, e *Executor, pr io.R
 		line := scanner.Text()
 		outputChan <- line
 		if exitCode, isMarker := fw.extractExitCodeFromMarker(line); isMarker {
+			// Use sync.Once to ensure this block only ever runs for the very first
+			// marker received during the executor's lifetime. This marker is the
+			// one from the initial shell prompt. We consume it here to synchronize
+			// the startup and prevent it from being mistaken for a command result.
+			var isFirstMarker bool
+			e.shellReady.Do(func() {
+				isFirstMarker = true
+				log.Println("First shell marker consumed for synchronization.")
+				close(e.shellReadyChan)
+			})
+			if isFirstMarker {
+				continue // Skip processing for the first marker.
+			}
 			e.commandMutex.Lock()
 			if e.commandInProgress {
 				if e.commandDoneChan != nil {
+					// Send the marker's exit code.
 					e.commandDoneChan <- exitCode
-					close(e.commandDoneChan)
+					e.commandMarkerCount++
+
+					// The channel is buffered to hold two markers. The first is the
+					// one from the prompt before the command, and the second is
+					// the one after the command completes. Once we've sent two,
+					// the command is done.
+					if e.commandMarkerCount == cap(e.commandDoneChan) {
+						close(e.commandDoneChan)
+						e.commandDoneChan = nil
+						e.commandInProgress = false
+					}
 				}
-				e.commandDoneChan = nil
-				e.commandInProgress = false
 			}
 			e.commandMutex.Unlock()
 		}

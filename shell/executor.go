@@ -7,27 +7,33 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/asaskevich/EventBus"
 	"github.com/creack/pty"
+	"golang.org/x/term"
 
+	"gemini/config"
 	"gemini/flow"
 )
 
+const DisableOutput = false
+
 // Executor is responsible for executing shell commands in a pseudo-terminal.
 type Executor struct {
-	workspaceDir      string
-	bus               *EventBus.Bus
-	ptyMutex          sync.Mutex
-	activePty         *os.File
-	activeCmd         *exec.Cmd
-	commandDoneChan   chan int
-	commandInProgress bool
-	commandMutex      sync.Mutex
-	rcFilePath        string
+	workspaceDir       string
+	bus                *EventBus.Bus
+	ptyMutex           sync.Mutex
+	activePty          *os.File
+	activeCmd          *exec.Cmd
+	commandDoneChan    chan int
+	shellReady         sync.Once
+	shellReadyChan     chan struct{}
+	commandInProgress  bool
+	commandMarkerCount int
+	commandMutex       sync.Mutex
+	rcFilePath         string
 }
 
 // NewExecutor creates a new shell command executor.
@@ -68,16 +74,16 @@ func (e *Executor) removeRCFile() {
 	e.rcFilePath = ""
 }
 
+// Contains constants above SOH \x01 and STX \x02
+func promptCommand() string {
+	// The marker is printed on its own line (note the \n) to ensure that line-buffered readers will process it immediately.
+	return fmt.Sprintf(`PROMPT_COMMAND='printf "\x01%s:%%d\x02\n" $?'`, config.C.Shell.GetCommandEndMarker())
+}
+
 // createRCFile builds the content for a temporary bash rcfile, writes it to disk,
 // and stores the path in the executor. This method encapsulates the setup logic
 // for the interactive shell environment.
 func (e *Executor) createRCFile() error {
-	usr, err := user.Current()
-	if err != nil {
-		return fmt.Errorf("could not get current user to find .bashrc: %w", err)
-	}
-	userBashrcPath := filepath.Join(usr.HomeDir, ".bashrc")
-
 	// PS1 defines the shell prompt's appearance.
 	// - \[\033[1;91m\]: Start bold (1) and light red (91) color for "system:".
 	// - \[\033[1;94m\]: Start bold (1) and light blue (94) color for the directory (\w).
@@ -92,17 +98,15 @@ func (e *Executor) createRCFile() error {
 	// to allow for robust, byte-level filtering of the output stream.
 	promptCommand := promptCommand()
 
-	// The rcfile content first sources the user's personal .bashrc to load their
-	// complete environment, then exports our custom prompt and command marker.
+	// The rcfile content exports our custom prompt and command marker.
+	// NOTE: We are intentionally NOT sourcing the user's personal .bashrc.
+	// This makes shell startup fast and ensures the test environment is hermetic,
+	// preventing a user's local shell configuration from causing slowness or test failures.
 	rcFileContent := fmt.Sprintf(`
-# Source the user's .bashrc to load their aliases, functions, and custom completions.
-if [ -f %q ]; then
-    . %q
-fi
 # Set our custom prompt, overriding any from the user's .bashrc.
 export %s
 export %s
-`, userBashrcPath, userBashrcPath, ps1, promptCommand)
+`, ps1, promptCommand)
 
 	tmpfile, err := os.CreateTemp("", "gemini-bashrc-*.sh")
 	if err != nil {
@@ -140,12 +144,29 @@ func (e *Executor) prepareBashCommand() (*exec.Cmd, error) {
 	return cmd, nil
 }
 
+// configurePty sets the pseudo-terminal to a raw-like state by disabling echo.
+// This prevents commands sent to the shell from being mirrored back into the output stream.
+func (e *Executor) configurePty(ptmx *os.File) error {
+	fd := int(ptmx.Fd())
+	if !term.IsTerminal(fd) {
+		return nil // Not a terminal, nothing to configure.
+	}
+
+	// Put the PTY master into raw mode. This is the idiomatic way to disable
+	// terminal processing features like echoing. We don't need to save the old
+	// state because we want the PTY to be in this mode for its entire lifetime.
+	_, err := term.MakeRaw(fd)
+	if err != nil {
+		return fmt.Errorf("failed to set pty to raw mode: %w", err)
+	}
+
+	return nil
+}
+
 // StartInteractive starts a persistent `sh` process in a PTY.
 // Its output is streamed to the provided channel.
-func (e *Executor) StartInteractive(outputChan chan<- string) error {
-	e.ptyMutex.Lock()
-	defer e.ptyMutex.Unlock()
-
+// The `ptyWriter` is where the PTY's output will be written for the user to see.
+func (e *Executor) StartInteractive(outputChan chan<- string, userTerminal *os.File) (err error) {
 	if e.activeCmd != nil {
 		return fmt.Errorf("an interactive session is already running")
 	}
@@ -155,12 +176,20 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 		return err
 	}
 
+	// Use a single mutex for the entire setup to avoid races.
+	e.ptyMutex.Lock()
+	defer func() {
+		if err != nil {
+			e.ptyMutex.Unlock() // Unlock on failure so Stop can be called.
+		}
+	}()
+
 	// Get the initial size of the user's terminal.
-	// initialSize, err := pty.GetsizeFull(os.Stdout)
-	// if err != nil {
-	// 	os.Remove(tmpfile.Name())
-	// 	return fmt.Errorf("could not get terminal size: %w", err)
-	// }
+	initialSize, err := pty.GetsizeFull(userTerminal)
+	if err != nil {
+		// It is not critical error
+		log.Printf("WARNING: could not get terminal size: %v", err)
+	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -169,26 +198,43 @@ func (e *Executor) StartInteractive(outputChan chan<- string) error {
 	}
 
 	// Set the PTY's initial size to match the user's terminal.
-	// if err := pty.Setsize(ptmx, initialSize); err != nil {
-	// 	ptmx.Close()
-	// 	os.Remove(tmpfile.Name())
-	// 	return fmt.Errorf("could not set pty size: %w", err)
-	// }
+	if err := pty.Setsize(ptmx, initialSize); err != nil {
+		// It is not critical error
+		log.Printf("WARNING: could not set pty size: %v", err)
+	}
+
+	// Disable echoing on the PTY to prevent commands from being mirrored in the output.
+	// Needed in manual debug reason
+	if DisableOutput {
+		if err := e.configurePty(ptmx); err != nil {
+			ptmx.Close()
+			e.removeRCFile()
+			// The error from configurePty is already descriptive.
+			return err
+		}
+	}
 
 	e.activePty = ptmx
 	e.activeCmd = cmd
+	e.shellReadyChan = make(chan struct{})
 
 	log.Println("Interactive shell session started.")
 
 	// This goroutine manages the I/O and lifecycle for the active PTY session.
-	go e.manageSessionLifecycle(ptmx, outputChan)
+	go e.manageSessionLifecycle(ptmx, outputChan, userTerminal)
+
+	// Unlock before waiting to prevent deadlocks if another goroutine needs the lock.
+	e.ptyMutex.Unlock()
+
+	// Wait for the shell to be fully initialized and the first marker to be consumed.
+	<-e.shellReadyChan
+	log.Println("Interactive shell is synchronized and ready.")
 
 	return nil
 }
 
-// SendCommand sends a command to the interactive shell and returns a channel
-// that is closed when the command has finished executing. The command's exit
-// code is sent on the channel before it is closed.
+// SendCommand sends a command to the interactive shell and returns a channel that
+// will receive the single, final exit code of the command upon completion.
 func (e *Executor) SendCommand(command string) (<-chan int, error) {
 	e.commandMutex.Lock()
 	defer e.commandMutex.Unlock()
@@ -197,23 +243,61 @@ func (e *Executor) SendCommand(command string) (<-chan int, error) {
 		return nil, fmt.Errorf("another command is already in progress")
 	}
 
-	// Use a buffered channel of size 1. This allows the sender goroutine
-	// to send the exit code and close the channel without blocking, even if
-	// the receiver isn't ready yet.
-	doneChan := make(chan int, 1)
-	e.commandDoneChan = doneChan
+	// The internal channel still needs to handle the flush marker and the command marker.
+	internalChan := make(chan int, 2)
+	e.commandDoneChan = internalChan
 	e.commandInProgress = true
+	e.commandMarkerCount = 0 // Reset the counter for the new command.
+
+	// The channel returned to the caller will only receive the final exit code.
+	resultChan := make(chan int, 1)
+
+	// This goroutine acts as a mediator. It consumes the two markers from the
+	// internal channel and passes only the second one (the command's actual
+	// exit code) to the result channel.
+	go func() {
+		defer close(resultChan)
+		var exitCode int
+		var ok bool
+		// Drain the internal channel. The last value received is the one we want.
+		for code := range internalChan {
+			exitCode = code
+			ok = true
+		}
+		// If we received at least one value, send the last one to the caller.
+		if ok {
+			resultChan <- exitCode
+		}
+		// If 'ok' is false, it means the shell died and the channel was closed
+		// without sending any values. The resultChan will just be closed, and the
+		// caller will receive (0, false).
+	}()
+
+	// We send two commands back-to-back, each terminated by a newline, to
+	// make the command-end marker detection robust.
+	// 1. `printf ''`: A silent, no-op command. This is crucial for flushing the
+	//    prompt and capturing the exit code of whatever command ran *before*
+	//    this `SendCommand` call. This gives us a reliable "before" marker.
+	// 2. The actual command from the user.
+	// This two-step process ensures that the filtering logic will always receive
+	// exactly two command-end markers after this function is called, preventing
+	// timeouts caused by race conditions where the initial prompt marker is missed.
+	// Using a simple newline (`\n`) sends an empty command. This is better than
+	// `printf ''` because an empty command inherits the exit code ($?) of the
+	// *previous* command, correctly capturing the shell's state before we run
+	// our new command.
+	flushAndExecuteCmd := fmt.Sprintf("\n%s\n", command)
 
 	// Send the command to the shell. A newline is required to execute it.
-	if err := e.SendInput(command + "\n"); err != nil {
+	if err := e.SendInput(flushAndExecuteCmd); err != nil {
 		// If sending fails, clean up and return the error.
 		e.commandDoneChan = nil
 		e.commandInProgress = false
-		close(doneChan) // Close it so the caller doesn't block forever.
+		close(internalChan) // Close it to unblock the mediator goroutine.
 		return nil, err
 	}
 
-	return doneChan, nil
+	return resultChan, nil
 }
 
 // SendInput sends a string to the active interactive shell's stdin.
@@ -263,7 +347,7 @@ func (e *Executor) StopInteractive() error {
 
 // manageSessionLifecycle handles the I/O and lifecycle for an active PTY session.
 // It runs in a dedicated goroutine.
-func (e *Executor) manageSessionLifecycle(ptmx *os.File, outputChan chan<- string) {
+func (e *Executor) manageSessionLifecycle(ptmx *os.File, outputChan chan<- string, ptyWriter io.Writer) {
 	// Ensure the temporary rcfile is cleaned up when the shell process exits.
 	// This acts as a fallback if StopInteractive is not called (e.g., user types 'exit').
 	defer e.removeRCFile()
@@ -293,7 +377,7 @@ func (e *Executor) manageSessionLifecycle(ptmx *os.File, outputChan chan<- strin
 
 	// Create a custom provider to filter the command-end marker from stdout,
 	// so the user doesn't see it, but the AI does.
-	stdoutFilter := NewFilteringProvider(os.Stdout)
+	stdoutFilter := NewFilteringProvider(ptyWriter)
 
 	// This goroutine reads from the pipe, sends line-by-line to the channel,
 	// and is responsible for closing the channel when it's done.

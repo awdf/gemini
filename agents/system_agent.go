@@ -157,9 +157,8 @@ func (a *SystemAgent) handleInteractiveShell(call *genai.FunctionCall) *genai.Fu
 		a.Printf("Submitting shell command: %s", command)
 
 		// SendCommandToShell sends the command and returns a channel that closes upon completion.
-		// We prepend a newline to clear any existing input on the shell prompt,
-		// mimicking the original behavior of ensuring a clean execution slate.
-		doneChan, err := desktop.C.SendCommandToShell("\n" + command)
+		// The underlying executor handles flushing the prompt, so we just send the command.
+		doneChan, err := desktop.C.SendCommandToShell(command)
 		if err != nil {
 			return a.CreateFunctionResponse(call, nil, err)
 		}

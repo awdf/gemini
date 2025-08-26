@@ -3,6 +3,7 @@ package desktop
 import (
 	"fmt"
 	"image"
+	"os"
 	"time"
 
 	"gemini/images"
@@ -71,7 +72,8 @@ func (wc *WaylandController) ScreenSize() (image.Rectangle, error) {
 
 // StartInteractiveShell starts a persistent shell session.
 func (wc *WaylandController) StartInteractiveShell(outputChan chan<- string) error {
-	return wc.shellExec.StartInteractive(outputChan)
+	userTerminal := os.Stdout
+	return wc.shellExec.StartInteractive(outputChan, userTerminal)
 }
 
 // SendToShell sends input to the active shell session.
