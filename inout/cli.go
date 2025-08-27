@@ -88,10 +88,6 @@ const (
 	stateReadingPassword
 	stateIgnoringEscapeSequence
 
-	// Marker detection constants, must match shell/executor.go
-	markerStartByte = 0x01 // SOH (Start of Heading)
-	markerEndByte   = 0x02 // STX (Start of Text)
-
 	promptPatern = "\n\033[A\r\033[1;91m%s\033[0m> \033[K"
 	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
 	soundbarPatern   = "\0337\r\033[B\033[K[%s%s]\0338"
@@ -308,9 +304,9 @@ func (c *CLI) stopSystemShell() {
 	(*c.bus).Publish(config.MainTopic, "draw:cli.stopSystemShell")
 }
 
-// handleSystemLineEditor provides a minimal line editor for raw terminal mode.
+// handleInternalCommandLineEditor provides a minimal line editor for raw terminal mode.
 // It's used for both internal commands and modal prompts.
-func (c *CLI) handleSystemLineEditor(b byte) {
+func (c *CLI) handleInternalCommandLineEditor(b byte) {
 	switch b {
 	case 27: // ESC key - user pressed an arrow, Home, End, etc.
 		// Abort internal command entry and revert to proxying to the shell.
@@ -452,7 +448,6 @@ func (c *CLI) processInputByte(b byte) {
 			log.Printf("Error sending input to system shell: %v", err)
 		}
 		return // Return immediately.
-
 	case stateProxyingToShell:
 		// Intercept Ctrl+D (EOT character) to gracefully exit the shell
 		// without closing the main application's stdin.
@@ -513,7 +508,7 @@ func (c *CLI) processInputByte(b byte) {
 			log.Printf("Error sending input to system shell: %v", err)
 		}
 	case stateReadingCommand:
-		c.handleSystemLineEditor(b)
+		c.handleInternalCommandLineEditor(b)
 	}
 }
 
@@ -613,7 +608,7 @@ func (c *CLI) runSystemModeLoop() {
 			c.shellBuffer.WriteString(line + "\n")
 			c.shellBufferMu.Unlock()
 
-			if c.systemAFK && isCommandEndMarker(line) {
+			if c.systemAFK && desktop.C.IsCommandEndMarker(line) {
 				log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
 				helpers.SafeSend(c.cmdChan, "command execution done")
 			}
@@ -981,30 +976,4 @@ func (c *CLI) command(cmd string) (exit bool) {
 	fmt.Printf("Unknown command: %s\n", commandName)
 	(*c.bus).Publish(config.MainTopic, "draw:cli.command.unknown")
 	return false
-}
-
-// isCommandEndMarker checks if a line from the shell output contains the special
-// command-end marker. This is used by AFK mode to detect when a command has finished.
-func isCommandEndMarker(line string) bool {
-	// The marker is framed by SOH (0x01) and STX (0x02) bytes, which are defined
-	// in the shell executor. We use the same values here for detection.
-
-	// The marker can be anywhere in the line, as the prompt might be appended.
-	startIndex := strings.IndexByte(line, markerStartByte)
-	if startIndex == -1 {
-		return false
-	}
-
-	// Search for the end byte *after* the start byte.
-	endIndex := strings.IndexByte(line[startIndex:], markerEndByte)
-	if endIndex == -1 {
-		return false
-	}
-
-	// Extract the full marker content, e.g., "__GEMINI_CMD_DONE__:0"
-	// The endIndex is relative to the slice starting at startIndex.
-	markerContent := line[startIndex+1 : startIndex+endIndex]
-
-	// Check if the extracted content starts with the configured core marker string.
-	return strings.HasPrefix(markerContent, config.C.Shell.GetCommandEndMarker())
 }

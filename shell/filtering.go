@@ -75,7 +75,7 @@ func (fw *FilteringProvider) Send(outputChan chan<- string, pr io.Reader) {
 	defer close(outputChan)
 	// The scanner is still useful for the internal channel to get line-by-line updates.
 	scanner := bufio.NewScanner(pr)
-	scanner.Split(geminiSplitFunc)
+	scanner.Split(fw.geminiSplitFunc)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -156,7 +156,7 @@ func (fw *FilteringProvider) extractExitCodeFromMarker(line string) (exitCode in
 // or by the command-end marker sequence (\x01...\x02). This ensures that both
 // regular shell output and the special markers are tokenized correctly, even if
 // a marker does not end with a newline.
-func geminiSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
+func (fw *FilteringProvider) geminiSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	// 1. Handle EOF with no more data.
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil
@@ -198,4 +198,30 @@ func geminiSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err er
 
 	// 5. No delimiters found and not at EOF. Request more data.
 	return 0, nil, nil
+}
+
+// isCommandEndMarker checks if a line from the shell output contains the special
+// command-end marker. This is used by AFK mode to detect when a command has finished.
+func IsCommandEndMarker(line string) bool {
+	// The marker is framed by SOH (0x01) and STX (0x02) bytes, which are defined
+	// in the shell executor. We use the same values here for detection.
+
+	// The marker can be anywhere in the line, as the prompt might be appended.
+	startIndex := strings.IndexByte(line, markerStartByte)
+	if startIndex == -1 {
+		return false
+	}
+
+	// Search for the end byte *after* the start byte.
+	endIndex := strings.IndexByte(line[startIndex:], markerEndByte)
+	if endIndex == -1 {
+		return false
+	}
+
+	// Extract the full marker content, e.g., "__GEMINI_CMD_DONE__:0"
+	// The endIndex is relative to the slice starting at startIndex.
+	markerContent := line[startIndex+1 : startIndex+endIndex]
+
+	// Check if the extracted content starts with the configured core marker string.
+	return strings.HasPrefix(markerContent, config.C.Shell.GetCommandEndMarker())
 }

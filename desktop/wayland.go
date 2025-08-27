@@ -87,6 +87,11 @@ func (wc *WaylandController) SendCommandToShell(command string) (<-chan int, err
 	return wc.shellExec.SendCommand(command)
 }
 
+// IsCommandEndMarker special checker for spliting shell output
+func (wc *WaylandController) IsCommandEndMarker(line string) bool {
+	return shell.IsCommandEndMarker(line)
+}
+
 // StopInteractiveShell stops the active shell session.
 func (wc *WaylandController) StopInteractiveShell() error {
 	return wc.shellExec.StopInteractive()
