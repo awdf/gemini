@@ -285,6 +285,12 @@ func (f *Formatter) Clear() {
 	fmt.Print("\033[2J\033[0;0H")
 }
 
+// PrintRaw prints text directly to the console, ensuring newlines are correctly formatted as \r\n.
+// It does not perform any markdown parsing or affect the formatter's state.
+func (f *Formatter) PrintRaw(text string) {
+	fmt.Print(strings.ReplaceAll(text, "\n", "\r\n"))
+}
+
 // LogToolResult formats and logs the result of a tool call to the standard logger.
 func LogToolResult(callName string, result any) {
 	log.Printf("Tool call '%s' result:", callName)

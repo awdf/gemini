@@ -71,7 +71,7 @@ func TestFormatter_Print(t *testing.T) {
 		{
 			name:     "code block",
 			input:    "```\ncode\n```",
-			expected: ColorReset + ColorDarkGreen + "\r\ncode\r\n" + ColorReset,
+			expected: ColorReset + ColorDarkGreen + "code" + ColorReset,
 		},
 		{
 			name:     "highlighted go code block",
@@ -116,7 +116,7 @@ func TestFormatter_Print(t *testing.T) {
 		{
 			name:     "unordered list",
 			input:    "* one\n* two",
-			expected: ColorDarkYellow + "• " + ColorReset + "one\n" + ColorDarkYellow + "• " + ColorReset + "two",
+			expected: ColorDarkYellow + "• " + ColorReset + "one\r\n" + ColorDarkYellow + "• " + ColorReset + "two",
 		},
 		{
 			name:     "blockquote",
@@ -126,7 +126,7 @@ func TestFormatter_Print(t *testing.T) {
 		{
 			name:     "numbered list",
 			input:    "1. first\n2. second",
-			expected: ColorDarkYellow + "1. " + ColorReset + "first\n" + ColorDarkYellow + "2. " + ColorReset + "second",
+			expected: ColorDarkYellow + "1. " + ColorReset + "first\r\n" + ColorDarkYellow + "2. " + ColorReset + "second",
 		},
 		{
 			name:     "indented list",
@@ -197,4 +197,12 @@ func TestFormatter_Clear(t *testing.T) {
 		f.Clear()
 	})
 	assert.Equal(t, "\033[2J\033[0;0H", output)
+}
+
+func TestFormatter_PrintRaw(t *testing.T) {
+	f := NewFormatter()
+	output := captureOutput(func() {
+		f.PrintRaw("hello\nworld")
+	})
+	assert.Equal(t, "hello\r\nworld", output)
 }

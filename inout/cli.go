@@ -53,6 +53,7 @@ encountered during development to prevent re-litigating them.
 */
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -124,6 +125,7 @@ type CLI struct {
 	systemProxyLineBuffer strings.Builder // A small buffer to track the current line in proxy mode to detect commands.
 	originalTermState     *term.State
 	terminal              *term.Terminal // For prompt mode line editing
+	stdinReader           *bufio.Reader  // A buffered reader to share between raw mode and line mode.
 	modeSwitchRequested   bool           // Signals a switch between system and prompt loops.
 	systemAFK             bool           // Auto-finish turn in system mode.
 	drawCompleteChan      chan struct{}  // Only for draw() method use! Signals that AI response drawing is complete, unblocking the prompt loop.
@@ -139,10 +141,12 @@ type promptRequest struct {
 	responseChan chan string
 }
 
-// stdInOut is a helper struct that combines io.Reader and io.Writer.
-// It's used to create a terminal instance that reads from stdin and writes to stdout.
-type stdInOut struct {
-	io.Reader
+// terminalReadWriter combines a buffered reader with a writer to satisfy
+// the io.ReadWriter interface required by term.NewTerminal. This allows
+// sharing the buffered reader between our raw byte processing and the
+// terminal's line editor.
+type terminalReadWriter struct {
+	*bufio.Reader
 	io.Writer
 }
 
@@ -206,6 +210,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		modeSwitchRequested: false,
 		promptChan:          make(chan promptRequest),
 		systemAFK:           false,
+		stdinReader:         bufio.NewReader(os.Stdin),
 		drawCompleteChan:    make(chan struct{}, 1), // Buffered to be non-blocking
 	}
 }
@@ -302,64 +307,6 @@ func (c *CLI) stopSystemShell() {
 	}
 	// When Ctrl+D prssed, we need draw prompt for user
 	(*c.bus).Publish(config.MainTopic, "draw:cli.stopSystemShell")
-}
-
-// handleInternalCommandLineEditor provides a minimal line editor for raw terminal mode.
-// It's used for both internal commands and modal prompts.
-func (c *CLI) handleInternalCommandLineEditor(b byte) {
-	switch b {
-	case 27: // ESC key - user pressed an arrow, Home, End, etc.
-		// Abort internal command entry and revert to proxying to the shell.
-		// Erase everything the user has typed for the internal command so far.
-		for i := 0; i < c.systemCommandBuffer.Len()+1; i++ { // +1 for the initial '/'
-			fmt.Print("\b \b")
-		}
-		c.systemCommandBuffer.Reset()
-		c.systemInputState = stateProxyingToShell
-
-		// Now, let the main input processor handle this ESC byte in the new state.
-		// This will correctly trigger the stateIgnoringEscapeSequence logic.
-		c.processInputByte(b)
-		return
-	case '\t': // Tab key
-		// Explicitly ignore tab completion in this simple editor.
-	case '\r', '\n': // Enter key
-		c.formatter.Reset() // Echo newline.
-		text := c.systemCommandBuffer.String()
-		c.systemCommandBuffer.Reset()
-		c.systemInputState = stateProxyingToShell // Always return to proxying.
-		c.systemProxyLineBuffer.Reset()           // Clear the line buffer after a command.
-		if text != "" {                           // The command function is now responsible for triggering a redraw
-			// via an event if necessary.
-			if exit := c.command(text); exit {
-				return // An exit command was issued.
-			}
-		} else {
-			// An empty command should still redraw the prompt via the event bus.
-			(*c.bus).Publish(config.MainTopic, "draw:cli.handleSystemLineEditor")
-		}
-	case 127, 8: // Backspace
-		if c.systemCommandBuffer.Len() > 0 {
-			// Correctly handle backspace for strings.Builder
-			s := c.systemCommandBuffer.String()
-			c.systemCommandBuffer.Reset()
-			c.systemCommandBuffer.WriteString(s[:len(s)-1])
-			fmt.Print("\b \b") // Erase character on screen.
-		}
-	case 3: // Ctrl+C
-		fmt.Print("^C\r\n")
-		c.systemCommandBuffer.Reset()
-		c.systemInputState = stateProxyingToShell
-		c.systemProxyLineBuffer.Reset() // Clear the line buffer on abort.
-		// Redraw to get a fresh shell prompt.
-		c.draw()
-	default:
-		// Echo printable characters and add to buffer.
-		if b >= 32 && b < 127 {
-			c.systemCommandBuffer.WriteByte(b)
-			fmt.Print(string(b))
-		}
-	}
 }
 
 // handlePasswordEditor is a special-purpose line editor for reading sensitive
@@ -482,14 +429,6 @@ func (c *CLI) processInputByte(b byte) {
 		// cases where the user types and then backspaces to the start of the line.
 		// All bytes are still proxied to the shell to maintain interactivity.
 
-		// If '/' is typed at the beginning of the line, switch to command mode.
-		if b == '/' && c.systemProxyLineBuffer.Len() == 0 {
-			c.systemInputState = stateReadingCommand
-			c.systemCommandBuffer.Reset() // Clear the main command buffer
-			fmt.Print("/")                // Echo the slash to the user.
-			return                        // Don't proxy the '/'
-		}
-
 		// Update the proxy line buffer based on the input byte.
 		if b >= 32 && b < 127 { // Printable characters
 			c.systemProxyLineBuffer.WriteByte(b)
@@ -507,8 +446,6 @@ func (c *CLI) processInputByte(b byte) {
 		if err := desktop.C.SendToShell(string(b)); err != nil {
 			log.Printf("Error sending input to system shell: %v", err)
 		}
-	case stateReadingCommand:
-		c.handleInternalCommandLineEditor(b)
 	}
 }
 
@@ -542,34 +479,38 @@ func (c *CLI) handleBusEvents(event string) {
 
 // startStdinReader starts a goroutine to read from standard input and send the data to a channel.
 // It is designed to be cancellable via the 'done' channel.
-func (c *CLI) startStdinReader(inputChan chan<- []byte, done <-chan struct{}) {
+func (c *CLI) startStdinReader(inputChan chan<- byte, done <-chan struct{}, wg *sync.WaitGroup) {
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer close(inputChan)
-		// This is a simple blocking read loop. It is not perfectly cancellable
-		// while blocked on Read(), but it checks for cancellation between reads.
-		// This is a pragmatic approach for interactive TTY input, where using
-		// SetReadDeadline is not supported and causes a confusing error log.
-		// This change removes the error and simplifies the logic by removing the
-		// unsupported non-blocking path.
+
 		for {
+			// Check for cancellation before blocking on read.
 			select {
 			case <-done:
 				return
 			default:
 			}
-			buf := make([]byte, 128)
-			n, readErr := os.Stdin.Read(buf)
-			if readErr != nil {
-				if readErr != io.EOF {
-					log.Printf("Stdin read error: %v", readErr)
-				}
+
+			b, err := c.stdinReader.ReadByte()
+			if err != nil {
+				// EOF or other error, the main loop will handle shutdown.
 				return
 			}
 
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				inputChan <- data
+			// Check for cancellation again after read, before sending.
+			// This is the critical part to prevent a race condition where a byte is
+			// read just as the reader is being asked to stop.
+			select {
+			case inputChan <- b:
+			case <-done:
+				// We were cancelled after reading a byte but before we could send it.
+				// We must put the byte back into the buffer so the next reader can see it.
+				if err := c.stdinReader.UnreadByte(); err != nil {
+					log.Printf("FATAL: could not unread byte, input state corrupted: %v", err)
+				}
+				return
 			}
 		}
 	}()
@@ -580,71 +521,115 @@ func (c *CLI) runSystemModeLoop() {
 	// This channel will receive output from the interactive shell.
 	outputChan := make(chan string, 100)
 	c.startSystemShell(outputChan)
+	// Use defer to ensure the shell is stopped when this function returns,
+	// for any reason (mode switch, shutdown, error).
+	defer c.stopSystemShell()
+
 	c.systemInputState = stateProxyingToShell
-
-	inputChan := make(chan []byte, 1) // Use a small buffer
-	doneChan := make(chan struct{})
-	defer close(doneChan) // Ensure the stdin reader goroutine is stopped on exit.
-	c.startStdinReader(inputChan, doneChan)
-
 	shutdownListener := flow.GetListener()
 
+	// This outer loop allows us to re-initialize the input reader after a
+	// blocking operation like ReadLine.
 	for {
 		if c.modeSwitchRequested {
-			c.stopSystemShell()
 			return
 		}
 
-		select {
-		case <-*shutdownListener:
-			return
-		case line, ok := <-outputChan:
-			if !ok {
-				log.Println("Shell exited, terminating system mode loop.")
-				c.stopSystemShell()
+		var readerWg sync.WaitGroup
+		inputChan := make(chan byte)
+		doneChan := make(chan struct{})
+		c.startStdinReader(inputChan, doneChan, &readerWg)
+
+		// Flag to indicate we need to break from the inner loop to call ReadLine.
+		var commandInputRequested bool
+
+	innerSelectLoop:
+		for {
+			select {
+			case <-*shutdownListener:
+				close(doneChan) // Signal the reader to stop.
 				return
-			}
-			c.shellBufferMu.Lock()
-			c.shellBuffer.WriteString(line + "\n")
-			c.shellBufferMu.Unlock()
 
-			if c.systemAFK && desktop.C.IsCommandEndMarker(line) {
-				log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
-				helpers.SafeSend(c.cmdChan, "command execution done")
-			}
+			case line, ok := <-outputChan:
+				if !ok {
+					log.Println("Shell exited, terminating system mode loop.")
+					close(doneChan) // Signal the reader to stop.
+					return          // This will trigger the deferred c.stopSystemShell()
+				}
+				c.shellBufferMu.Lock()
+				c.shellBuffer.WriteString(line + "\n")
+				c.shellBufferMu.Unlock()
 
-		case req := <-c.promptChan:
-			c.activePrompt = &req
-			c.systemInputState = stateReadingPassword
-			c.systemCommandBuffer.Reset()
-			(*c.bus).Publish(config.MainTopic, "block:cli.runSystemModeLoop")
-			c.formatter.PrintNl(req.prompt)
+				if c.systemAFK && desktop.C.IsCommandEndMarker(line) {
+					log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
+					helpers.SafeSend(c.cmdChan, "command execution done")
+				}
 
-		case inputBytes, ok := <-inputChan:
-			if !ok {
-				// This case is now less likely to be hit for Ctrl+D, but is kept
-				// as a safeguard for other stdin closure scenarios.
-				log.Println("Stdin closed, exiting system mode loop.")
-				c.stopSystemShell()
-				return
-			}
+			case req := <-c.promptChan:
+				c.activePrompt = &req
+				c.systemInputState = stateReadingPassword
+				c.systemCommandBuffer.Reset()
+				(*c.bus).Publish(config.MainTopic, "block:cli.runSystemModeLoop")
+				c.formatter.PrintNl(req.prompt)
 
-			// The CLI should only drop input if it's not in a special input
-			// state (like reading a password) that must be handled even when
-			// the rest of the system is "blocked".
-			if c.systemInputState != stateReadingPassword && !c.ready {
-				log.Println("CLI dropping input received during blocked state.")
-				continue
-			}
+			case b, ok := <-inputChan:
+				if !ok {
+					log.Println("Stdin reader channel closed, likely due to an error. Exiting system mode.")
+					return
+				}
 
-			for _, b := range inputBytes {
+				if c.systemInputState != stateReadingPassword && !c.ready {
+					log.Println("CLI dropping input received during blocked state.")
+					continue
+				}
+
+				// This is the main transition logic.
+				if c.systemInputState == stateProxyingToShell && b == '/' && c.systemProxyLineBuffer.Len() == 0 {
+					fmt.Print("/") // Echo the slash to the user.
+
+					// Stop the background reader and wait for it to exit completely.
+					// This synchronous stop is crucial to prevent any more bytes from
+					// being read from the shared buffer before ReadLine takes over.
+					close(doneChan)
+					readerWg.Wait()
+					commandInputRequested = true
+					break innerSelectLoop // Exit the select loop to call ReadLine.
+				}
+
+				// If not a command, process the byte for proxying or password editing.
 				if c.systemInputState == stateReadingPassword {
 					c.handlePasswordEditor(b)
 				} else {
 					c.processInputByte(b)
 				}
 			}
+		} // End of innerSelectLoop
+
+		// This code runs after the inner select loop is broken.
+		if commandInputRequested {
+			// We now have exclusive control of the terminal for reading.
+			line, err := c.terminal.ReadLine()
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("ReadLine error: %v", err)
+				}
+				c.draw() // Redraw prompt on error.
+				// Continue the outer loop to restart the proxy reader.
+				continue
+			}
+
+			// We have the command. Process it.
+			c.formatter.Reset() // Echo newline.
+			c.systemProxyLineBuffer.Reset()
+			if exit := c.command(line); exit {
+				return // An exit command was issued.
+			}
+			// After the command is handled, continue the outer loop to restart the proxy reader.
+			continue
 		}
+
+		// If the inner loop exited for any other reason, we should exit the main loop.
+		break
 	}
 }
 
@@ -714,8 +699,12 @@ func (c *CLI) Run() {
 		}
 		defer term.Restore(fd, c.originalTermState)
 	}
-	// Create the terminal instance for prompt mode.
-	c.terminal = term.NewTerminal(&stdInOut{os.Stdin, os.Stdout}, "")
+	// Create the terminal instance for both prompt and system mode.
+	// It uses our shared, buffered reader.
+	c.terminal = term.NewTerminal(&terminalReadWriter{
+		Reader: c.stdinReader,
+		Writer: os.Stdout,
+	}, "")
 
 	helpers.Verify((*c.bus).SubscribeAsync(config.MainTopic, c.handleBusEvents, false))
 
@@ -769,7 +758,7 @@ func (c *CLI) draw() {
 
 func handleSave(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	(*c.bus).Publish(config.AITopic, "save:history.txt")
-	fmt.Println("Conversation history save requested to history.txt.")
+	c.formatter.PrintRaw("Conversation history save requested to history.txt.\n")
 	return false, false
 }
 
@@ -818,17 +807,17 @@ func handleThoughts(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	return false, false
 }
 
-func handleThinking(_ *CLI, args []string) (isAIPrompt bool, exit bool) {
+func handleThinking(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	hint := func() {
-		fmt.Printf("Available levels: %s, %s, %s, %s, %s\n", dynamic, none, low, medium, high)
+		c.formatter.PrintRaw(fmt.Sprintf("Available levels: %s, %s, %s, %s, %s\n", dynamic, none, low, medium, high))
 	}
 	if len(args) != 1 {
-		fmt.Println("Usage: /thinking <level>")
+		c.formatter.PrintRaw("Usage: /thinking <level>\n")
 		hint()
 	} else {
 		level := strings.ToLower(args[0])
 		if value, ok := thinkingLevels[level]; !ok {
-			fmt.Printf("Unknown thinking level: %s\n", level)
+			c.formatter.PrintRaw(fmt.Sprintf("Unknown thinking level: %s\n", level))
 			hint()
 		} else {
 			config.C.AI.Thinking = value
@@ -840,10 +829,10 @@ func handleThinking(_ *CLI, args []string) (isAIPrompt bool, exit bool) {
 
 func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	hint := func() {
-		fmt.Printf("Available AI modes: %s, %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode, VideoMode)
+		c.formatter.PrintRaw(fmt.Sprintf("Available AI modes: %s, %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode, VideoMode))
 	}
 	if len(args) != 1 {
-		fmt.Println("Usage: /mode <name>")
+		c.formatter.PrintRaw("Usage: /mode <name>\n")
 		hint()
 		return false, false
 	}
@@ -851,7 +840,7 @@ func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	mode := strings.ToLower(args[0])
 	value, ok := modes[mode]
 	if !ok {
-		fmt.Printf("Unknown AI mode: %s\n", mode)
+		c.formatter.PrintRaw(fmt.Sprintf("Unknown AI mode: %s\n", mode))
 		hint()
 		return false, false
 	}
@@ -877,7 +866,7 @@ func handlePrompt(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 			helpers.SafeSend(c.cmdChan, promptText)
 			return true, false
 		}
-		fmt.Println("Usage: /prompt <text for AI>")
+		c.formatter.PrintRaw("Usage: /prompt <text for AI>\n")
 		c.draw()
 	}
 	return false, false
@@ -887,9 +876,9 @@ func handleAfk(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	c.systemAFK = !c.systemAFK
 	log.Printf("System AFK mode set to: %t", c.systemAFK)
 	if c.systemAFK {
-		fmt.Println("System AFK mode enabled. Turns will be auto-submitted after each command.")
+		c.formatter.PrintRaw("System AFK mode enabled. Turns will be auto-submitted after each command.\n")
 	} else {
-		fmt.Println("System AFK mode disabled.")
+		c.formatter.PrintRaw("System AFK mode disabled.\n")
 	}
 	return false, false
 }
@@ -973,7 +962,7 @@ func (c *CLI) command(cmd string) (exit bool) {
 		return exit
 	}
 
-	fmt.Printf("Unknown command: %s\n", commandName)
+	c.formatter.PrintRaw(fmt.Sprintf("Unknown command: %s\n", commandName))
 	(*c.bus).Publish(config.MainTopic, "draw:cli.command.unknown")
 	return false
 }
