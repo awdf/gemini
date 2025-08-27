@@ -23,7 +23,7 @@ type RMSDisplay struct {
 	wg                   *sync.WaitGroup
 	rmsChan              <-chan float64
 	bus                  *EventBus.Bus
-	ready                bool
+	warmUpDone           bool
 	muted                bool
 	Mu                   sync.RWMutex
 }
@@ -39,7 +39,7 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 		rmsChan:              rmsChan,
 		bus:                  bus,
 		muted:                true,
-		ready:                false,
+		warmUpDone:           false,
 	}
 }
 
@@ -47,7 +47,7 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 func (d *RMSDisplay) printBar() {
 	d.Mu.Lock() // Full lock because we write to lastPrintedBarLength
 	defer d.Mu.Unlock()
-	if !d.ready || d.muted {
+	if !d.warmUpDone || d.muted {
 		return
 	}
 
@@ -79,24 +79,23 @@ func (d *RMSDisplay) printBar() {
 func (d *RMSDisplay) Run() {
 	defer d.wg.Done()
 
-	helpers.Verify((*d.bus).SubscribeAsync(config.MainTopic, func(event string) {
+	helpers.Verify((*d.bus).SubscribeAsync("main:topic", func(event string) {
 		config.DebugPrintf("Bar received event: %s\n", event)
 		d.Mu.Lock() // Full lock to write state
 		defer d.Mu.Unlock()
 		switch {
 		case strings.HasPrefix(event, "mute:"):
 			d.muted = true
-		// case strings.HasPrefix(event, "draw:"):
-		// 	d.muted = false
+		case strings.HasPrefix(event, "block:"):
+			d.muted = true
+		case strings.HasPrefix(event, "draw:"):
+			d.muted = false
 		case strings.HasPrefix(event, "show:"):
 			d.muted = false
 			// The main loop's ticker will handle the redraw, avoiding deadlocks.
 		case strings.HasPrefix(event, "ready:"):
-			d.ready = true
+			d.warmUpDone = true
 			d.muted = false
-		case strings.HasPrefix(event, "block:"): // Critical flow blocking
-			d.ready = false
-			d.muted = true
 		default:
 			config.DebugPrintf("Bar drop event: %s\n", event)
 		}

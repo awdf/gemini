@@ -266,7 +266,7 @@ func (f *Formatter) Println(text string, color ...string) {
 	}
 }
 
-// Println prints a line with an optional prefix color.
+// PrintNl prints a newline, then a line with an optional prefix color.
 func (f *Formatter) PrintNl(text string, color ...string) {
 	if len(color) > 0 {
 		fmt.Printf("\r\n%s%s%s\033[K\r\n", color[0], text, ColorReset)

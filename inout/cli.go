@@ -84,10 +84,8 @@ const (
 	ShellPauseStop  ShellPauseState = "stop"
 
 	// Defines the input state when in system mode.
-	stateProxyingToShell = iota
-	stateReadingCommand
-	stateReadingPassword
-	stateIgnoringEscapeSequence
+	stateProxyingToShell        = iota
+	stateIgnoringEscapeSequence // stateReadingCommand and stateReadingPassword are no longer needed.
 
 	promptPatern = "\n\033[A\r\033[1;91m%s\033[0m> \033[K"
 	// Sequence: Save cursor, move to start of line, move down, clear line, print, restore cursor.
@@ -115,13 +113,10 @@ type CLI struct {
 	mode                  string
 	previousMode          string
 	promptChan            chan promptRequest // Receives requests for sensitive modal prompts.
-	activePrompt          *promptRequest     // The currently active modal prompt
 	shellBuffer           strings.Builder
 	shellBufferMu         sync.Mutex // Protects access to the shellBuffer and shellPaused status.
 	systemInputState      int
-	preEscapeState        int // Remembers the state before an escape sequence
 	shellPaused           bool
-	systemCommandBuffer   strings.Builder
 	systemProxyLineBuffer strings.Builder // A small buffer to track the current line in proxy mode to detect commands.
 	originalTermState     *term.State
 	terminal              *term.Terminal // For prompt mode line editing
@@ -203,9 +198,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		ready:               false,
 		mode:                config.C.Mode,
 		previousMode:        "",
-		activePrompt:        nil,
 		systemInputState:    stateProxyingToShell,
-		preEscapeState:      stateProxyingToShell, // Default pre-escape state
 		shellPaused:         false,
 		modeSwitchRequested: false,
 		promptChan:          make(chan promptRequest),
@@ -307,52 +300,6 @@ func (c *CLI) stopSystemShell() {
 	}
 	// When Ctrl+D prssed, we need draw prompt for user
 	(*c.bus).Publish(config.MainTopic, "draw:cli.stopSystemShell")
-}
-
-// handlePasswordEditor is a special-purpose line editor for reading sensitive
-// information. It processes input bytes without echoing them to the terminal.
-func (c *CLI) handlePasswordEditor(b byte) {
-	switch b {
-	case '\r', '\n': // Enter key
-		fmt.Print("\r\n") // Echo newline to confirm input.
-		password := c.systemCommandBuffer.String()
-		c.systemCommandBuffer.Reset()
-		c.systemInputState = stateProxyingToShell // Return to normal operation.
-		c.systemProxyLineBuffer.Reset()           // Clear the line buffer after the prompt.
-
-		if c.activePrompt != nil {
-			helpers.SafeSend(c.activePrompt.responseChan, password)
-			close(c.activePrompt.responseChan)
-			c.activePrompt = nil
-		}
-		(*c.bus).Publish(config.MainTopic, "ready:cli.handlePasswordEditor")
-		c.draw() // Redraw the normal shell prompt.
-
-	case 127, 8: // Backspace
-		if c.systemCommandBuffer.Len() > 0 {
-			s := c.systemCommandBuffer.String()
-			c.systemCommandBuffer.Reset()
-			c.systemCommandBuffer.WriteString(s[:len(s)-1])
-			// Do not echo anything for backspace.
-		}
-	case 3: // Ctrl+C
-		fmt.Print("^C\r\n")
-		c.systemCommandBuffer.Reset()
-		c.systemInputState = stateProxyingToShell
-		c.systemProxyLineBuffer.Reset() // Clear the line buffer on abort.
-		if c.activePrompt != nil {
-			helpers.SafeSend(c.activePrompt.responseChan, "") // Send empty string on abort.
-			close(c.activePrompt.responseChan)
-			c.activePrompt = nil
-		}
-		(*c.bus).Publish(config.MainTopic, "ready:cli.handlePasswordEditor")
-		c.draw()
-	default:
-		// Add printable characters to buffer, but do not echo them.
-		if b >= 32 && b < 127 {
-			c.systemCommandBuffer.WriteByte(b)
-		}
-	}
 }
 
 // processLine handles a line of input received from the prompt mode editor.
@@ -542,6 +489,7 @@ func (c *CLI) runSystemModeLoop() {
 
 		// Flag to indicate we need to break from the inner loop to call ReadLine.
 		var commandInputRequested bool
+		var passwordRequest *promptRequest // Store the request here
 
 	innerSelectLoop:
 		for {
@@ -566,11 +514,17 @@ func (c *CLI) runSystemModeLoop() {
 				}
 
 			case req := <-c.promptChan:
-				c.activePrompt = &req
-				c.systemInputState = stateReadingPassword
-				c.systemCommandBuffer.Reset()
-				(*c.bus).Publish(config.MainTopic, "block:cli.runSystemModeLoop")
-				c.formatter.PrintNl(req.prompt)
+				// A request for a password has arrived.
+				passwordRequest = &req
+				// Publish a block event to pause other UI components and CLI input.
+				(*c.bus).Publish(config.MainTopic, "block:cli.passwordPrompt")
+				// Print the prompt *before* waiting. This unblocks the user, who will
+				// press a key, which in turn unblocks the waiting reader goroutine.
+				c.formatter.Print(passwordRequest.prompt + ": ")
+				// Stop the background reader to get exclusive access.
+				close(doneChan)
+				readerWg.Wait()
+				break innerSelectLoop // Exit the loop to call ReadPassword.
 
 			case b, ok := <-inputChan:
 				if !ok {
@@ -578,7 +532,7 @@ func (c *CLI) runSystemModeLoop() {
 					return
 				}
 
-				if c.systemInputState != stateReadingPassword && !c.ready {
+				if !c.ready {
 					log.Println("CLI dropping input received during blocked state.")
 					continue
 				}
@@ -596,12 +550,9 @@ func (c *CLI) runSystemModeLoop() {
 					break innerSelectLoop // Exit the select loop to call ReadLine.
 				}
 
-				// If not a command, process the byte for proxying or password editing.
-				if c.systemInputState == stateReadingPassword {
-					c.handlePasswordEditor(b)
-				} else {
-					c.processInputByte(b)
-				}
+				// If not a command, process the byte for proxying.
+				// The password handling is now outside this byte-processing logic.
+				c.processInputByte(b)
 			}
 		} // End of innerSelectLoop
 
@@ -625,6 +576,30 @@ func (c *CLI) runSystemModeLoop() {
 				return // An exit command was issued.
 			}
 			// After the command is handled, continue the outer loop to restart the proxy reader.
+			continue
+		}
+
+		if passwordRequest != nil {
+			// We now have exclusive control of the terminal for reading.
+			// The prompt was printed *before* the wait to unblock the user.
+			// Now we read the password without printing a prompt again.
+			password, err := c.terminal.ReadPassword("")
+
+			// Regardless of success or error, we must respond to unblock the caller.
+			if err != nil {
+				log.Printf("ReadPassword error: %v", err)
+				fmt.Print("\r\n")                                  // Ensure we move to a new line on error.
+				helpers.SafeSend(passwordRequest.responseChan, "") // Send empty on error
+			} else {
+				helpers.SafeSend(passwordRequest.responseChan, password)
+			}
+			close(passwordRequest.responseChan)
+
+			// After handling the password, we need to redraw the shell prompt
+			// and continue the main loop to restart the proxy reader.
+			// Publish a ready event to unblock the system and redraw the prompt.
+			// The draw() call is handled by the event handler for "ready".
+			(*c.bus).Publish(config.MainTopic, "ready:cli.passwordPrompt")
 			continue
 		}
 
