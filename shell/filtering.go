@@ -21,14 +21,16 @@ const (
 // bytes. It filters out this marker sequence and passes all other data to the
 // underlying writer. This is more robust than line-based filtering.
 type FilteringProvider struct {
+	ex       *Executor
 	writer   io.Writer
 	inMarker bool         // State flag to track if we are currently inside a marker sequence.
 	buffer   bytes.Buffer // Reusable buffer to reduce allocations in the Write method.
 }
 
 // newFilteringWriter creates a new writer that filters out framed markers.
-func NewFilteringProvider(w io.Writer) *FilteringProvider {
+func NewFilteringProvider(e *Executor, w io.Writer) *FilteringProvider {
 	return &FilteringProvider{
+		ex:       e,
 		writer:   w,
 		inMarker: false,
 		// buffer is zero-valued and ready to use.
@@ -69,10 +71,12 @@ func (fw *FilteringProvider) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (fw *FilteringProvider) Send(outputChan chan<- string, e *Executor, pr io.Reader) {
+func (fw *FilteringProvider) Send(outputChan chan<- string, pr io.Reader) {
 	defer close(outputChan)
 	// The scanner is still useful for the internal channel to get line-by-line updates.
 	scanner := bufio.NewScanner(pr)
+	scanner.Split(geminiSplitFunc)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		outputChan <- line
@@ -82,33 +86,30 @@ func (fw *FilteringProvider) Send(outputChan chan<- string, e *Executor, pr io.R
 			// one from the initial shell prompt. We consume it here to synchronize
 			// the startup and prevent it from being mistaken for a command result.
 			var isFirstMarker bool
-			e.shellReady.Do(func() {
+			fw.ex.shellReady.Do(func() {
 				isFirstMarker = true
 				log.Println("First shell marker consumed for synchronization.")
-				close(e.shellReadyChan)
+				close(fw.ex.shellReadyChan)
 			})
 			if isFirstMarker {
 				continue // Skip processing for the first marker.
 			}
-			e.commandMutex.Lock()
-			if e.commandInProgress {
-				if e.commandDoneChan != nil {
-					// Send the marker's exit code.
-					e.commandDoneChan <- exitCode
-					e.commandMarkerCount++
+			fw.ex.commandMutex.Lock()
+			if fw.ex.commandDoneChan != nil {
+				// Send the marker's exit code.
+				fw.ex.commandDoneChan <- exitCode
+				fw.ex.commandMarkerCount++
 
-					// The channel is buffered to hold two markers. The first is the
-					// one from the prompt before the command, and the second is
-					// the one after the command completes. Once we've sent two,
-					// the command is done.
-					if e.commandMarkerCount == cap(e.commandDoneChan) {
-						close(e.commandDoneChan)
-						e.commandDoneChan = nil
-						e.commandInProgress = false
-					}
+				// The channel is buffered to hold two markers. The first is the
+				// one from the prompt before the command, and the second is
+				// the one after the command completes. Once we've sent two,
+				// the command is done.
+				if fw.ex.commandMarkerCount == cap(fw.ex.commandDoneChan) {
+					close(fw.ex.commandDoneChan)
+					fw.ex.commandDoneChan = nil
 				}
 			}
-			e.commandMutex.Unlock()
+			fw.ex.commandMutex.Unlock()
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -149,4 +150,52 @@ func (fw *FilteringProvider) extractExitCodeFromMarker(line string) (exitCode in
 		return -1, true // It's a marker, but we couldn't parse the code.
 	}
 	return exitCode, true
+}
+
+// geminiSplitFunc is a bufio.SplitFunc that splits the input stream by newlines
+// or by the command-end marker sequence (\x01...\x02). This ensures that both
+// regular shell output and the special markers are tokenized correctly, even if
+// a marker does not end with a newline.
+func geminiSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	// 1. Handle EOF with no more data.
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+
+	// 2. Search for the start of a marker.
+	if i := bytes.IndexByte(data, markerStartByte); i >= 0 {
+		// A marker start is present.
+		// 2a. If there is text before the marker, return that text as the first token.
+		if i > 0 {
+			return i, data[0:i], nil
+		}
+
+		// 2b. The marker starts at the beginning of the data. Find its end.
+		if j := bytes.IndexByte(data, markerEndByte); j >= 0 {
+			// We found the end. The token is the complete marker.
+			return j + 1, data[0 : j+1], nil
+		}
+
+		// 2c. We have a start but no end. If at EOF, it's a corrupt final token.
+		if atEOF {
+			return len(data), data, nil
+		}
+
+		// 2d. Incomplete marker, need more data.
+		return 0, nil, nil
+	}
+
+	// 3. No marker start found. Look for a newline.
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		// Found a newline. Return the line as a token.
+		return i + 1, data[0:i], nil
+	}
+
+	// 4. No delimiters found, but we are at EOF. Return the remaining data.
+	if atEOF {
+		return len(data), data, nil
+	}
+
+	// 5. No delimiters found and not at EOF. Request more data.
+	return 0, nil, nil
 }

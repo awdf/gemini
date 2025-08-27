@@ -18,7 +18,10 @@ import (
 	"gemini/flow"
 )
 
-const DisableOutput = false
+const (
+	DisableOutput     = false
+	markersPerCommand = 2
+)
 
 // Executor is responsible for executing shell commands in a pseudo-terminal.
 type Executor struct {
@@ -30,7 +33,6 @@ type Executor struct {
 	commandDoneChan    chan int
 	shellReady         sync.Once
 	shellReadyChan     chan struct{}
-	commandInProgress  bool
 	commandMarkerCount int
 	commandMutex       sync.Mutex
 	rcFilePath         string
@@ -77,7 +79,7 @@ func (e *Executor) removeRCFile() {
 // Contains constants above SOH \x01 and STX \x02
 func promptCommand() string {
 	// The marker is printed on its own line (note the \n) to ensure that line-buffered readers will process it immediately.
-	return fmt.Sprintf(`PROMPT_COMMAND='printf "\x01%s:%%d\x02\n" $?'`, config.C.Shell.GetCommandEndMarker())
+	return fmt.Sprintf(`PROMPT_COMMAND='printf "\x01%s:%%d\x02" $?'`, config.C.Shell.GetCommandEndMarker())
 }
 
 // createRCFile builds the content for a temporary bash rcfile, writes it to disk,
@@ -227,10 +229,74 @@ func (e *Executor) StartInteractive(outputChan chan<- string, userTerminal *os.F
 	e.ptyMutex.Unlock()
 
 	// Wait for the shell to be fully initialized and the first marker to be consumed.
+	e.commandMutex.Lock()
+	defer e.commandMutex.Unlock()
 	<-e.shellReadyChan
 	log.Println("Interactive shell is synchronized and ready.")
 
 	return nil
+}
+
+// manageSessionLifecycle handles the I/O and lifecycle for an active PTY session.
+// It runs in a dedicated goroutine.
+func (e *Executor) manageSessionLifecycle(ptmx *os.File, outputChan chan<- string, userTerminal *os.File) {
+	// Ensure the temporary rcfile is cleaned up when the shell process exits.
+	// This acts as a fallback if StopInteractive is not called (e.g., user types 'exit').
+	defer e.removeRCFile()
+
+	// --- Resize Handling ---
+	// Get a channel for window resize signals from the flow package.
+	ch := flow.GetWinchListener()
+	go func() {
+		for range *ch { // The loop will exit when the channel is closed.
+			// When a resize signal is received, get the new size from stdout
+			// and apply it to the PTY.
+			e.ptyMutex.Lock()
+			if e.activePty != nil {
+				if err := pty.InheritSize(os.Stdout, e.activePty); err != nil {
+					log.Printf("Error resizing PTY: %v", err)
+				}
+			}
+			e.ptyMutex.Unlock()
+		}
+	}()
+	// When this goroutine exits, unregister the listener.
+	defer flow.StopWinchListener(ch)
+
+	// Create a pipe. The pty output will be written to the pipe's writer.
+	// A goroutine will read from the pipe's reader and send to the channel.
+	pr, pw := io.Pipe()
+
+	// Create a custom provider to filter the command-end marker from stdout,
+	// so the user doesn't see it, but the AI does.
+	stdoutFilter := NewFilteringProvider(e, userTerminal)
+
+	// This goroutine reads from the pipe, sends line-by-line to the channel,
+	// and is responsible for closing the channel when it's done.
+	go stdoutFilter.Send(outputChan, pr)
+
+	// Create a MultiWriter to simultaneously write to the user's (filtered) stdout and the internal pipe.
+	multiWriter := io.MultiWriter(stdoutFilter, pw)
+
+	// This will block until the command is done, copying output to both writers.
+	// We can ignore the error, as it will be an expected one (EIO or EOF)
+	// when the pty is closed by StopInteractive.
+	_, _ = io.Copy(multiWriter, ptmx)
+
+	// After io.Copy returns, the command has finished. We must close the pipe
+	// writer to signal EOF to the scanner goroutine, allowing it to exit gracefully.
+	pw.Close()
+
+	// If a command was running when the shell died, notify the waiter.
+	e.commandMutex.Lock()
+	if e.commandDoneChan != nil {
+		log.Println("Interactive shell exited while a command was in progress. Notifying waiter.")
+		// We don't have an exit code, so we just close the channel.
+		// This will result in a read of (0, false) on the other side.
+		close(e.commandDoneChan)
+		e.commandDoneChan = nil
+	}
+	e.commandMutex.Unlock()
 }
 
 // SendCommand sends a command to the interactive shell and returns a channel that
@@ -239,14 +305,13 @@ func (e *Executor) SendCommand(command string) (<-chan int, error) {
 	e.commandMutex.Lock()
 	defer e.commandMutex.Unlock()
 
-	if e.commandInProgress {
+	if e.commandDoneChan != nil {
 		return nil, fmt.Errorf("another command is already in progress")
 	}
 
 	// The internal channel still needs to handle the flush marker and the command marker.
-	internalChan := make(chan int, 2)
+	internalChan := make(chan int, markersPerCommand)
 	e.commandDoneChan = internalChan
-	e.commandInProgress = true
 	e.commandMarkerCount = 0 // Reset the counter for the new command.
 
 	// The channel returned to the caller will only receive the final exit code.
@@ -292,7 +357,6 @@ func (e *Executor) SendCommand(command string) (<-chan int, error) {
 	if err := e.SendInput(flushAndExecuteCmd); err != nil {
 		// If sending fails, clean up and return the error.
 		e.commandDoneChan = nil
-		e.commandInProgress = false
 		close(internalChan) // Close it to unblock the mediator goroutine.
 		return nil, err
 	}
@@ -343,69 +407,4 @@ func (e *Executor) StopInteractive() error {
 	log.Println("Interactive shell session resources cleaned up.")
 
 	return err
-}
-
-// manageSessionLifecycle handles the I/O and lifecycle for an active PTY session.
-// It runs in a dedicated goroutine.
-func (e *Executor) manageSessionLifecycle(ptmx *os.File, outputChan chan<- string, ptyWriter io.Writer) {
-	// Ensure the temporary rcfile is cleaned up when the shell process exits.
-	// This acts as a fallback if StopInteractive is not called (e.g., user types 'exit').
-	defer e.removeRCFile()
-
-	// --- Resize Handling ---
-	// Get a channel for window resize signals from the flow package.
-	ch := flow.GetWinchListener()
-	go func() {
-		for range *ch { // The loop will exit when the channel is closed.
-			// When a resize signal is received, get the new size from stdout
-			// and apply it to the PTY.
-			e.ptyMutex.Lock()
-			if e.activePty != nil {
-				if err := pty.InheritSize(os.Stdout, e.activePty); err != nil {
-					log.Printf("Error resizing PTY: %v", err)
-				}
-			}
-			e.ptyMutex.Unlock()
-		}
-	}()
-	// When this goroutine exits, unregister the listener.
-	defer flow.StopWinchListener(ch)
-
-	// Create a pipe. The pty output will be written to the pipe's writer.
-	// A goroutine will read from the pipe's reader and send to the channel.
-	pr, pw := io.Pipe()
-
-	// Create a custom provider to filter the command-end marker from stdout,
-	// so the user doesn't see it, but the AI does.
-	stdoutFilter := NewFilteringProvider(ptyWriter)
-
-	// This goroutine reads from the pipe, sends line-by-line to the channel,
-	// and is responsible for closing the channel when it's done.
-	go stdoutFilter.Send(outputChan, e, pr)
-
-	// Create a MultiWriter to simultaneously write to the user's (filtered) stdout and the internal pipe.
-	multiWriter := io.MultiWriter(stdoutFilter, pw)
-
-	// This will block until the command is done, copying output to both writers.
-	// We can ignore the error, as it will be an expected one (EIO or EOF)
-	// when the pty is closed by StopInteractive.
-	_, _ = io.Copy(multiWriter, ptmx)
-
-	// After io.Copy returns, the command has finished. We must close the pipe
-	// writer to signal EOF to the scanner goroutine, allowing it to exit gracefully.
-	pw.Close()
-
-	// If a command was running when the shell died, notify the waiter.
-	e.commandMutex.Lock()
-	if e.commandInProgress {
-		log.Println("Interactive shell exited while a command was in progress. Notifying waiter.")
-		if e.commandDoneChan != nil {
-			// We don't have an exit code, so we just close the channel.
-			// This will result in a read of (0, false) on the other side.
-			close(e.commandDoneChan)
-		}
-		e.commandDoneChan = nil
-		e.commandInProgress = false
-	}
-	e.commandMutex.Unlock()
 }
