@@ -23,7 +23,7 @@ type RMSDisplay struct {
 	wg                   *sync.WaitGroup
 	rmsChan              <-chan float64
 	bus                  *EventBus.Bus
-	warmUpDone           bool
+	ready                bool
 	muted                bool
 	Mu                   sync.RWMutex
 }
@@ -38,8 +38,8 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 		wg:                   wg,
 		rmsChan:              rmsChan,
 		bus:                  bus,
+		ready:                false,
 		muted:                true,
-		warmUpDone:           false,
 	}
 }
 
@@ -47,7 +47,7 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 func (d *RMSDisplay) printBar() {
 	d.Mu.Lock() // Full lock because we write to lastPrintedBarLength
 	defer d.Mu.Unlock()
-	if !d.warmUpDone || d.muted {
+	if !d.ready || d.muted {
 		return
 	}
 
@@ -87,6 +87,7 @@ func (d *RMSDisplay) Run() {
 		case strings.HasPrefix(event, "mute:"):
 			d.muted = true
 		case strings.HasPrefix(event, "block:"):
+			d.ready = false
 			d.muted = true
 		case strings.HasPrefix(event, "draw:"):
 			d.muted = false
@@ -94,7 +95,7 @@ func (d *RMSDisplay) Run() {
 			d.muted = false
 			// The main loop's ticker will handle the redraw, avoiding deadlocks.
 		case strings.HasPrefix(event, "ready:"):
-			d.warmUpDone = true
+			d.ready = true
 			d.muted = false
 		default:
 			config.DebugPrintf("Bar drop event: %s\n", event)
