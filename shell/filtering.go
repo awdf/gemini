@@ -81,18 +81,14 @@ func (fw *FilteringProvider) Send(outputChan chan<- string, pr io.Reader) {
 		line := scanner.Text()
 		outputChan <- line
 		if exitCode, isMarker := fw.extractExitCodeFromMarker(line); isMarker {
-			// Use sync.Once to ensure this block only ever runs for the very first
-			// marker received during the executor's lifetime. This marker is the
-			// one from the initial shell prompt. We consume it here to synchronize
-			// the startup and prevent it from being mistaken for a command result.
-			var isFirstMarker bool
-			fw.ex.shellReady.Do(func() {
-				isFirstMarker = true
+			// Check if this is the first marker for the current session.
+			// This synchronizes startup and prevents the initial prompt's marker
+			// from being mistaken for a command result.
+			if !fw.ex.isShellReady {
+				fw.ex.isShellReady = true
 				log.Println("First shell marker consumed for synchronization.")
 				close(fw.ex.shellReadyChan)
-			})
-			if isFirstMarker {
-				continue // Skip processing for the first marker.
+				continue // Skip further processing for this first marker.
 			}
 			fw.ex.commandMutex.Lock()
 			if fw.ex.commandDoneChan != nil {

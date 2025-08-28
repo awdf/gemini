@@ -127,7 +127,7 @@ type CLI struct {
 }
 
 // commandHandler defines the function signature for a CLI command handler.
-type commandHandler func(c *CLI, args []string) (isAIPrompt bool, exit bool)
+type commandHandler func(c *CLI, args []string) (hide bool, exit bool)
 
 // promptRequest is used to pass a text prompt and receive a string response
 // between the blocking PromptForInput method and the non-blocking Run loop.
@@ -265,6 +265,26 @@ func (c *CLI) PromptForInput(prompt string) string {
 	return <-req.responseChan
 }
 
+// setMode centralizes the logic for changing the CLI's operational mode.
+// It updates the internal state, the global config, signals the main loop
+// to switch, and publishes an event to notify other components.
+func (c *CLI) setMode(newMode string) {
+	if c.mode == newMode {
+		return // No change needed. Silently.
+	}
+
+	// When switching *to* system mode, we need to remember where we came from.
+	if newMode == System {
+		c.previousMode = c.mode
+	}
+
+	c.mode = newMode
+	config.C.Mode = newMode
+	c.modeSwitchRequested = true
+	log.Printf("CLI mode set to: %s", newMode)
+	(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", newMode))
+}
+
 // startSystemShell starts the interactive shell for system mode.
 func (c *CLI) startSystemShell(outputChan chan<- string) {
 	if c.isSystemShellActive {
@@ -292,19 +312,24 @@ func (c *CLI) stopSystemShell() {
 
 	c.isSystemShellActive = false
 	log.Println("CLI exited system mode. Interactive shell stopped.")
+
+	var newMode string
 	if c.previousMode != "" {
-		c.mode = c.previousMode
+		newMode = c.previousMode
 		c.previousMode = "" // Reset for the next time.
 	} else {
-		c.mode = Prompt // Default fallback.
+		newMode = Prompt // Default fallback.
 	}
-	// When Ctrl+D prssed, we need draw prompt for user
-	(*c.bus).Publish(config.MainTopic, "draw:cli.stopSystemShell")
+	c.setMode(newMode)
+	// When Ctrl+D prssed, we don't need draw prompt for user.
+	// Shell close will finish model turn and model response in normal way.
+	// After model response actual prompt will be requested by live ai
+	// (*c.bus).Publish(config.MainTopic, "draw:cli.stopSystemShell")
 }
 
 // processLine handles a line of input received from the prompt mode editor.
-// It returns (isAIPrompt, exitRequested) to the calling loop.
-func (c *CLI) processLine(line string) (exitRequested bool) {
+// It returns exit requested to the calling loop.
+func (c *CLI) processLine(line string) bool {
 	fullLine := strings.TrimSpace(line)
 	parts := strings.Fields(fullLine)
 
@@ -347,9 +372,12 @@ func (c *CLI) processInputByte(b byte) {
 		// without closing the main application's stdin.
 		if b == 4 {
 			log.Println("Ctrl+D detected in system mode. Sending 'exit' to shell.")
-			if err := desktop.C.SendToShell("exit\n"); err != nil {
-				log.Printf("Error sending exit command to system shell: %v", err)
-			}
+			// This is wrong approach, it avoid logic of shell finalization
+			// if err := desktop.C.SendToShell("exit\n"); err != nil {
+			// 	log.Printf("Error sending exit command to system shell: %v", err)
+			// }
+			c.stopSystemShell()
+
 			// By consuming the Ctrl+D and not proxying it, we prevent the main
 			// stdin reader from receiving an EOF. The shell will exit, which
 			// will be detected by the shell output handler, triggering a clean
@@ -559,12 +587,14 @@ func (c *CLI) runSystemModeLoop() {
 		// This code runs after the inner select loop is broken.
 		if commandInputRequested {
 			// We now have exclusive control of the terminal for reading.
+			// Set an empty prompt so ReadLine works inline without overwriting the shell prompt.
+			c.terminal.SetPrompt("")
 			line, err := c.terminal.ReadLine()
 			if err != nil {
 				if err != io.EOF {
 					log.Printf("ReadLine error: %v", err)
 				}
-				c.draw() // Redraw prompt on error.
+				(*c.bus).Publish(config.MainTopic, "draw:cli.readLineError")
 				// Continue the outer loop to restart the proxy reader.
 				continue
 			}
@@ -598,7 +628,7 @@ func (c *CLI) runSystemModeLoop() {
 			// After handling the password, we need to redraw the shell prompt
 			// and continue the main loop to restart the proxy reader.
 			// Publish a ready event to unblock the system and redraw the prompt.
-			// The draw() call is handled by the event handler for "ready".
+			// The draw call is handled by the event handler for "ready".
 			(*c.bus).Publish(config.MainTopic, "ready:cli.passwordPrompt")
 			continue
 		}
@@ -707,6 +737,8 @@ func (c *CLI) Run() {
 	}
 }
 
+// Method for prompt drawing. Allowed usage only in handleBusEvents
+// IMPORTANT: To draw prompt should be used main topic show event.
 func (c *CLI) draw() {
 	if c.muted || !c.ready {
 		config.DebugPrintf("CLI prompt drawing blocked when Muted: %t, Ready: %t", c.muted, c.ready)
@@ -725,64 +757,63 @@ func (c *CLI) draw() {
 		config.DebugPrintln("CLI drawing prompt")
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
 		c.terminal.SetPrompt(promptStr)                     // Update the prompt for the next ReadLine call.
-		c.terminal.Write([]byte{'\n'})                      // Abort current prompt.
 		helpers.SafeSend(c.drawCompleteChan, struct{}{})    // Signal the prompt loop to continue.
 		(*c.bus).Publish(config.MainTopic, "show:cli.draw") // Draw soundbar
 	}
 }
 
-func handleSave(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleSave(c *CLI, _ []string) (hide bool, exit bool) {
 	(*c.bus).Publish(config.AITopic, "save:history.txt")
 	c.formatter.PrintRaw("Conversation history save requested to history.txt.\n")
 	return false, false
 }
 
-func handleDebug(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleDebug(_ *CLI, _ []string) (hide bool, exit bool) {
 	config.C.Debug = !config.C.Debug
 	log.Printf("Debug mode set to: %t", config.C.Debug)
 	return false, false
 }
 
-func handleVoice(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleVoice(c *CLI, _ []string) (hide bool, exit bool) {
 	config.C.AI.VoiceEnabled = !config.C.AI.VoiceEnabled
 	log.Printf("Voice output set to: %t", config.C.AI.VoiceEnabled)
 	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleVoice")
 	return false, false
 }
 
-func handleTools(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleTools(c *CLI, _ []string) (hide bool, exit bool) {
 	config.C.AI.EnableTools = !config.C.AI.EnableTools
 	log.Printf("AI tools enabled set to: %t", config.C.AI.EnableTools)
 	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleTools")
 	return false, false
 }
 
-func handleTranscript(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleTranscript(c *CLI, _ []string) (hide bool, exit bool) {
 	config.C.AI.Transcript = !config.C.AI.Transcript
 	log.Printf("Separate transcription step set to: %t", config.C.AI.Transcript)
 	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleTranscript")
 	return false, false
 }
 
-func handleHistory(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleHistory(_ *CLI, _ []string) (hide bool, exit bool) {
 	config.C.AI.VoiceHistory = !config.C.AI.VoiceHistory
 	log.Printf("Voice history set to: %t", config.C.AI.VoiceHistory)
 	return false, false
 }
 
-func handleCache(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleCache(_ *CLI, _ []string) (hide bool, exit bool) {
 	config.C.AI.EnableCache = !config.C.AI.EnableCache
 	log.Printf("AI caching set to: %t", config.C.AI.EnableCache)
 	return false, false
 }
 
-func handleThoughts(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleThoughts(_ *CLI, _ []string) (hide bool, exit bool) {
 	config.C.AI.Thoughts = !config.C.AI.Thoughts
 	log.Printf("AI thoughts set to: %t", config.C.AI.Thoughts)
 	return false, false
 }
 
-func handleThinking(c *CLI, args []string) (isAIPrompt bool, exit bool) {
+func handleThinking(c *CLI, args []string) (hide bool, exit bool) {
 	hint := func() {
 		c.formatter.PrintRaw(fmt.Sprintf("Available levels: %s, %s, %s, %s, %s\n", dynamic, none, low, medium, high))
 	}
@@ -802,10 +833,11 @@ func handleThinking(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	return false, false
 }
 
-func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
+func handleMode(c *CLI, args []string) (hide bool, exit bool) {
 	hint := func() {
 		c.formatter.PrintRaw(fmt.Sprintf("Available AI modes: %s, %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode, VideoMode))
 	}
+
 	if len(args) != 1 {
 		c.formatter.PrintRaw("Usage: /mode <name>\n")
 		hint()
@@ -813,6 +845,11 @@ func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 	}
 
 	mode := strings.ToLower(args[0])
+	if mode == c.mode {
+		c.formatter.PrintRaw(fmt.Sprintf("Mode is already set to: %s\n", mode))
+		return false, false
+	}
+
 	value, ok := modes[mode]
 	if !ok {
 		c.formatter.PrintRaw(fmt.Sprintf("Unknown AI mode: %s\n", mode))
@@ -820,21 +857,23 @@ func handleMode(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 		return false, false
 	}
 
-	// Handle transitions to/from system mode
-	// User able exit system mode by other ways like exit, Ctrl+D
-	// We need to apply auto mode change
-	if value == System {
-		c.previousMode = c.mode
+	hide = false
+	// When System mode switching, model turn automatically finalized.
+	// We avoid prompt draw to draw it after model response.
+	if c.mode == System {
+		hide = true
 	}
-	c.mode = value
-	config.C.Mode = value
-	c.modeSwitchRequested = true
-	log.Printf("CLI mode set to: %s", value)
-	(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", value))
-	return false, false
+
+	// When user enter to System mode prompt is shell responsibility.
+	if value == System {
+		hide = true
+	}
+
+	c.setMode(value)
+	return hide, false
 }
 
-func handlePrompt(c *CLI, args []string) (isAIPrompt bool, exit bool) {
+func handlePrompt(c *CLI, args []string) (hide bool, exit bool) {
 	if c.mode == System {
 		promptText := strings.TrimSpace(strings.Join(args, " "))
 		if promptText != "" {
@@ -842,12 +881,12 @@ func handlePrompt(c *CLI, args []string) (isAIPrompt bool, exit bool) {
 			return true, false
 		}
 		c.formatter.PrintRaw("Usage: /prompt <text for AI>\n")
-		c.draw()
+		(*c.bus).Publish(config.MainTopic, "draw:cli.promptUsage")
 	}
 	return false, false
 }
 
-func handleAfk(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleAfk(c *CLI, _ []string) (hide bool, exit bool) {
 	c.systemAFK = !c.systemAFK
 	log.Printf("System AFK mode set to: %t", c.systemAFK)
 	if c.systemAFK {
@@ -858,12 +897,12 @@ func handleAfk(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	return false, false
 }
 
-func handleExit(_ *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleExit(_ *CLI, _ []string) (hide bool, exit bool) {
 	flow.Quit()
 	return false, true
 }
 
-func handleHelp(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
+func handleHelp(c *CLI, _ []string) (hide bool, exit bool) {
 	type helpEntry struct {
 		command     string
 		description string
@@ -914,7 +953,7 @@ func handleHelp(c *CLI, _ []string) (isAIPrompt bool, exit bool) {
 	return false, false
 }
 
-// command handles internal CLI commands. It returns (isAIPrompt, exit) to signal
+// command handles internal CLI commands. It returns (hide, exit) to signal
 // the calling loop's next action.
 func (c *CLI) command(cmd string) (exit bool) {
 	var commandName string
@@ -927,11 +966,10 @@ func (c *CLI) command(cmd string) (exit bool) {
 	commandName = parts[0]
 
 	if handler, ok := commandHandlers[commandName]; ok {
-		isAIPrompt, exit := handler(c, parts[1:])
-		// After a non-AI, non-exit command that does NOT request a mode switch,
-		// we need to unmute and redraw the prompt. Publishing a "draw" event
-		// is the standard way to do this.
-		if !isAIPrompt && !exit && !c.modeSwitchRequested {
+		hide, exit := handler(c, parts[1:])
+		// After any non-AI, non-exit command, we need to unmute and redraw the
+		// prompt. This ensures the UI is correctly updated after commands and mode switches.
+		if !hide && !exit {
 			(*c.bus).Publish(config.MainTopic, "draw:cli.command")
 		}
 		return exit

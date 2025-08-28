@@ -31,11 +31,11 @@ type Executor struct {
 	activePty          *os.File
 	activeCmd          *exec.Cmd
 	commandDoneChan    chan int
-	shellReady         sync.Once
 	shellReadyChan     chan struct{}
 	commandMarkerCount int
 	commandMutex       sync.Mutex
 	rcFilePath         string
+	isShellReady       bool
 }
 
 // NewExecutor creates a new shell command executor.
@@ -218,6 +218,7 @@ func (e *Executor) StartInteractive(outputChan chan<- string, userTerminal *os.F
 
 	e.activePty = ptmx
 	e.activeCmd = cmd
+	e.isShellReady = false // Reset the ready flag for the new session.
 	e.shellReadyChan = make(chan struct{})
 
 	log.Println("Interactive shell session started.")
