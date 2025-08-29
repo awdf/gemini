@@ -115,6 +115,7 @@ type CLI struct {
 	promptChan            chan promptRequest // Receives requests for sensitive modal prompts.
 	shellBuffer           strings.Builder
 	shellBufferMu         sync.Mutex // Protects access to the shellBuffer and shellPaused status.
+	shellBufferSynced     chan struct{}
 	systemInputState      int
 	shellPaused           bool
 	systemProxyLineBuffer strings.Builder // A small buffer to track the current line in proxy mode to detect commands.
@@ -205,6 +206,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		systemAFK:           false,
 		stdinReader:         bufio.NewReader(os.Stdin),
 		drawCompleteChan:    make(chan struct{}, 1), // Buffered to be non-blocking
+		shellBufferSynced:   make(chan struct{}, 1),
 	}
 }
 
@@ -222,6 +224,7 @@ func (c *CLI) ReceiveShellOutput() string {
 		return ""
 	}
 
+	helpers.SafeSend(c.shellBufferSynced, struct{}{})
 	content := c.shellBuffer.String()
 	c.shellBuffer.Reset()
 	return content
@@ -518,6 +521,7 @@ func (c *CLI) runSystemModeLoop() {
 		// Flag to indicate we need to break from the inner loop to call ReadLine.
 		var commandInputRequested bool
 		var passwordRequest *promptRequest // Store the request here
+		var afkTurnPending bool            // Synchronization flag for AFK mode.
 
 	innerSelectLoop:
 		for {
@@ -525,6 +529,20 @@ func (c *CLI) runSystemModeLoop() {
 			case <-*shutdownListener:
 				close(doneChan) // Signal the reader to stop.
 				return
+			case _, ok := <-c.shellBufferSynced:
+				if !ok {
+					log.Println("Shell exited, buffer sync channel closed.")
+					close(doneChan) // Signal the reader to stop.
+					return          // This will trigger the deferred c.stopSystemShell()
+				}
+				// If an AFK turn is pending, it means a command has finished and its
+				// output has now been polled by LiveAI. We can now safely submit the
+				// next turn to the AI.
+				if afkTurnPending {
+					afkTurnPending = false // Consume the flag.
+					log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
+					helpers.SafeSend(c.cmdChan, "This is AFK mode. Have task done? No, continue with next step.")
+				}
 
 			case line, ok := <-outputChan:
 				if !ok {
@@ -537,8 +555,9 @@ func (c *CLI) runSystemModeLoop() {
 				c.shellBufferMu.Unlock()
 
 				if c.systemAFK && desktop.C.IsCommandEndMarker(line) {
-					log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
-					helpers.SafeSend(c.cmdChan, "command execution done")
+					// We must wait until shell buffer synchronized with model
+					// and finish turn
+					afkTurnPending = true
 				}
 
 			case req := <-c.promptChan:

@@ -44,6 +44,7 @@ func NewSystemAgent(
 1. To run a command, you MUST first Base64-encode the command string.
 2. Then, pass the Base64-encoded string to the 'submit_shell_command' tool.
 3. Example: To run 'ls -l', you would first encode it to 'bHMgLWw=' and then call 'submit_shell_command(command="bHMgLWw=")'.
+4. When AFK enabled, this means user allowed you execute commands with no confirmation and on received shell prompt you need provide next action(this tool call or any other tool) while task not is done.
 
 **Secure Password Workflow:**
 To execute commands requiring a password (like 'sudo'), you MUST use the following secure workflow:
