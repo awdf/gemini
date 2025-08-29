@@ -295,7 +295,6 @@ func (c *CLI) startSystemShell(outputChan chan<- string) {
 	}
 
 	// The terminal is already in raw mode, managed by the main Run() loop.
-
 	if err := desktop.C.StartInteractiveShell(outputChan); err != nil {
 		fmt.Printf("Error starting system shell: %v\n", err)
 	} else {
@@ -582,6 +581,11 @@ func (c *CLI) runSystemModeLoop() {
 				if !c.ready {
 					log.Println("CLI dropping input received during blocked state.")
 					continue
+				}
+
+				if c.systemAFK {
+					// When AFK mode turned on, any key pressed should break it
+					handleAfk(c, nil)
 				}
 
 				// This is the main transition logic.
@@ -939,7 +943,7 @@ func handleHelp(c *CLI, _ []string) (hide bool, exit bool) {
 
 	systemCommands := []helpEntry{
 		{"/prompt <text>", "Send a text prompt to the AI"},
-		{"/afk", "Toggle AFK mode to auto-submit turns after each command"},
+		{"/afk", "Toggle AFK(away from keyboard) mode to auto-submit turns after each command"},
 	}
 
 	postAICommands := []helpEntry{

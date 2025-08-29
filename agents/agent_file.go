@@ -155,6 +155,20 @@ func (a *FileAgent) WarmUp() time.Duration {
 	return 0
 }
 
+// unescapeContent handles escaped characters from the model's file content.
+func unescapeContent(content string) string {
+	// The model is instructed to escape newlines as `\n` and backslashes as `\\`.
+	// We need to convert these back to their literal values before writing to a file.
+	// Using a replacer is more efficient than chained ReplaceAll calls.
+	r := strings.NewReplacer(
+		`\\`, `\`,
+		`\n`, "\n",
+		`\r`, "\r",
+		`\t`, "\t",
+	)
+	return r.Replace(content)
+}
+
 func (a *FileAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
 	case "readFile":
@@ -195,7 +209,7 @@ func (a *FileAgent) handleReadFileTool(call *genai.FunctionCall) *genai.Function
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
-	content, err := a.fileTool.Read(safePath)
+	content, err := a.fileTool.Read(safePath) // Reading doesn't need unescaping
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
@@ -213,7 +227,7 @@ func (a *FileAgent) handleCreateFileTool(call *genai.FunctionCall) *genai.Functi
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
-	err = a.fileTool.Create(safePath, content)
+	err = a.fileTool.Create(safePath, unescapeContent(content))
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
@@ -364,7 +378,7 @@ func (a *FileAgent) handleAppendToFileTool(call *genai.FunctionCall) *genai.Func
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
-	err = a.fileTool.Append(safePath, content)
+	err = a.fileTool.Append(safePath, unescapeContent(content))
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
