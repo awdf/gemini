@@ -87,9 +87,12 @@ func (wc *WaylandController) SendCommandToShell(command string) (<-chan int, err
 	return wc.shellExec.SendCommand(command)
 }
 
-// IsCommandEndMarker special checker for spliting shell output
-func (wc *WaylandController) IsCommandEndMarker(line string) bool {
-	return shell.IsCommandEndMarker(line)
+// In your desktop controller implementation file (e.g., desktop/wayland.go)
+func (wс *WaylandController) IsShellCommandRunning() bool {
+	if wс.shellExec == nil {
+		return false
+	}
+	return wс.shellExec.IsCommandRunning()
 }
 
 // StopInteractiveShell stops the active shell session.

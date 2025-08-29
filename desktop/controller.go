@@ -25,7 +25,7 @@ type Controller interface {
 	StartInteractiveShell(outputChan chan<- string) error
 	SendToShell(input string) error
 	SendCommandToShell(command string) (<-chan int, error)
-	IsCommandEndMarker(line string) bool
+	IsShellCommandRunning() bool // IsShellCommandRunning returns true if the interactive shell is currently executing a command.
 	StopInteractiveShell() error
 
 	// Cleanup

@@ -409,3 +409,11 @@ func (e *Executor) StopInteractive() error {
 
 	return err
 }
+
+// IsCommandRunning returns true if a command is currently being tracked by the executor.
+// This is used to determine if the shell is busy executing a command or is idle.
+func (e *Executor) IsCommandRunning() bool {
+	e.commandMutex.Lock()
+	defer e.commandMutex.Unlock()
+	return e.commandDoneChan != nil
+}

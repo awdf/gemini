@@ -324,6 +324,16 @@ func (c *CLI) setMode(newMode string) {
 	(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", newMode))
 }
 
+// GetShellState returns true if a command is currently executing in the system shell.
+func (c *CLI) GetShellState() bool {
+	if !c.isSystemShellActive {
+		return false
+	}
+	// This relies on the desktop controller's implementation, which in turn
+	// checks the state of the underlying shell executor.
+	return desktop.C.IsShellCommandRunning()
+}
+
 // startSystemShell starts the interactive shell for system mode.
 func (c *CLI) startSystemShell(outputChan chan<- string) {
 	if c.isSystemShellActive {
@@ -410,10 +420,9 @@ func (c *CLI) processInputByte(b byte) {
 		// without closing the main application's stdin.
 		if b == 4 {
 			log.Println("Ctrl+D detected in system mode. Sending 'exit' to shell.")
-			// This is wrong approach, it avoid logic of shell finalization
-			// if err := desktop.C.SendToShell("exit\n"); err != nil {
-			// 	log.Printf("Error sending exit command to system shell: %v", err)
-			// }
+			// We call stopSystemShell() directly instead of sending "exit\n" to the
+			// shell. This ensures a clean and immediate termination of the PTY
+			// process and all associated goroutines.
 			c.stopSystemShell()
 
 			// By consuming the Ctrl+D and not proxying it, we prevent the main
@@ -560,7 +569,7 @@ func (c *CLI) runSystemModeLoop() {
 		// Flag to indicate we need to break from the inner loop to call ReadLine.
 		var commandInputRequested bool
 		var passwordRequest *promptRequest // Store the request here
-		var afkTurnPending bool            // Synchronization flag for AFK mode.
+		// var afkTurnPending bool            // Synchronization flag for AFK mode.
 
 	innerSelectLoop:
 		for {
@@ -577,8 +586,8 @@ func (c *CLI) runSystemModeLoop() {
 				// If an AFK turn is pending, it means a command has finished and its
 				// output has now been polled by LiveAI. We can now safely submit the
 				// next turn to the AI.
-				if afkTurnPending {
-					afkTurnPending = false // Consume the flag.
+				if c.systemAFK && !c.GetShellState() {
+					// afkTurnPending = false // Consume the flag.
 					log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
 					helpers.SafeSend(c.cmdChan, "This is AFK mode. Have task done? No, continue with next step. Yes, use disable_afk_mode tool.")
 				}
@@ -592,12 +601,6 @@ func (c *CLI) runSystemModeLoop() {
 				c.shellBufferMu.Lock()
 				c.shellBuffer.WriteString(line + "\n")
 				c.shellBufferMu.Unlock()
-
-				if c.systemAFK && desktop.C.IsCommandEndMarker(line) {
-					// We must wait until shell buffer synchronized with model
-					// and finish turn
-					afkTurnPending = true
-				}
 
 			case req := <-c.promptChan:
 				// A request for a password has arrived.

@@ -513,7 +513,11 @@ func (l *LiveAI) Run() {
 				// concluded by voice. Reset the state for the next turn.
 				// If an activity was in progress, end it. We always send AudioStream type because
 				// a VAD stop means audio was just sent, which needs to be terminated correctly.
-				l.stopActivity(AudioStream)
+				if l.cli.GetShellState() {
+					l.stopActivity(AudioStream)
+				} else {
+					l.stopActivity(AudioStream | ShellStream)
+				}
 
 				// The image buffer is now released upon GenerationComplete, not here.
 			default:
@@ -1210,15 +1214,15 @@ func (l *LiveAI) pullAndSendSamples() {
 // notifyActivityStart signals the start of user activity to the model.
 // Explicit activity control is not supported when automatic activity detection is enabled.
 func (l *LiveAI) notifyActivityStart(streamType StreamType) {
-	// These notifications should only be sent when the application is managing VAD,
-	// which is when native VAD is disabled (l.vadDisabled == true).
-	if !l.vadDisabled {
-		return
-	}
-
 	online := l.Online
 
 	if !online {
+		return
+	}
+
+	// These notifications should only be sent when the application is managing VAD,
+	// which is when native VAD is disabled (l.vadDisabled == true).
+	if !l.vadDisabled {
 		return
 	}
 
@@ -1246,32 +1250,32 @@ func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 // It may also signal the end of the audio stream for audio-based turns.
 // Explicit activity control is not supported when automatic activity detection is enabled.
 func (l *LiveAI) notifyActivityEnd(streamType StreamType) {
-	// These notifications should only be sent when the application is managing VAD,
-	// which is when native VAD is disabled (l.vadDisabled == true).
-	if !l.vadDisabled {
-		return
-	}
 	online := l.Online
 
 	if !online {
 		return
 	}
 
-	// For audio streams, we must first signal that the audio part of the turn is over.
-	// Use a bitwise AND to check if the AudioStream flag is present, which is more
-	// robust for handling combined stream types (like stopping 'All' activities).
-	if l.isActive(AudioStream) {
-		log.Println("Live stream audio stream ended.")
-		l.writeMu.Lock()
-		err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
-			AudioStreamEnd: true,
-		})
-		l.writeMu.Unlock()
-		if err != nil {
-			log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
-			// Don't proceed if this fails, as the activity end might be invalid.
-			return
+	// These notifications should only be sent when the application is managing VAD,
+	// which is when native VAD is disabled (l.vadDisabled == true).
+	if !l.vadDisabled {
+		// This should only be sent when automatic activity detection is enabled (which is the default).
+		// Indicates that the audio stream has ended, e.g. because the microphone was turned off.
+		// The client can reopen the stream by sending an audio message.
+		if l.isActive(AudioStream) {
+			log.Println("Live stream audio stream ended.")
+			l.writeMu.Lock()
+			err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
+				AudioStreamEnd: true,
+			})
+			l.writeMu.Unlock()
+			if err != nil {
+				log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
+				// Don't proceed if this fails, as the activity end might be invalid.
+				return
+			}
 		}
+		return
 	}
 
 	// After handling stream-specific endings, we signal the end of the user's overall activity.
