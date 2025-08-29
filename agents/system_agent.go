@@ -100,7 +100,7 @@ After you run a command, the shell will automatically print a special marker lin
 		},
 		Behavior: genai.BehaviorBlocking,
 	}, &genai.FunctionDeclaration{
-		Name:        "toggle_afk_mode",
+		Name:        "disable_afk_mode",
 		Description: "SYSTEM SHELL: Disables the AFK (Away From Keyboard) mode. This allows the model to pause execution and wait for user input. Only the user can enable AFK mode.",
 		Parameters:  &genai.Schema{Type: genai.TypeObject}, // No parameters
 		Behavior:    genai.BehaviorBlocking,
@@ -132,7 +132,7 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		}
 		// Triggered critical secure flow
 		return a.handleGetSecretFromUser(call)
-	case "toggle_afk_mode":
+	case "disable_afk_mode":
 		if config.C.Mode != inout.System {
 			err := fmt.Errorf("the 'toggle_afk_mode' tool can only be used in 'system' mode")
 			return a.CreateFunctionResponse(call, nil, err)

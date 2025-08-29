@@ -721,11 +721,16 @@ func (l *LiveAI) handleResponses() {
 					inModelTurn = true
 					turnGroundingChunks = nil
 					(*l.bus).Publish(config.MainTopic, "mute:ai.handleResponses")
+
+					// Usuely transcript clear screen.
 					if !config.C.AI.Transcript {
-						// Usuely transcript clear screen.
 						l.formatter.Clear()
 					}
-					l.formatter.PrintNl("Answer:", inout.ColorDarkCyan)
+
+					// System mode sensetive to new lines, avoid this
+					if l.mode != inout.System {
+						l.formatter.PrintNl("Answer:", inout.ColorDarkCyan)
+					}
 				}
 				// Do on each turn for text or voice data
 				l.processModelTurnParts(msg.ServerContent.ModelTurn.Parts)

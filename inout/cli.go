@@ -580,7 +580,7 @@ func (c *CLI) runSystemModeLoop() {
 				if afkTurnPending {
 					afkTurnPending = false // Consume the flag.
 					log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
-					helpers.SafeSend(c.cmdChan, "This is AFK mode. Have task done? No, continue with next step.")
+					helpers.SafeSend(c.cmdChan, "This is AFK mode. Have task done? No, continue with next step. Yes, use disable_afk_mode tool.")
 				}
 
 			case line, ok := <-outputChan:
@@ -833,6 +833,12 @@ func (c *CLI) draw() {
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
 		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
 		c.terminalMu.RUnlock()
+		if c.mode != System {
+			// reset current text prompt to draw new after voice
+			if _, err := c.terminal.Write([]byte{'\n'}); err != nil {
+				log.Printf("Can't reset current text prompt: %v", err)
+			}
+		}
 		helpers.SafeSend(c.drawCompleteChan, struct{}{})    // Signal the prompt loop to continue.
 		(*c.bus).Publish(config.MainTopic, "show:cli.draw") // Draw soundbar
 	}
