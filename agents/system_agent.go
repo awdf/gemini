@@ -99,6 +99,11 @@ After you run a command, the shell will automatically print a special marker lin
 			Required: []string{"placeholder_name", "prompt_text"},
 		},
 		Behavior: genai.BehaviorBlocking,
+	}, &genai.FunctionDeclaration{
+		Name:        "toggle_afk_mode",
+		Description: "SYSTEM SHELL: Disables the AFK (Away From Keyboard) mode. This allows the model to pause execution and wait for user input. Only the user can enable AFK mode.",
+		Parameters:  &genai.Schema{Type: genai.TypeObject}, // No parameters
+		Behavior:    genai.BehaviorBlocking,
 	})
 
 	return &SystemAgent{
@@ -127,6 +132,19 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 		}
 		// Triggered critical secure flow
 		return a.handleGetSecretFromUser(call)
+	case "toggle_afk_mode":
+		if config.C.Mode != inout.System {
+			err := fmt.Errorf("the 'toggle_afk_mode' tool can only be used in 'system' mode")
+			return a.CreateFunctionResponse(call, nil, err)
+		}
+		if a.bus == nil {
+			return a.CreateFunctionResponse(call, nil, fmt.Errorf("internal error: event bus is not available"))
+		}
+		(*a.bus).Publish(config.MainTopic, "afk:system_agent.toggle_afk_mode")
+		status := "AFK mode toggle request sent. The user will see the new status in their terminal."
+		a.Printf(status)
+		result := map[string]any{"status": status}
+		return a.CreateFunctionResponse(call, result, nil)
 	default:
 		// Do inherited Handler. I future able common logic on skip
 		return a.Agent.Handle(call)

@@ -2,7 +2,7 @@
 LogFile = "gemini.log"
 
 # Enable or disable debug logging for all modules.
-Debug = true
+Debug = false
 Trace = false
 LiveAI = false
 Mode = "prompt"
@@ -56,7 +56,7 @@ EnableStandardTools = true # Set to false to disable Google Search and URL Conte
 URLContextDisabled = false # Set to true to disable URL Context tool.
 EnableCodeExecution = false # Set to false to disable code execution tool. Not recomended to use with Function calling.
 EnableFunctionCalling = true # Set to false to disable function tool calling. Not recomended to use with Code execution.
-WorkspaceDir = "~/Workspace"
+WorkspaceDir = "."
 
 #Enable it manualy in case of model support cache. Paid tier 1+.
 EnableCache = false # Set to true to enable caching. Note: Not all models or API tiers support caching.

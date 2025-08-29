@@ -121,10 +121,11 @@ type CLI struct {
 	systemProxyLineBuffer strings.Builder // A small buffer to track the current line in proxy mode to detect commands.
 	originalTermState     *term.State
 	terminal              *term.Terminal // For prompt mode line editing
-	stdinReader           *bufio.Reader  // A buffered reader to share between raw mode and line mode.
-	modeSwitchRequested   bool           // Signals a switch between system and prompt loops.
-	systemAFK             bool           // Auto-finish turn in system mode.
-	drawCompleteChan      chan struct{}  // Only for draw() method use! Signals that AI response drawing is complete, unblocking the prompt loop.
+	terminalMu            sync.RWMutex
+	stdinReader           *bufio.Reader // A buffered reader to share between raw mode and line mode.
+	modeSwitchRequested   bool          // Signals a switch between system and prompt loops.
+	systemAFK             bool          // Auto-finish turn in system mode.
+	drawCompleteChan      chan struct{} // Only for draw() method use! Signals that AI response drawing is complete, unblocking the prompt loop.
 }
 
 // commandHandler defines the function signature for a CLI command handler.
@@ -207,6 +208,41 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		stdinReader:         bufio.NewReader(os.Stdin),
 		drawCompleteChan:    make(chan struct{}, 1), // Buffered to be non-blocking
 		shellBufferSynced:   make(chan struct{}, 1),
+	}
+}
+
+// handleResize listens for window resize events and updates the terminal's size.
+func (c *CLI) handleResize() {
+	winchListener := flow.GetWinchListener()
+	defer flow.StopWinchListener(winchListener)
+
+	// Set initial size.
+	c.updateTerminalSize()
+
+	for range *winchListener {
+		log.Println("Terminal resize detected, updating size.")
+		c.updateTerminalSize()
+	}
+}
+
+// updateTerminalSize gets the current terminal dimensions and applies them to the
+// term.Terminal instance. It is safe for concurrent use.
+func (c *CLI) updateTerminalSize() {
+	c.terminalMu.Lock()
+	defer c.terminalMu.Unlock()
+
+	if c.terminal == nil {
+		return
+	}
+
+	width, height, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		log.Printf("Error getting terminal size: %v", err)
+		return
+	}
+
+	if err := c.terminal.SetSize(width, height); err != nil {
+		log.Printf("Error setting terminal size: %v", err)
 	}
 }
 
@@ -449,6 +485,10 @@ func (c *CLI) handleBusEvents(event string) {
 		c.ready = true
 		c.muted = false
 		c.draw() // Initial prompt
+	case "afk":
+		if c.systemAFK {
+			handleAfk(c, nil)
+		}
 	default:
 		config.DebugPrintf("CLI drop event: %s", event)
 	}
@@ -586,6 +626,7 @@ func (c *CLI) runSystemModeLoop() {
 				if c.systemAFK {
 					// When AFK mode turned on, any key pressed should break it
 					handleAfk(c, nil)
+					continue
 				}
 
 				// This is the main transition logic.
@@ -611,8 +652,10 @@ func (c *CLI) runSystemModeLoop() {
 		if commandInputRequested {
 			// We now have exclusive control of the terminal for reading.
 			// Set an empty prompt so ReadLine works inline without overwriting the shell prompt.
+			c.terminalMu.RLock()
 			c.terminal.SetPrompt("")
 			line, err := c.terminal.ReadLine()
+			c.terminalMu.RUnlock()
 			if err != nil {
 				if err != io.EOF {
 					log.Printf("ReadLine error: %v", err)
@@ -635,8 +678,10 @@ func (c *CLI) runSystemModeLoop() {
 		if passwordRequest != nil {
 			// We now have exclusive control of the terminal for reading.
 			// The prompt was printed *before* the wait to unblock the user.
+			c.terminalMu.RLock()
 			// Now we read the password without printing a prompt again.
 			password, err := c.terminal.ReadPassword("")
+			c.terminalMu.RUnlock()
 
 			// Regardless of success or error, we must respond to unblock the caller.
 			if err != nil {
@@ -676,7 +721,9 @@ func (c *CLI) runPromptModeLoop() {
 		// user input
 		<-c.drawCompleteChan
 
+		c.terminalMu.RLock()
 		line, err := c.terminal.ReadLine()
+		c.terminalMu.RUnlock()
 		if err != nil {
 			if err == io.EOF {
 				log.Println("Exiting due to EOF from terminal (Ctrl+C, Ctrl+D).")
@@ -727,12 +774,16 @@ func (c *CLI) Run() {
 		}
 		defer term.Restore(fd, c.originalTermState)
 	}
+	c.terminalMu.Lock()
 	// Create the terminal instance for both prompt and system mode.
 	// It uses our shared, buffered reader.
 	c.terminal = term.NewTerminal(&terminalReadWriter{
 		Reader: c.stdinReader,
 		Writer: os.Stdout,
 	}, "")
+	c.terminalMu.Unlock()
+
+	go c.handleResize()
 
 	helpers.Verify((*c.bus).SubscribeAsync(config.MainTopic, c.handleBusEvents, false))
 
@@ -778,8 +829,10 @@ func (c *CLI) draw() {
 	} else {
 		// We are in a prompt mode, using term.ReadLine.
 		config.DebugPrintln("CLI drawing prompt")
+		c.terminalMu.RLock()
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
-		c.terminal.SetPrompt(promptStr)                     // Update the prompt for the next ReadLine call.
+		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
+		c.terminalMu.RUnlock()
 		helpers.SafeSend(c.drawCompleteChan, struct{}{})    // Signal the prompt loop to continue.
 		(*c.bus).Publish(config.MainTopic, "show:cli.draw") // Draw soundbar
 	}

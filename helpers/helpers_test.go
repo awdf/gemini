@@ -72,3 +72,30 @@ func TestSafeSend(t *testing.T) {
 		assert.True(t, closed, "SafeSend should return true for a closed channel")
 	})
 }
+
+func TestPtr(t *testing.T) {
+	t.Run("int pointer", func(t *testing.T) {
+		val := 123
+		ptr := Ptr(val)
+		assert.NotNil(t, ptr, "Ptr should return a non-nil pointer")
+		assert.Equal(t, val, *ptr, "The dereferenced pointer should hold the original value")
+	})
+
+	t.Run("string pointer", func(t *testing.T) {
+		val := "test string"
+		ptr := Ptr(val)
+		assert.NotNil(t, ptr, "Ptr should return a non-nil pointer")
+		assert.Equal(t, val, *ptr, "The dereferenced pointer should hold the original value")
+	})
+
+	t.Run("struct pointer", func(t *testing.T) {
+		type myStruct struct {
+			Name string
+			ID   int
+		}
+		val := myStruct{Name: "test", ID: 1}
+		ptr := Ptr(val)
+		assert.NotNil(t, ptr, "Ptr should return a non-nil pointer")
+		assert.Equal(t, val, *ptr, "The dereferenced pointer should hold the original value")
+	})
+}

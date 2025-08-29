@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"mime"
 	"os"
@@ -54,12 +55,12 @@ func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 		},
 		{
 			Name:        "createFile",
-			Description: "FILE SYSTEM: Create or overwrite a file in the workspace with specified content.",
-			Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to create."}, "content": {Type: genai.TypeString, Description: "The content to write to the file."}}, Required: []string{"path", "content"}},
+			Description: "FILE SYSTEM: Create or overwrite a file in the workspace with specified content. The content MUST be Base64-encoded first.",
+			Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to create."}, "content": {Type: genai.TypeString, Description: "The Base64-encoded content to write to the file."}}, Required: []string{"path", "content"}},
 		},
 		{
-			Name:        "deleteFile",
-			Description: "FILE SYSTEM: Delete a file or an empty directory from the workspace.",
+			Name:        "deletePath",
+			Description: "FILE SYSTEM: Deletes a file or a directory (and all its contents) from the workspace. This action is recursive and cannot be undone. Does not return an error if the path does not exist.",
 			Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file or directory to delete."}}, Required: []string{"path"}},
 		},
 		{
@@ -114,8 +115,8 @@ func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 		},
 		{
 			Name:        "appendToFile",
-			Description: "FILE SYSTEM: Append content to the end of an existing file. If the file does not exist, it will be created.",
-			Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to append to."}, "content": {Type: genai.TypeString, Description: "The content to append."}}, Required: []string{"path", "content"}},
+			Description: "FILE SYSTEM: Append content to the end of an existing file. If the file does not exist, it will be created. The content MUST be Base64-encoded first.",
+			Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{"path": {Type: genai.TypeString, Description: "The path of the file to append to."}, "content": {Type: genai.TypeString, Description: "The Base64-encoded content to append."}}, Required: []string{"path", "content"}},
 		},
 		{
 			Name:        "uploadImage",
@@ -129,9 +130,9 @@ func NewFileAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, functions...)
 
 	safePathToWorkspace := helpers.Check(config.GetSafePath(config.C.AI.WorkspaceDir))
-	agentInstructions := fmt.Sprintf(`You have access to a file system toolset.
-All file operations are restricted to the "%s" directory. 
-All paths provided to tools like "listFiles","readFile", "createFile", etc., must be relative to this workspace.`,
+	agentInstructions := fmt.Sprintf(`You have access to a file system toolset. All file operations are restricted to the "%s" directory.
+All paths provided to tools like "listFiles","readFile", "createFile", etc., must be relative to this workspace.
+IMPORTANT: When using 'createFile' or 'appendToFile', the 'content' argument MUST be a Base64-encoded string.`,
 		safePathToWorkspace)
 
 	agentConfig := AgentConfig{
@@ -155,28 +156,14 @@ func (a *FileAgent) WarmUp() time.Duration {
 	return 0
 }
 
-// unescapeContent handles escaped characters from the model's file content.
-func unescapeContent(content string) string {
-	// The model is instructed to escape newlines as `\n` and backslashes as `\\`.
-	// We need to convert these back to their literal values before writing to a file.
-	// Using a replacer is more efficient than chained ReplaceAll calls.
-	r := strings.NewReplacer(
-		`\\`, `\`,
-		`\n`, "\n",
-		`\r`, "\r",
-		`\t`, "\t",
-	)
-	return r.Replace(content)
-}
-
 func (a *FileAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	switch call.Name {
 	case "readFile":
 		return a.handleReadFileTool(call)
 	case "createFile":
 		return a.handleCreateFileTool(call)
-	case "deleteFile":
-		return a.handleDeleteFileTool(call)
+	case "deletePath":
+		return a.handleDeletePathTool(call)
 	case "listFiles":
 		return a.handleListFilesTool(call)
 	case "makeDirectory":
@@ -219,22 +206,26 @@ func (a *FileAgent) handleReadFileTool(call *genai.FunctionCall) *genai.Function
 func (a *FileAgent) handleCreateFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, pathOK := call.Args["path"].(string)
-	content, contentOK := call.Args["content"].(string)
+	encodedContent, contentOK := call.Args["content"].(string)
 	if !pathOK || !contentOK {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' and 'content' arguments are required"))
+	}
+	decodedContent, err := base64.StdEncoding.DecodeString(encodedContent)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to decode base64 content: %w", err))
 	}
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
-	err = a.fileTool.Create(safePath, unescapeContent(content))
+	err = a.fileTool.Create(safePath, string(decodedContent))
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
 	return a.CreateFunctionResponse(call, map[string]any{"status": "file created successfully"}, nil)
 }
 
-func (a *FileAgent) handleDeleteFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
+func (a *FileAgent) handleDeletePathTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, ok := call.Args["path"].(string)
 	if !ok {
@@ -370,15 +361,19 @@ func (a *FileAgent) handleSearchFilesTool(call *genai.FunctionCall) *genai.Funct
 func (a *FileAgent) handleAppendToFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.Printf(PrintTemplate, call.Name, call.Args)
 	path, pathOK := call.Args["path"].(string)
-	content, contentOK := call.Args["content"].(string)
+	encodedContent, contentOK := call.Args["content"].(string)
 	if !pathOK || !contentOK {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'path' and 'content' arguments are required"))
+	}
+	decodedContent, err := base64.StdEncoding.DecodeString(encodedContent)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to decode base64 content: %w", err))
 	}
 	safePath, err := config.GetSafePath(path)
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}
-	err = a.fileTool.Append(safePath, unescapeContent(content))
+	err = a.fileTool.Append(safePath, string(decodedContent))
 	if err != nil {
 		return a.CreateFunctionResponse(call, nil, err)
 	}

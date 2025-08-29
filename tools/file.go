@@ -42,9 +42,11 @@ func (f *File) Create(path string, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-// Delete removes a file or an empty directory at the given path.
+// Delete removes a file or a directory (and its contents) at the given path.
 func (f *File) Delete(path string) error {
-	return os.Remove(path)
+	// Use RemoveAll to delete files or directories (even non-empty ones).
+	// It does not return an error if the path does not exist.
+	return os.RemoveAll(path)
 }
 
 // List reads the contents of a directory at the given path.
@@ -152,25 +154,6 @@ func (f *File) Append(path, content string) error {
 		return err
 	}
 	defer file.Close()
-
-	// Add a newline if the file is not empty and doesn't end with one.
-	// This improves readability for appended content.
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() > 0 {
-		buf := make([]byte, 1)
-		_, err := file.ReadAt(buf, info.Size()-1)
-		if err != nil && err != io.EOF {
-			return err
-		}
-		if string(buf) != "\n" {
-			if _, err := file.WriteString("\n"); err != nil {
-				return err
-			}
-		}
-	}
 
 	// Write the new content.
 	if _, err := file.WriteString(content); err != nil {
