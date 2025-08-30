@@ -24,15 +24,15 @@ type VideoStreamComponent struct {
 	bus       *EventBus.Bus
 	ctx       context.Context
 	cancel    context.CancelFunc
-	frameChan chan<- []byte // Channel to send processed video frames
-	ticker    *time.Ticker
+	chunkChan chan<- []byte // Channel to send processed video chunks
 }
 
 // NewVideoStreamComponent creates and initializes a new video streaming component.
+// Pipeline: gst-launch-1.0 pipewiresrc ! "video/x-raw" ! queue ! videoconvert ! x264enc pass=quant quantizer=23 tune=zerolatency ! mp4mux streamable=true fragment-duration=100 ! fakesink -v
 func NewVideoStreamComponent(
 	wg *sync.WaitGroup,
 	bus *EventBus.Bus,
-	frameChan chan<- []byte, // Provided by LiveAI
+	chunkChan chan<- []byte, // Provided by LiveAI
 ) (*VideoStreamComponent, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -41,7 +41,7 @@ func NewVideoStreamComponent(
 		bus:       bus,
 		ctx:       ctx,
 		cancel:    cancel,
-		frameChan: frameChan,
+		chunkChan: chunkChan,
 	}
 
 	var err error
@@ -74,56 +74,56 @@ func NewVideoStreamComponent(
 		}
 	case "pipewiresrc": // No monitor-id property for pipewiresrc
 		log.Println("Using pipewiresrc (PipeWire video source). It typically does not use 'monitor-id' property.")
-		// If you need to target a specific PipeWire stream, you would set 'target-object' property.
-		// For example: source.SetProperty("target-object", "node.id:42") or "node.name:my_webcam"
-		// This would require adding a new field to config.VideoConfig.
 	default:
 		log.Printf("WARNING: Unknown video source '%s'. Proceeding with default properties.", config.C.Video.Source)
 	}
-
-	// Common elements for processing and encoding
+	// Common elements for processing and encoding into a video stream
 	queue := helpers.Check(gst.NewElement("queue"))
 	converter := helpers.Check(gst.NewElement("videoconvert"))
-	scaler := helpers.Check(gst.NewElement("videoscale"))
-	rate := helpers.Check(gst.NewElement("videorate"))
-	encoder := helpers.Check(gst.NewElement("jpegenc"))
-	capsFilter := helpers.Check(gst.NewElement("capsfilter"))
+	// H.264 encoder and MP4 muxer for streaming
+	encoder := helpers.Check(gst.NewElement("x264enc"))
+	muxer := helpers.Check(gst.NewElement("mp4mux"))
 	v.appSink = helpers.Check(app.NewAppSink())
 
-	// Configure encoder quality
-	if config.C.Video.Quality >= 0 && config.C.Video.Quality <= 100 {
-		helpers.Verify(encoder.SetProperty("quality", config.C.Video.Quality))
-		log.Printf("JPEG encoder quality set to %d.", config.C.Video.Quality)
-	} else {
-		log.Printf("WARNING: Invalid JPEG quality %d. Using default encoder quality.", config.C.Video.Quality)
+	// Configure encoder properties individually, matching the working command-line prototype.
+	// We use explicit 32-bit types for enums and flags to avoid CGo type-mapping
+	// issues on 64-bit systems, which was the likely cause of the negotiation errors.
+
+	// 'pass=quant' corresponds to enum value 4. It requires a 32-bit unsigned int.
+	helpers.Verify(encoder.SetProperty("pass", uint32(4)))
+
+	quantizer := config.C.Video.Quantizer
+	if quantizer < 0 || quantizer > 51 {
+		log.Printf("WARNING: Invalid quantizer value %d in config. Using default of 23.", quantizer)
+		quantizer = 23
 	}
+	helpers.Verify(encoder.SetProperty("quantizer", uint(quantizer)))
+
+	// 'tune=zerolatency' corresponds to flag value 0x4. It also requires a 32-bit unsigned int.
+	helpers.Verify(encoder.SetProperty("tune", uint32(0x4)))
+
+	// Configure MP4 muxer for fragmented, streamable output
+	helpers.Verify(muxer.SetProperty("streamable", true))
+	// Create a new fragment every 100ms. This determines the chunk size.
+	helpers.Verify(muxer.SetProperty("fragment-duration", uint32(100)))
 
 	// Configure app.Sink
 	v.appSink.SetDrop(false)
-	v.appSink.SetMaxBuffers(1) // Only keep the latest frame
+	v.appSink.SetMaxBuffers(5) // Allow a small buffer of chunks
 
-	// Build the pipeline: Corrected AddMany and Link calls
-	// gst.Pipeline.AddMany returns error, so check it explicitly.
-	if err = v.pipeline.AddMany(source, queue, scaler, rate, capsFilter, converter, encoder, v.appSink.Element); err != nil {
+	// Build the pipeline
+	if err = v.pipeline.AddMany(source, queue, converter, encoder, muxer, v.appSink.Element); err != nil {
 		return nil, fmt.Errorf("failed to add GStreamer elements to pipeline: %w", err)
 	}
 
-	// 1. Link source to queue, then to scaler and rate converter.
+	// Link the elements to match the working command-line prototype:
+	// pipewiresrc ! queue ! videoconvert ! x264enc ! mp4mux ! appsink
+	// The order of queue -> videoconvert is critical for live sources.
 	helpers.Verify(source.Link(queue))
-	helpers.Verify(queue.Link(scaler))
-	helpers.Verify(scaler.Link(rate))
-
-	// 2. Link to the caps filter that enforces the desired format.
-	helpers.Verify(rate.Link(capsFilter))
-	finalCaps := gst.NewCapsFromString(fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1", config.C.Video.Width, config.C.Video.Height, config.C.Video.FrameRate))
-	helpers.Verify(capsFilter.SetProperty("caps", finalCaps))
-
-	// 3. Link to the converter (as a final adapter) and then to the encoder and sink.
-	helpers.Verify(capsFilter.Link(converter))
+	helpers.Verify(queue.Link(converter))
 	helpers.Verify(converter.Link(encoder))
-	helpers.Verify(encoder.Link(v.appSink.Element))
-
-	v.ticker = time.NewTicker(time.Second / time.Duration(config.C.Video.FrameRate))
+	helpers.Verify(encoder.Link(muxer))
+	helpers.Verify(muxer.Link(v.appSink.Element))
 
 	return v, nil
 }
@@ -132,10 +132,6 @@ func NewVideoStreamComponent(
 func (v *VideoStreamComponent) Run() {
 	defer v.wg.Done()
 	defer v.cancel()
-	defer v.ticker.Stop()
-
-	log.Println("Starting video stream pipeline...")
-	v.pipeline.SetState(gst.StatePlaying)
 
 	// Listen for bus messages (errors, EOS) from the pipeline
 	bus := v.pipeline.GetBus()
@@ -154,44 +150,60 @@ func (v *VideoStreamComponent) Run() {
 		return true
 	})
 
-	// Pull samples from the app.Sink and send them to the frame channel.
+	// Start the pipeline *after* the bus watch is set up to avoid race conditions.
+	log.Println("Starting video stream pipeline...")
+	v.pipeline.SetState(gst.StatePlaying)
+
+	// Pull samples (video chunks) from the app.Sink and send them to the channel.
+	// This loop replaces the ticker-based logic, as the pipeline now pushes chunks
+	// to the appsink at its own rate.
 	for {
+		// First, check if the context has been cancelled to ensure a timely shutdown.
 		select {
 		case <-v.ctx.Done():
 			log.Println("Video stream component shutting down.")
 			v.pipeline.SetState(gst.StateNull)
 			return
-		case <-v.ticker.C:
-			// Attempt to pull a sample at the configured frame rate.
-			sample := v.appSink.TryPullSample(0) // Non-blocking pull
-			if sample == nil {
-				if config.C.Trace {
-					log.Println("No video sample available to pull.")
-				}
-				continue
-			}
+		default:
+			// Continue if not cancelled.
+		}
 
-			buffer := sample.GetBuffer()
-			if buffer != nil {
-				frameBytes := buffer.Bytes()
-				if len(frameBytes) > 0 {
-					// Send frame, but don't block if the receiver is slow.
-					// This ensures we always process the latest frame.
-					select {
-					case v.frameChan <- frameBytes:
-						if config.C.Trace {
-							log.Printf("Sent video frame (%d bytes) to channel.", len(frameBytes))
-						}
-					default:
-						if config.C.Trace {
-							log.Println("Frame channel is full, dropping video frame.")
-						}
+		// Check for End-of-Stream from the sink itself. This is a more reliable
+		// way to detect the end of the stream than checking the pipeline state.
+		if v.appSink.IsEOS() {
+			log.Println("Video sink reached EOS, exiting pull loop.")
+			return
+		}
+
+		// Use TryPullSample for a non-blocking pull.
+		sample := v.appSink.TryPullSample(0)
+		if sample == nil {
+			// No sample is available right now. Sleep for a short duration
+			// to prevent this loop from consuming 100% CPU.
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		buffer := sample.GetBuffer()
+		if buffer != nil {
+			chunkBytes := buffer.Bytes()
+			if len(chunkBytes) > 0 {
+				// Send chunk, but don't block if the receiver is slow.
+				// This ensures we always process the latest frame.
+				select {
+				case v.chunkChan <- chunkBytes:
+					if config.C.Trace {
+						log.Printf("Sent video chunk (%d bytes) to channel.", len(chunkBytes))
+					}
+				default:
+					if config.C.Trace {
+						log.Println("Chunk channel is full, dropping video chunk.")
 					}
 				}
-				buffer.Unmap()
 			}
-			// IMPORTANT: Go GStreamer unrefs the sample automatically.
+			buffer.Unmap()
 		}
+		// IMPORTANT: Go GStreamer unrefs the sample automatically.
 	}
 }
 
@@ -199,6 +211,9 @@ func (v *VideoStreamComponent) Run() {
 func (v *VideoStreamComponent) Stop() {
 	log.Println("Stopping video stream component...")
 	v.cancel()
+	v.pipeline.SendEvent(gst.NewEOSEvent()) // Gracefully end the stream
+	// Wait a moment for EOS to propagate before setting to NULL
+	time.Sleep(200 * time.Millisecond)
 	v.pipeline.SetState(gst.StateNull) // Explicitly set pipeline to NULL
 }
 

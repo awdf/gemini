@@ -22,6 +22,7 @@ const (
 )
 
 const (
+	MIMEVideo = "video/mp4"
 	MIMEImage = "image/png"
 	MIMEAudio = "audio/wav"
 )
@@ -121,7 +122,7 @@ type VideoConfig struct {
 	Width     int    `toml:"Width"`
 	Height    int    `toml:"Height"`
 	FrameRate int    `toml:"FrameRate"`
-	Quality   int    `toml:"Quality"`
+	Quantizer int    `toml:"Quantizer"` // H.264 quantizer (quality). 0-51, lower is better. 23 is a good default.
 }
 
 // RetryConfig holds settings for API call retries.
@@ -277,7 +278,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.Video.Width = 1280
 	defaultConfig.Video.Height = 720
 	defaultConfig.Video.FrameRate = 10
-	defaultConfig.Video.Quality = 85
+	defaultConfig.Video.Quantizer = 23 // Good balance of quality and size for live streaming.
 	defaultConfig.Shell.CommandEndMarkerCore = "GEMINI_CMD_DONE"
 
 	f, err := os.Create(path)

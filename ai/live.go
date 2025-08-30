@@ -72,7 +72,7 @@ type LiveAI struct {
 	flags            *Flags
 	controlChan      <-chan string
 	textCmdChan      <-chan string
-	videoFrameChan   chan []byte // Channel for incoming video frames
+	videoChunkChan   chan []byte // Channel for incoming video chunks
 	bus              *EventBus.Bus
 	session          *genai.Session
 	imageBuffer      *images.ScreenshotBuffer
@@ -104,7 +104,7 @@ func NewLiveSink(
 	bus *EventBus.Bus,
 	flags *Flags,
 	cli *inout.CLI,
-	videoFrameChan chan []byte, // Accept video frame channel
+	videoChunkChan chan []byte, // Accept video chunk channel
 ) *LiveAI {
 	ctx := context.Background()
 	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
@@ -113,10 +113,9 @@ func NewLiveSink(
 	}))
 	// --- AppSink Initialization ---
 	sink := helpers.Check(app.NewAppSink())
-	helpers.Verify(sink.SetProperty("sync", false))
+	sink.SetSync(false)
 	sink.SetDrop(false)    // Do not drop data; ensure all samples are received for recording.
 	sink.SetMaxBuffers(10) // Set a max buffer to prevent runaway memory usage and add stability.
-
 	var streamPlayer *audio.PCMStreamPlayer
 	if config.C.AI.VoiceEnabled {
 		// In a CI environment without a running audio server, creating an 'autoaudiosink'
@@ -153,7 +152,7 @@ func NewLiveSink(
 		bus:              bus,
 		controlChan:      controlChan,
 		textCmdChan:      textCmdChan,
-		videoFrameChan:   videoFrameChan, // Store video frame channel
+		videoChunkChan:   videoChunkChan, // Store video chunk channel
 		liveSink:         sink,
 		Element:          sink.Element,
 		streamPlayer:     streamPlayer,
@@ -218,6 +217,8 @@ func (l *LiveAI) OpenSession() {
 	liveConfig := &genai.LiveConnectConfig{}
 	// We can use model native or application provided VAD control
 	liveConfig.RealtimeInputConfig = &genai.RealtimeInputConfig{
+		TurnCoverage:     genai.TurnCoverageTurnIncludesOnlyActivity,
+		ActivityHandling: genai.ActivityHandlingStartOfActivityInterrupts,
 		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
 			Disabled:                 l.vadDisabled,
 			StartOfSpeechSensitivity: genai.StartSensitivityLow,
@@ -226,17 +227,20 @@ func (l *LiveAI) OpenSession() {
 			SilenceDurationMs:        helpers.Ptr(int32(config.C.VAD.HangoverDurationSec * 1000)),
 		},
 	}
+
 	// Input audio transcript
 	if config.C.AI.Transcript {
 		liveConfig.InputAudioTranscription = &genai.AudioTranscriptionConfig{}
 	}
 
-	// REMOVED: liveConfig.InputVideoConfig is not available in your genai library version.
-	// Video input will be handled by sending Media blobs directly via SendRealtimeInput().
+	// Video input will be handled by sending Video blobs directly via SendRealtimeInput().
 	if config.C.Video.Enabled {
-		log.Println("Live session: Video input enabled (configured by sending Media blobs).")
+		log.Println("Live session: Video input enabled (configured by sending Video blobs).")
 	}
 
+	// You can only set one response modality (TEXT or AUDIO) per session in the session configuration.
+	// Setting both results in a config error message. This means that you can configure the model to
+	// respond with either text or audio, but not both in the same session.
 	if config.C.AI.VoiceEnabled {
 		modelName = config.C.AI.ModelLiveTTS
 		liveConfig.ResponseModalities = []genai.Modality{genai.ModalityAudio}
@@ -553,13 +557,13 @@ func (l *LiveAI) Run() {
 					}(textCmd)
 				}
 			}
-		case frame, ok := <-l.videoFrameChan: // New: Handle incoming video frames
+		case chunk, ok := <-l.videoChunkChan: // Handle incoming video chunks
 			if !ok {
-				l.videoFrameChan = nil // Mark as closed
+				l.videoChunkChan = nil // Mark as closed
 				continue
 			}
 			if config.C.Video.Enabled {
-				l.sendLiveVideoFrame(frame)
+				l.sendLiveVideoChunk(chunk)
 			}
 		case <-audioTicker.C: // Use the renamed audioTicker
 			// App synk voice chunk processing, interaction: user voice to model
@@ -907,6 +911,7 @@ func (l *LiveAI) handleEvents(event string) {
 				log.Println("Switching away from video mode, stopping video stream.")
 				l.videoStream.Stop()
 				l.videoStream = nil
+				l.stopActivity(VideoStream) // Stop the activity on error
 			}
 
 			// Handle System mode transitions
@@ -924,6 +929,7 @@ func (l *LiveAI) handleEvents(event string) {
 					log.Println("Video mode selected, but video is disabled in config.")
 				} else if l.videoStream == nil {
 					l.startVideoStream()
+					// Video activity starts automatically on first frame arrived.
 				}
 			}
 		}
@@ -941,7 +947,7 @@ func (l *LiveAI) handleEvents(event string) {
 func (l *LiveAI) startVideoStream() {
 	log.Println("Initializing and starting video stream for video mode.")
 	var err error
-	l.videoStream, err = video.NewVideoStreamComponent(l.wg, l.bus, l.videoFrameChan)
+	l.videoStream, err = video.NewVideoStreamComponent(l.wg, l.bus, l.videoChunkChan)
 	if err != nil {
 		log.Printf("ERROR: Failed to initialize video stream component: %v", err)
 		l.videoStream = nil // ensure it's nil on error
@@ -1075,14 +1081,14 @@ func (l *LiveAI) sendLiveImage() {
 	}
 }
 
-// sendLiveVideoFrame sends a video frame to the active live session.
+// sendLiveVideoChunk sends a video chunk (part of a video/mp4 stream) to the active live session.
 // It checks if a session is online and starts a VideoStream activity if not already active.
-func (l *LiveAI) sendLiveVideoFrame(frame []byte) {
+func (l *LiveAI) sendLiveVideoChunk(chunk []byte) {
 	l.mu.RLock()
 	online := l.Online
 	l.mu.RUnlock()
 
-	if !online || len(frame) == 0 {
+	if !online || len(chunk) == 0 {
 		return
 	}
 
@@ -1094,21 +1100,20 @@ func (l *LiveAI) sendLiveVideoFrame(frame []byte) {
 	}
 
 	if config.C.Trace {
-		log.Printf("Streaming video frame (%d bytes) to model...", len(frame))
+		log.Printf("Streaming video chunk (%d bytes) to model...", len(chunk))
 	}
 
 	l.writeMu.Lock()
 	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
-		Media: &genai.Blob{
-			MIMEType: config.MIMEImage, // Assuming JPEG or PNG from GStreamer pipeline
-			Data:     frame,
+		Video: &genai.Blob{
+			MIMEType: config.MIMEVideo, // GStreamer pipeline is configured to produce video/mp4 chunks
+			Data:     chunk,
 		},
 	})
 	l.writeMu.Unlock()
 	if err != nil {
 		log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
 		// Stop streaming on error to prevent flooding with more errors.
-		l.stopActivity(VideoStream) // Stop the activity on error
 	}
 }
 
