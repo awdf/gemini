@@ -947,9 +947,9 @@ func handleMode(c *CLI, args []string) (hide bool, exit bool) {
 	}
 
 	hide = false
-	// When System mode switching, model turn automatically finalized.
-	// We avoid prompt draw to draw it after model response.
-	if c.mode == SystemMode {
+	// When System or Video mode switching, model turn automatically finalized.
+	// We avoid prompt draw to deligate it after model response draw.
+	if c.mode == SystemMode || c.mode == VideoMode {
 		hide = true
 	}
 

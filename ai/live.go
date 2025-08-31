@@ -79,6 +79,7 @@ type LiveAI struct {
 	cli              *inout.CLI
 	toolset          *genai.Tool
 	streamPlayer     *audio.PCMStreamPlayer
+	childWg          sync.WaitGroup
 	responseTimer    *time.Timer
 	activities       StreamType
 	mode             string
@@ -160,6 +161,7 @@ func NewLiveSink(
 		toolset:          toolset,
 		cli:              cli,
 		videoStream:      nil, // Will be created on demand
+		childWg:          sync.WaitGroup{},
 		responseTimer:    nil,
 		activities:       None,
 		mode:             config.C.Mode,
@@ -393,15 +395,7 @@ func (l *LiveAI) CloseSession() {
 // It listens for control messages to start new files and finalize (and potentially delete) old ones.
 func (l *LiveAI) Run() {
 	defer l.wg.Done()
-	defer l.CloseSession()
-	defer func() {
-		if l.streamPlayer != nil {
-			log.Println("Closing LiveAI stream player...")
-			if err := l.streamPlayer.Close(); err != nil {
-				log.Printf("ERROR: closing LiveAI stream player: %v", err)
-			}
-		}
-	}()
+	defer l.shutdown()
 
 	// Subscribe to the main event topic to listen for the warm-up completion signal from VAD.
 	helpers.Verify((*l.bus).SubscribeAsync(config.MainTopic, func(event string) {
@@ -601,6 +595,33 @@ func (l *LiveAI) Run() {
 			}
 		}
 	}
+}
+
+// shutdown centralizes all of LiveAI's shutdown logic, ensuring a clean and
+// predictable teardown sequence. It's called via defer in the Run method.
+func (l *LiveAI) shutdown() {
+	// 1. Stop the video stream component if it's running. This will cancel its
+	// context, causing the goroutine to exit.
+	if l.videoStream != nil {
+		l.videoStream.Stop()
+	}
+
+	// 2. Wait for any child goroutines (like the video stream) to finish.
+	// This is crucial to prevent the main application from exiting prematurely.
+	log.Println("LiveAI waiting for child goroutines to finish...")
+	l.childWg.Wait()
+	log.Println("LiveAI child goroutines finished.")
+
+	// 3. Stop the audio player if it's running.
+	if l.streamPlayer != nil {
+		log.Println("Closing LiveAI stream player...")
+		if err := l.streamPlayer.Close(); err != nil {
+			log.Printf("ERROR: closing LiveAI stream player: %v", err)
+		}
+	}
+
+	// 4. Close the connection to the Gemini API.
+	l.CloseSession()
 }
 
 // handleAgentToolResponse handles delayed/asynchronous tool responses published by agents.
@@ -977,7 +998,13 @@ func (l *LiveAI) startVideoStream() {
 		return
 	}
 
-	go l.videoStream.Run()
+	l.childWg.Add(1)
+	go func() {
+		defer l.childWg.Done()
+		l.videoStream.Run()
+		log.Println("Video stream pipeline exited.")
+		l.videoStream = nil // ensure it's nil on exit
+	}()
 }
 
 // handleShellOutput processes a batch of shell output received from the CLI.

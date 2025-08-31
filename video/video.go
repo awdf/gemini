@@ -173,17 +173,11 @@ func (v *VideoStreamComponent) Run() {
 	// Use a ticker to pull frames at the configured rate.
 	ticker := time.NewTicker(time.Second / time.Duration(config.C.Video.FrameRate))
 	defer ticker.Stop()
-	shutdownChan := flow.GetListener()
 
 	for {
 		select {
-		case <-*shutdownChan:
-			log.Println("Video stream component shutting down.")
-			v.pipeline.SetState(gst.StateNull)
-			return
 		case <-v.ctx.Done():
 			// This is triggered by Stop() or an EOS on the bus.
-			// The pipeline state is already handled, so we just exit the loop.
 			log.Println("Video stream component Run loop exiting.")
 			return // The pipeline state is already being handled by Stop() or the bus watch.
 		case <-ticker.C:

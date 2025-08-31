@@ -90,6 +90,7 @@ func processSignal() {
 			fmt.Println()
 			log.Printf("got signal, value = \"%s\"", sig)
 			handle(sig)
+			return
 		}
 	}
 }
