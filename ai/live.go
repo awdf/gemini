@@ -825,10 +825,11 @@ func (l *LiveAI) handleResponses() {
 			// The loop will terminate in the next iteration due to the connection closing.
 			log.Printf("Live stream session GoAway received: %+v", msg.GoAway.TimeLeft)
 			// Pause shell output polling to prevent sending data to a closed session.
-			l.cli.ReceiveShellPause(inout.ShellPauseStart)
-			// If a shell activity is in progress, end it gracefully before closing the session.
-			l.stopActivity(ShellStream)
-
+			if l.mode == inout.SystemMode {
+				l.cli.ReceiveShellPause(inout.ShellPauseStart)
+				// If a shell activity is in progress, end it gracefully before closing the session.
+				l.stopActivity(ShellStream)
+			}
 			if generation {
 				needToGo = true
 			} else {

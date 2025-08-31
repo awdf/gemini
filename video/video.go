@@ -141,30 +141,7 @@ func (v *VideoStreamComponent) Run() {
 
 	// Listen for bus messages (errors, EOS) from the pipeline
 	bus := v.pipeline.GetBus()
-	bus.AddWatch(func(msg *gst.Message) bool {
-		v.mu.Lock()
-		stopping := v.isStopping
-		v.mu.Unlock()
-
-		switch msg.Type() {
-		case gst.MessageEOS:
-			log.Println("Video pipeline received EOS.")
-			// A natural EOS should not terminate the whole application.
-			// It just means this component's work is done.
-			v.cancel()
-			return false
-		case gst.MessageError:
-			if stopping {
-				log.Println("Ignoring video pipeline error during shutdown.")
-				return false
-			}
-			err := msg.ParseError()
-			log.Printf("ERROR: Video pipeline error: %s (debug: %s)", err.Error(), err.DebugString())
-			flow.Quit() // Signal application shutdown
-			return false
-		}
-		return true
-	})
+	bus.AddWatch(v.handleBusMessage)
 
 	// Start the pipeline *after* the bus watch is set up to avoid race conditions.
 	log.Println("Starting video stream pipeline...")
@@ -235,4 +212,31 @@ func (v *VideoStreamComponent) Stop() {
 // but it's kept for consistency or future composite pipelines.
 func (v *VideoStreamComponent) Element() *gst.Element {
 	return v.pipeline.Element
+}
+
+// handleBusMessage is the callback function for the GStreamer bus watch.
+// It processes messages like EOS and Error from the pipeline.
+func (v *VideoStreamComponent) handleBusMessage(msg *gst.Message) bool {
+	v.mu.Lock()
+	stopping := v.isStopping
+	v.mu.Unlock()
+
+	switch msg.Type() {
+	case gst.MessageEOS:
+		log.Println("Video pipeline received EOS.")
+		// A natural EOS should not terminate the whole application.
+		// It just means this component's work is done.
+		v.cancel()
+		return false // Stop watching the bus
+	case gst.MessageError:
+		if stopping {
+			log.Println("Ignoring video pipeline error during shutdown.")
+			return false // Stop watching the bus
+		}
+		err := msg.ParseError()
+		log.Printf("ERROR: Video pipeline error: %s (debug: %s)", err.Error(), err.DebugString())
+		flow.Quit()  // Signal application shutdown
+		return false // Stop watching the bus
+	}
+	return true // Continue watching the bus
 }

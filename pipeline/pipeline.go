@@ -172,7 +172,7 @@ func (p *VadPipeline) Stop() {
 func (p *VadPipeline) Loop() {
 	go func() {
 		<-*flow.GetListener()
-		p.Abort("Interrupt received, pipline will be initiating shutdown...")
+		p.Abort("VAD: Interrupt received, pipline will be initiating shutdown...")
 	}()
 
 	p.loop.Run()
@@ -222,7 +222,7 @@ func (p *VadPipeline) Run() {
 		// Check for End-of-Stream first to ensure a clean exit. This is the
 		// condition that will terminate this goroutine's loop.
 		if p.vadSink.IsEOS() {
-			log.Println("Pipeline sampler work finished (EOS detected)")
+			log.Println("VAD: Pipeline sampler work finished (EOS detected)")
 			return
 		}
 

@@ -223,13 +223,7 @@ func (app *App) join(r Runnable) {
 }
 
 func (app *App) shutdown() {
-	log.Println("Stopping pipeline...")
-
-	// The main event loop has already been stopped when this function is called.
-	// We call the pipeline's Stop method, which is designed to handle this state
-	// and set the pipeline to NULL safely.
-	app.pipeline.Stop() // Corrected to be on its own line.
-	log.Println("Pipeline stopped.")
+	log.Println("Shutdown...")
 
 	// Now that the pipeline is stopped, wait for the processing goroutines to finish their cleanup.
 	app.wg.Wait()
