@@ -79,6 +79,7 @@ type LiveAI struct {
 	cli              *inout.CLI
 	toolset          *genai.Tool
 	streamPlayer     *audio.PCMStreamPlayer
+	responseTimer    *time.Timer
 	activities       StreamType
 	mode             string
 	videoStream      *video.VideoStreamComponent
@@ -159,6 +160,7 @@ func NewLiveSink(
 		toolset:          toolset,
 		cli:              cli,
 		videoStream:      nil, // Will be created on demand
+		responseTimer:    nil,
 		activities:       None,
 		mode:             config.C.Mode,
 		sessionClosed:    make(chan struct{}, 1), // Buffered channel to prevent blocking
@@ -378,6 +380,10 @@ func (l *LiveAI) CloseSession() {
 	if l.session == nil {
 		return
 	}
+	if l.responseTimer != nil {
+		l.responseTimer.Stop()
+		l.responseTimer = nil
+	}
 	l.session.Close()
 	l.session = nil
 	l.Online = false
@@ -428,6 +434,10 @@ func (l *LiveAI) Run() {
 	defer shellPollTicker.Stop()
 	// Application flow control channel
 	shutdownChan := flow.GetListener()
+	// If default mode is video. Run it.
+	if l.mode == inout.VideoMode {
+		l.startVideoStream()
+	}
 
 	for {
 		if config.C.Trace {
@@ -554,15 +564,14 @@ func (l *LiveAI) Run() {
 				// New activiti will be open automatically on first video frame arrived
 				l.stopActivity(VideoStream)
 			default:
-				// This is a regular, self-contained text prompt. Ignore if empty.
-				if textCmd != "" {
-					log.Printf("Live AI: Processing text prompt in %s mode...\n", l.mode)
-					go func(prompt string) {
-						if err := l.sendTextPrompt(prompt); err != nil {
-							log.Printf("ERROR: failed to process text prompt: %v", err)
-						}
-					}(textCmd)
-				}
+				// This is a regular, self-contained text prompt. Can not be empty.
+				log.Printf("Live AI: Processing text prompt in %s mode...\n", l.mode)
+				go func(prompt string) {
+					if err := l.sendTextPrompt(prompt); err != nil {
+						log.Printf("ERROR: failed to process text prompt: %v", err)
+					}
+					l.stopActivity(All)
+				}(textCmd)
 			}
 		case frame, ok := <-l.videoFrameChan: // Handle incoming video frames
 			// In video mode we got new continuous activity type: user video to model
@@ -732,6 +741,12 @@ func (l *LiveAI) handleResponses() {
 
 			if msg.ServerContent.ModelTurn != nil {
 				if !inModelTurn {
+					// The model has started its turn. We can cancel the timeout.
+					if l.responseTimer != nil {
+						l.responseTimer.Stop()
+						l.responseTimer = nil
+					}
+
 					// Do once per content block
 					log.Println("Live model stream generation started.")
 					inModelTurn = true
@@ -955,14 +970,13 @@ func (l *LiveAI) handleEvents(event string) {
 func (l *LiveAI) startVideoStream() {
 	log.Println("Initializing and starting video stream for video mode.")
 	var err error
-	l.videoStream, err = video.NewVideoStreamComponent(l.wg, l.bus, l.videoFrameChan)
+	l.videoStream, err = video.NewVideoStreamComponent(l.bus, l.videoFrameChan)
 	if err != nil {
 		log.Printf("ERROR: Failed to initialize video stream component: %v", err)
 		l.videoStream = nil // ensure it's nil on error
 		return
 	}
 
-	l.wg.Add(1)
 	go l.videoStream.Run()
 }
 
@@ -1228,6 +1242,16 @@ func (l *LiveAI) pullAndSendSamples() {
 // Explicit activity control is not supported when automatic activity detection is enabled.
 func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 	online := l.Online
+	// If the user starts speaking, it's a clear interruption of any pending
+	// model response. We should cancel the timeout for that response.
+	// However, if it's just shell or video data streaming in, that's part of
+	// the current context, not an interruption, so we don't stop the timer.
+	if streamType == AudioStream {
+		if l.responseTimer != nil {
+			l.responseTimer.Stop()
+			l.responseTimer = nil
+		}
+	}
 
 	if !online {
 		return
@@ -1264,6 +1288,14 @@ func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 // Explicit activity control is not supported when automatic activity detection is enabled.
 func (l *LiveAI) notifyActivityEnd(streamType StreamType) {
 	online := l.Online
+
+	if l.responseTimer != nil {
+		l.responseTimer.Stop()
+	}
+	l.responseTimer = time.AfterFunc(30*time.Second, func() {
+		l.formatter.PrintNl("Model not provided answer.", inout.ColorDarkRed)
+		(*l.bus).Publish(config.MainTopic, "draw:ai.timeout")
+	})
 
 	if !online {
 		return

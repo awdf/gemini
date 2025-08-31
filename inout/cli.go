@@ -217,12 +217,18 @@ func (c *CLI) handleResize() {
 	winchListener := flow.GetWinchListener()
 	defer flow.StopWinchListener(winchListener)
 
+	shutdownChan := flow.GetListener()
 	// Set initial size.
 	c.updateTerminalSize()
 
-	for range *winchListener {
-		log.Println("Terminal resize detected, updating size.")
-		c.updateTerminalSize()
+	for {
+		select {
+		case <-*shutdownChan:
+			return
+		case <-*winchListener:
+			log.Println("Terminal resize detected, updating size.")
+			c.updateTerminalSize()
+		}
 	}
 }
 

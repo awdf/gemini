@@ -2,7 +2,6 @@ package video
 
 import (
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -42,12 +41,11 @@ func TestNewVideoStreamComponent(t *testing.T) {
 	})
 
 	// Mock dependencies
-	wg := &sync.WaitGroup{}
 	bus := EventBus.New()
 	frameChan := make(chan []byte, 1)
 
 	// Create the component
-	videoStream, err := NewVideoStreamComponent(wg, &bus, frameChan)
+	videoStream, err := NewVideoStreamComponent(&bus, frameChan)
 	require.NoError(t, err, "NewVideoStreamComponent should not return an error")
 	require.NotNil(t, videoStream, "VideoStreamComponent should not be nil")
 	require.NotNil(t, videoStream.pipeline, "Pipeline should not be nil")
@@ -79,16 +77,14 @@ func TestVideoStreamComponent_Run(t *testing.T) {
 	})
 
 	// Mock dependencies
-	wg := &sync.WaitGroup{}
 	bus := EventBus.New()
 	frameChan := make(chan []byte, 5)
 
 	// Create the component
-	videoStream, err := NewVideoStreamComponent(wg, &bus, frameChan)
+	videoStream, err := NewVideoStreamComponent(&bus, frameChan)
 	require.NoError(t, err)
 
 	// Start the Run method in a goroutine
-	wg.Add(1)
 	go videoStream.Run()
 
 	// Wait for a frame to be received
@@ -103,5 +99,4 @@ func TestVideoStreamComponent_Run(t *testing.T) {
 
 	// Stop the component and wait for the goroutine to finish
 	videoStream.Stop()
-	wg.Wait()
 }
