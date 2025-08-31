@@ -142,7 +142,7 @@ MonitorID = 0        # pipewiresrc generally doesn't use this, leave as default 
 Width = 640          # Good balance for visual context
 Height = 440         # Adjust to maintain aspect ratio if needed (e.g., 360 for 16:9 with 640 width)
 FrameRate = 10       # A good default balance. Can be increased for smoother video.
-Quantizer = 23       # H.264 quantizer (quality). Range 0-51, lower is better. 23 is a good default for live streaming.
+Quality = 85         # JPEG quality (0-100). 85 is a good default balance of quality and size.
 
 [shell]
 # A unique string that the shell will print after every command to signal its completion.

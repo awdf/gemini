@@ -72,7 +72,7 @@ type LiveAI struct {
 	flags            *Flags
 	controlChan      <-chan string
 	textCmdChan      <-chan string
-	videoChunkChan   chan []byte // Channel for incoming video chunks
+	videoFrameChan   chan []byte // Channel for incoming video frames
 	bus              *EventBus.Bus
 	session          *genai.Session
 	imageBuffer      *images.ScreenshotBuffer
@@ -104,7 +104,7 @@ func NewLiveSink(
 	bus *EventBus.Bus,
 	flags *Flags,
 	cli *inout.CLI,
-	videoChunkChan chan []byte, // Accept video chunk channel
+	videoFrameChan chan []byte, // Accept video frame channel
 ) *LiveAI {
 	ctx := context.Background()
 	client := helpers.Check(genai.NewClient(ctx, &genai.ClientConfig{
@@ -152,7 +152,7 @@ func NewLiveSink(
 		bus:              bus,
 		controlChan:      controlChan,
 		textCmdChan:      textCmdChan,
-		videoChunkChan:   videoChunkChan, // Store video chunk channel
+		videoFrameChan:   videoFrameChan, // Store video frame channel
 		liveSink:         sink,
 		Element:          sink.Element,
 		streamPlayer:     streamPlayer,
@@ -537,16 +537,23 @@ func (l *LiveAI) Run() {
 			// If we are in system mode and there's an open shell activity,
 			// this text prompt is the user's question about that activity.
 			// We send it and then end the activity to trigger a model response.
-			if l.mode == inout.System && l.isActive(ShellStream) {
-				log.Println("Live AI: Finalizing shell activity...")
+			switch l.mode {
+			case inout.SystemMode:
 				// CLI provide a non-empty user prompt, send it as the final question.
-				log.Println("Live AI: Sending user system prompt...")
+				log.Println("Live AI: Sending user system mode prompt...")
 				l.sendLiveMessage(textCmd)
 
 				// In case of voice activity we will wait until it ends and finalize turn.
 				// Otherwise, just end the activity to get a response to both the shell output and user prompt.
 				l.stopActivity(ShellStream)
-			} else {
+			case inout.VideoMode:
+				log.Println("Live AI: Sending user video mode prompt...")
+				l.sendLiveMessage(textCmd)
+
+				// We need stop activity for model turn started.
+				// New activiti will be open automatically on first video frame arrived
+				l.stopActivity(VideoStream)
+			default:
 				// This is a regular, self-contained text prompt. Ignore if empty.
 				if textCmd != "" {
 					log.Printf("Live AI: Processing text prompt in %s mode...\n", l.mode)
@@ -557,13 +564,14 @@ func (l *LiveAI) Run() {
 					}(textCmd)
 				}
 			}
-		case chunk, ok := <-l.videoChunkChan: // Handle incoming video chunks
+		case frame, ok := <-l.videoFrameChan: // Handle incoming video frames
+			// In video mode we got new continuous activity type: user video to model
 			if !ok {
-				l.videoChunkChan = nil // Mark as closed
+				l.videoFrameChan = nil // Mark as closed
 				continue
 			}
 			if config.C.Video.Enabled {
-				l.sendLiveVideoChunk(chunk)
+				l.sendLiveVideoFrame(frame)
 			}
 		case <-audioTicker.C: // Use the renamed audioTicker
 			// App synk voice chunk processing, interaction: user voice to model
@@ -571,7 +579,7 @@ func (l *LiveAI) Run() {
 		case <-shellPollTicker.C:
 			// In system mode there is third interaction type: shell output to model.
 			// Shell have never finalize turn, only stream output data
-			if l.mode == inout.System {
+			if l.mode == inout.SystemMode {
 				// genai API has error and panic on big ammounts of streamed data(ex: journalctl).
 				// This "pull and batch" pattern is crucial for stability. Instead of
 				// sending every line of shell output as it occurs (which can overwhelm
@@ -736,7 +744,7 @@ func (l *LiveAI) handleResponses() {
 					}
 
 					// System mode sensetive to new lines, avoid this
-					if l.mode != inout.System {
+					if l.mode != inout.SystemMode {
 						l.formatter.PrintNl("Answer:", inout.ColorDarkCyan)
 					}
 				}
@@ -915,10 +923,10 @@ func (l *LiveAI) handleEvents(event string) {
 			}
 
 			// Handle System mode transitions
-			if payload == inout.System {
+			if payload == inout.SystemMode {
 				l.startActivity(ShellStream)
 				l.sendLiveMessage("System Notification: You have entered system mode. You can now use shell commands via the 'submit_shell_command' tool.")
-			} else if previousMode == inout.System {
+			} else if previousMode == inout.SystemMode {
 				l.sendLiveMessage("System Notification: You have left system mode. Shell commands are no longer available.")
 				l.stopActivity(ShellStream)
 			}
@@ -947,7 +955,7 @@ func (l *LiveAI) handleEvents(event string) {
 func (l *LiveAI) startVideoStream() {
 	log.Println("Initializing and starting video stream for video mode.")
 	var err error
-	l.videoStream, err = video.NewVideoStreamComponent(l.wg, l.bus, l.videoChunkChan)
+	l.videoStream, err = video.NewVideoStreamComponent(l.wg, l.bus, l.videoFrameChan)
 	if err != nil {
 		log.Printf("ERROR: Failed to initialize video stream component: %v", err)
 		l.videoStream = nil // ensure it's nil on error
@@ -1081,14 +1089,14 @@ func (l *LiveAI) sendLiveImage() {
 	}
 }
 
-// sendLiveVideoChunk sends a video chunk (part of a video/mp4 stream) to the active live session.
+// sendLiveVideoFrame sends a single video frame to the active live session.
 // It checks if a session is online and starts a VideoStream activity if not already active.
-func (l *LiveAI) sendLiveVideoChunk(chunk []byte) {
+func (l *LiveAI) sendLiveVideoFrame(frame []byte) {
 	l.mu.RLock()
 	online := l.Online
 	l.mu.RUnlock()
 
-	if !online || len(chunk) == 0 {
+	if !online || len(frame) == 0 {
 		return
 	}
 
@@ -1100,14 +1108,14 @@ func (l *LiveAI) sendLiveVideoChunk(chunk []byte) {
 	}
 
 	if config.C.Trace {
-		log.Printf("Streaming video chunk (%d bytes) to model...", len(chunk))
+		log.Printf("Streaming video frame (%d bytes) to model...", len(frame))
 	}
 
 	l.writeMu.Lock()
 	err := l.session.SendRealtimeInput(genai.LiveRealtimeInput{
 		Video: &genai.Blob{
-			MIMEType: config.MIMEVideo, // GStreamer pipeline is configured to produce video/mp4 chunks
-			Data:     chunk,
+			MIMEType: config.MIMEVideo, // GStreamer pipeline is configured to produce image/jpeg frames
+			Data:     frame,
 		},
 	})
 	l.writeMu.Unlock()

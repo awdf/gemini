@@ -119,21 +119,21 @@ func (a *SystemAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	case "submit_shell_command", "send_input_to_shell":
 		// Default agent execution flow
 		// All interactive tools require system mode.
-		if config.C.Mode != inout.System {
+		if config.C.Mode != inout.SystemMode {
 			err := fmt.Errorf("interactive shell tools require the user to be in 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
 			return a.CreateFunctionResponse(call, nil, err)
 		}
 		return a.handleInteractiveShell(call)
 	case "get_secret_from_user":
 		// This tool is only useful in system mode where the terminal is raw.
-		if config.C.Mode != inout.System {
+		if config.C.Mode != inout.SystemMode {
 			err := fmt.Errorf("the 'get_secret_from_user' tool requires the user to be in 'system' mode. Please ask the user to switch to system mode first using the '/mode system' command")
 			return a.CreateFunctionResponse(call, nil, err)
 		}
 		// Triggered critical secure flow
 		return a.handleGetSecretFromUser(call)
 	case "disable_afk_mode":
-		if config.C.Mode != inout.System {
+		if config.C.Mode != inout.SystemMode {
 			err := fmt.Errorf("the 'toggle_afk_mode' tool can only be used in 'system' mode")
 			return a.CreateFunctionResponse(call, nil, err)
 		}

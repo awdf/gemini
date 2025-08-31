@@ -60,6 +60,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/asaskevich/EventBus"
 	"golang.org/x/term"
@@ -74,11 +75,11 @@ import (
 type ShellPauseState string
 
 const (
-	Prompt    = "prompt" // {Prompt} = Allow voice and txt prompts
-	VoiceMode = "voice"  // Allow voice output for AI and {Prompt}
-	ImageMode = "image"  // Allow send screenshot images with each {Prompt}
-	VideoMode = "video"  // Allow send video stream
-	System    = "system" // System CLI integration mode. Allow execute system commands and stream output to AI
+	Prompt     = "prompt" // {Prompt} = Allow voice and txt prompts
+	VoiceMode  = "voice"  // Allow voice output for AI and {Prompt}
+	ImageMode  = "image"  // Allow send screenshot images with each {Prompt}
+	VideoMode  = "video"  // Allow send video stream
+	SystemMode = "system" // System CLI integration mode. Allow execute system commands and stream output to AI
 
 	ShellPauseStart ShellPauseState = "start"
 	ShellPauseStop  ShellPauseState = "stop"
@@ -149,11 +150,11 @@ type terminalReadWriter struct {
 
 var (
 	modes = map[string]string{
-		Prompt:    Prompt,
-		System:    System,
-		VoiceMode: VoiceMode,
-		ImageMode: ImageMode,
-		VideoMode: VideoMode,
+		Prompt:     Prompt,
+		SystemMode: SystemMode,
+		VoiceMode:  VoiceMode,
+		ImageMode:  ImageMode,
+		VideoMode:  VideoMode,
 	}
 
 	thinkingLevels = map[string]int32{
@@ -288,7 +289,7 @@ func (c *CLI) ReceiveShellPause(state ShellPauseState) {
 // PromptForInput displays a prompt to the user and waits for a line of text input.
 // It's a blocking call that communicates with the main Run loop via a channel.
 func (c *CLI) PromptForInput(prompt string) string {
-	isSystemMode := c.mode == System
+	isSystemMode := c.mode == SystemMode
 
 	if !isSystemMode {
 		log.Println("WARNING: PromptForInput called outside of system mode. This is not supported.")
@@ -313,7 +314,7 @@ func (c *CLI) setMode(newMode string) {
 	}
 
 	// When switching *to* system mode, we need to remember where we came from.
-	if newMode == System {
+	if newMode == SystemMode {
 		c.previousMode = c.mode
 	}
 
@@ -722,30 +723,27 @@ func (c *CLI) runPromptModeLoop() {
 		// CLI owns prompt. In a reason of event based prompt drawing
 		// We must wait for draw event fired to show prompt and collect
 		// user input
-		<-c.drawCompleteChan
-
-		c.terminalMu.RLock()
-		line, err := c.terminal.ReadLine()
-		c.terminalMu.RUnlock()
-		if err != nil {
-			if err == io.EOF {
-				log.Println("Exiting due to EOF from terminal (Ctrl+C, Ctrl+D).")
-				c.formatter.Reset()
-				flow.Quit()
-				<-*shutdownListener
-			} else {
-				log.Printf("ReadLine error: %v. Exiting prompt mode.", err)
+		select {
+		case <-*shutdownListener:
+			return
+		case <-c.drawCompleteChan:
+			c.terminalMu.RLock()
+			line, err := c.terminal.ReadLine()
+			c.terminalMu.RUnlock()
+			if err != nil {
+				if err == io.EOF {
+					log.Println("Exiting due to EOF from terminal (Ctrl+C, Ctrl+D).")
+					c.formatter.Reset()
+					flow.Quit()
+				} else {
+					log.Printf("ReadLine error: %v. Exiting prompt mode.", err)
+				}
+				continue
 			}
-			return
-		}
 
-		if exitRequested := c.processLine(line); exitRequested {
-			<-*shutdownListener
-			return
-		}
-
-		if c.modeSwitchRequested {
-			return
+			c.processLine(line)
+		default:
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
@@ -806,7 +804,7 @@ func (c *CLI) Run() {
 		c.modeSwitchRequested = false
 
 		// Both calls is blocking and provide full input processing
-		if currentMode == System {
+		if currentMode == SystemMode {
 			c.runSystemModeLoop()
 		} else {
 			c.runPromptModeLoop()
@@ -822,7 +820,7 @@ func (c *CLI) draw() {
 		return
 	}
 
-	if c.mode == System {
+	if c.mode == SystemMode {
 		config.DebugPrintln("CLI prompt drawing deligated to shell")
 		// In system mode, the shell provides its own prompt. We send a newline
 		// to ensure it's redrawn after AI output.
@@ -836,7 +834,7 @@ func (c *CLI) draw() {
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
 		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
 		c.terminalMu.RUnlock()
-		if c.mode != System {
+		if c.mode != SystemMode {
 			// reset current text prompt to draw new after voice
 			if _, err := c.terminal.Write([]byte{'\n'}); err != nil {
 				log.Printf("Can't reset current text prompt: %v", err)
@@ -920,7 +918,7 @@ func handleThinking(c *CLI, args []string) (hide bool, exit bool) {
 
 func handleMode(c *CLI, args []string) (hide bool, exit bool) {
 	hint := func() {
-		c.formatter.PrintRaw(fmt.Sprintf("Available AI modes: %s, %s, %s, %s, %s\n", Prompt, System, VoiceMode, ImageMode, VideoMode))
+		c.formatter.PrintRaw(fmt.Sprintf("Available AI modes: %s, %s, %s, %s, %s\n", Prompt, SystemMode, VoiceMode, ImageMode, VideoMode))
 	}
 
 	if len(args) != 1 {
@@ -945,12 +943,12 @@ func handleMode(c *CLI, args []string) (hide bool, exit bool) {
 	hide = false
 	// When System mode switching, model turn automatically finalized.
 	// We avoid prompt draw to draw it after model response.
-	if c.mode == System {
+	if c.mode == SystemMode {
 		hide = true
 	}
 
 	// When user enter to System mode prompt is shell responsibility.
-	if value == System {
+	if value == SystemMode {
 		hide = true
 	}
 
@@ -959,7 +957,7 @@ func handleMode(c *CLI, args []string) (hide bool, exit bool) {
 }
 
 func handlePrompt(c *CLI, args []string) (hide bool, exit bool) {
-	if c.mode == System {
+	if c.mode == SystemMode {
 		promptText := strings.TrimSpace(strings.Join(args, " "))
 		if promptText != "" {
 			helpers.SafeSend(c.cmdChan, promptText)
@@ -994,7 +992,7 @@ func handleHelp(c *CLI, _ []string) (hide bool, exit bool) {
 	}
 
 	mainCommands := []helpEntry{
-		{"/mode <name>", fmt.Sprintf("Set AI mode (%s, %s, %s, %s, %s)", Prompt, System, VoiceMode, ImageMode, VideoMode)},
+		{"/mode <name>", fmt.Sprintf("Set AI mode (%s, %s, %s, %s, %s)", Prompt, SystemMode, VoiceMode, ImageMode, VideoMode)},
 		{"/debug", "Toggle debug mode"},
 		{"/voice", "Toggle voice responses"},
 		{"/tools", "Toggle AI tools (e.g., Google Search)"},
