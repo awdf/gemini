@@ -168,6 +168,7 @@ var (
 	// commandHandlers maps command names to their handler functions.
 	commandHandlers = map[string]commandHandler{
 		"save":       handleSave,
+		"pause":      handlePause,
 		"debug":      handleDebug,
 		"voice":      handleVoice,
 		"tools":      handleTools,
@@ -336,8 +337,8 @@ func (c *CLI) setMode(newMode string) {
 	(*c.bus).Publish(config.AITopic, fmt.Sprintf("mode:%s", newMode))
 }
 
-// GetShellState returns true if a command is currently executing in the system shell.
-func (c *CLI) GetShellState() bool {
+// IsBusy returns true if a command is currently executing in the system shell.
+func (c *CLI) IsBusy() bool {
 	if !c.isSystemShellActive {
 		return false
 	}
@@ -598,7 +599,7 @@ func (c *CLI) runSystemModeLoop() {
 				// If an AFK turn is pending, it means a command has finished and its
 				// output has now been polled by LiveAI. We can now safely submit the
 				// next turn to the AI.
-				if c.systemAFK && !c.GetShellState() {
+				if c.systemAFK && !c.IsBusy() {
 					// afkTurnPending = false // Consume the flag.
 					log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
 					helpers.SafeSend(c.cmdChan, "This is AFK mode. Have task done? No, continue with next step. Yes, use disable_afk_mode tool.")
@@ -851,6 +852,7 @@ func (c *CLI) draw() {
 		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
 		c.terminalMu.RUnlock()
 		if c.mode != SystemMode && c.drawCompleteBlock {
+			log.Println("WARNING: Prompt already exist and blocks console.")
 			// reset current text prompt to draw new after voice
 			if _, err := c.terminal.Write([]byte{'\n'}); err != nil {
 				log.Printf("Can't reset current text prompt: %v", err)
@@ -866,6 +868,12 @@ func (c *CLI) draw() {
 func handleSave(c *CLI, _ []string) (hide bool, exit bool) {
 	(*c.bus).Publish(config.AITopic, "save:history.txt")
 	c.formatter.PrintRaw("Conversation history save requested to history.txt.\n")
+	return false, false
+}
+
+func handlePause(c *CLI, _ []string) (hide bool, exit bool) {
+	(*c.bus).Publish(config.MainTopic, "pause:cli.handlePause")
+	c.formatter.PrintRaw("VAD pause toggled.\n")
 	return false, false
 }
 
@@ -1011,6 +1019,7 @@ func handleHelp(c *CLI, _ []string) (hide bool, exit bool) {
 
 	mainCommands := []helpEntry{
 		{"/mode <name>", fmt.Sprintf("Set AI mode (%s, %s, %s, %s, %s)", Prompt, SystemMode, VoiceMode, ImageMode, VideoMode)},
+		{"/pause", "Toggle pausing/resuming voice activity detection"},
 		{"/debug", "Toggle debug mode"},
 		{"/voice", "Toggle voice responses"},
 		{"/tools", "Toggle AI tools (e.g., Google Search)"},

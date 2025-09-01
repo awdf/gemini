@@ -521,10 +521,11 @@ func (l *LiveAI) Run() {
 				// concluded by voice. Reset the state for the next turn.
 				// If an activity was in progress, end it. We always send AudioStream type because
 				// a VAD stop means audio was just sent, which needs to be terminated correctly.
-				if l.cli.GetShellState() {
+				if l.cli.IsBusy() {
 					l.stopActivity(AudioStream)
 				} else {
-					l.stopActivity(AudioStream | ShellStream)
+					// Can be exclusive Shell or Video stream. So voice stop activity for one of them.
+					l.stopActivity(All)
 				}
 
 				// The image buffer is now released upon GenerationComplete, not here.
@@ -802,6 +803,12 @@ func (l *LiveAI) handleResponses() {
 				inModelTurn = false
 				l.formatter.Reset()
 				(*l.bus).Publish(config.MainTopic, "draw:ai.handleResponses")
+
+				// Start video activity if it's not already active.
+				if l.mode == inout.VideoMode {
+					l.startActivity(VideoStream)
+					log.Println("Started VideoStream activity.")
+				}
 			}
 		case msg.ToolCall != nil:
 			go func(request *genai.LiveServerToolCall) {
@@ -829,6 +836,9 @@ func (l *LiveAI) handleResponses() {
 				l.cli.ReceiveShellPause(inout.ShellPauseStart)
 				// If a shell activity is in progress, end it gracefully before closing the session.
 				l.stopActivity(ShellStream)
+			}
+			if l.mode == inout.VideoMode {
+				l.stopActivity(VideoStream)
 			}
 			if generation {
 				needToGo = true
@@ -1140,13 +1150,6 @@ func (l *LiveAI) sendLiveVideoFrame(frame []byte) {
 
 	if !online || len(frame) == 0 {
 		return
-	}
-
-	// Start video activity if it's not already active.
-	if !l.isActive(VideoStream) {
-		l.startActivity(VideoStream)
-		log.Println("Started VideoStream activity.")
-		// We might want to send a message to the model here like "User is now sharing video."
 	}
 
 	if config.C.Trace {

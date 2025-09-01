@@ -3,12 +3,14 @@ package vad
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/asaskevich/EventBus"
 
 	"gemini/config"
+	"gemini/helpers"
 )
 
 const (
@@ -30,6 +32,7 @@ type Engine struct {
 	fileCounter     int
 	silenceEndTime  time.Time
 	warmupEndTime   time.Time
+	paused          bool
 }
 
 // NewVAD creates a new VAD engine.
@@ -47,6 +50,7 @@ func NewVAD(wg *sync.WaitGroup, fileControlChan chan<- string, vadControlChan <-
 		vadControlChan:  vadControlChan,
 		bus:             bus,
 		warmupEndTime:   time.Now().Add(warmupDuration),
+		paused:          false,
 	}
 }
 
@@ -74,6 +78,23 @@ func (e *Engine) FileCounter() int {
 	return e.fileCounter
 }
 
+// handleEvents listens for events on the main bus to control VAD state.
+func (e *Engine) handleEvents(event string) {
+	parts := strings.SplitN(event, ":", 2)
+	command := parts[0]
+
+	if command == "pause" {
+		e.mu.Lock()
+		e.paused = !e.paused
+		if e.paused {
+			log.Println("VAD processing paused.")
+		} else {
+			log.Println("VAD processing resumed.")
+		}
+		e.mu.Unlock()
+	}
+}
+
 // Run is a dedicated goroutine that listens for RMS values and controls the
 // recording valve. Isolating this GStreamer state change into its own goroutine
 // is critical for preventing deadlocks.
@@ -81,6 +102,8 @@ func (e *Engine) Run() {
 	defer e.wg.Done()
 	defer close(e.fileControlChan)
 	log.Println("VAD work started")
+
+	helpers.Verify((*e.bus).SubscribeAsync(config.MainTopic, e.handleEvents, false))
 
 	warmupOver := e.warmupEndTime.IsZero() || time.Now().After(e.warmupEndTime)
 
@@ -106,6 +129,12 @@ func (e *Engine) Run() {
 		var startCmd, stopCmd string
 
 		e.mu.Lock()
+		if e.paused {
+			// If paused, treat any sound as silence.
+			// This will eventually trigger the stop logic if it was recording.
+			isLoud = false
+		}
+
 		isRecording := e.isRecording
 		if isLoud {
 			if !isRecording {
