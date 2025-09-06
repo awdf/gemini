@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/genai"
+
+	"gemini/config"
 )
 
 // TestGeminiAPI_Transcription is an integration test that verifies connectivity
@@ -113,7 +115,7 @@ func TestParseFlags(t *testing.T) {
 				Voice:      false,
 				Transcript: false,
 				AIEnabled:  true,
-				ConfigPath: "config.toml",
+				ConfigPath: config.DefaultConfigFileName,
 			},
 		},
 		{

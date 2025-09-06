@@ -12,13 +12,19 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// C holds the global application configuration.
-var C Config
+var (
+	// C holds the global application configuration.
+	C Config
+	// ProjectRoot is the root directory of the application, typically where the executable is.
+	// It's determined once at startup.
+	ProjectRoot string
+)
 
 const (
-	MainTopic  = "main:topic"
-	AgentTopic = "agent:tool_response"
-	AITopic    = "ai:topic"
+	DefaultConfigFileName = "config.toml"
+	MainTopic             = "main:topic"
+	AgentTopic            = "agent:tool_response"
+	AITopic               = "ai:topic"
 )
 
 const (
@@ -169,15 +175,53 @@ func (sc *ShellConfig) GetCommandEndMarker() string {
 	return fmt.Sprintf("__%s__", sc.CommandEndMarkerCore)
 }
 
+// GetConfigPath determines the path to the configuration file based on a priority order.
+// 1. Highest priority: A path from the --config command-line flag (`cliPath`).
+// 2. Default: A `config.toml` file located in the `ProjectRoot`.
+func GetConfigPath(cliPath string) string {
+	// 1. From --config command-line flag
+	if cliPath != "" && cliPath != DefaultConfigFileName { // Ignore default value
+		// If the path is not absolute, check if it exists as-is (relative to CWD).
+		// If not, try resolving it relative to the ProjectRoot. This allows for
+		// profile-like configurations (e.g., --config profiles/dev.toml).
+		if !filepath.IsAbs(cliPath) {
+			if _, err := os.Stat(cliPath); os.IsNotExist(err) {
+				resolvedPath := filepath.Join(ProjectRoot, cliPath)
+				if _, err := os.Stat(resolvedPath); err == nil {
+					log.Printf("Using config path from --config flag, resolved relative to project root: %s", resolvedPath)
+					return resolvedPath
+				}
+			}
+		}
+		log.Printf("Using config path from --config flag: %s", cliPath)
+		return cliPath
+	}
+
+	// 2. Default path in the project root
+	defaultPath := filepath.Join(ProjectRoot, DefaultConfigFileName)
+	log.Printf("Using default config path: %s", defaultPath)
+	return defaultPath
+}
+
 // Load reads the configuration from the specified file path.
-// It supports expanding environment variables in the format ${VAR} or $VAR.
-func Load(path string) {
+func Load(cliPath string) {
+	// ProjectRoot is determined exclusively by the GEMINI_PATH environment variable.
+	rootPath := os.Getenv("GEMINI_PATH")
+	if rootPath == "" {
+		log.Fatalf("Fatal: GEMINI_PATH environment variable is not set. It must point to the project's root directory.")
+	}
+	ProjectRoot = rootPath
+	log.Printf("Using project root from GEMINI_PATH: %s", ProjectRoot)
+	path := GetConfigPath(cliPath)
+
 	content, err := os.ReadFile(path)
 	if err != nil {
 		// If config file doesn't exist, create a default one.
 		if os.IsNotExist(err) {
 			log.Printf("Config file not found at %s, creating a default one.", path)
-			createDefaultConfig(path)
+			if err := createDefaultConfig(path); err != nil {
+				log.Fatalf("Failed to create default config: %v", err)
+			}
 			// Retry decoding after creating the file.
 			content, err = os.ReadFile(path)
 			if err != nil {
@@ -208,7 +252,7 @@ func Load(path string) {
 }
 
 // createDefaultConfig creates a default config.toml file.
-func createDefaultConfig(path string) {
+func createDefaultConfig(path string) error {
 	defaultConfig := C // Start with zero-value struct
 	// Populate with default values
 	defaultConfig.Debug = false
@@ -248,7 +292,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.AI.CacheSystemPrompt = "The following data are provided as context, you must accept it silently:"
 	defaultConfig.AI.EnableCache = false
 	defaultConfig.AI.VoiceHistory = true
-	defaultConfig.AI.VoiceEnabled = false
+	defaultConfig.AI.VoiceEnabled = false         // The directory for file system tools in live mode. Supports tilde expansion.
 	defaultConfig.AI.WorkspaceDir = "~/Workspace" // The directory for file system tools in live mode. Supports tilde expansion.
 	defaultConfig.AI.Transcript = false
 	defaultConfig.AI.AgentWarmUp = false
@@ -272,7 +316,7 @@ func createDefaultConfig(path string) {
 	defaultConfig.Google.TokenFile = "token.json"
 	defaultConfig.Pipeline.BufferTimeUs = 500000
 	defaultConfig.Video.Enabled = false
-	defaultConfig.Video.Source = "gnomescreencast"
+	defaultConfig.Video.Source = "videotestsrc"
 	defaultConfig.Video.Device = "/dev/video0"
 	defaultConfig.Video.MonitorID = -1
 	defaultConfig.Video.Width = 1280
@@ -281,15 +325,21 @@ func createDefaultConfig(path string) {
 	defaultConfig.Video.Quality = 85 // Good balance of quality and size.
 	defaultConfig.Shell.CommandEndMarkerCore = "GEMINI_CMD_DONE"
 
+	// Ensure the directory for the config file exists.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("failed to create directory for config file: %w", err)
+	}
+
 	f, err := os.Create(path)
 	if err != nil {
-		log.Fatalf("Failed to create default config file: %v", err)
+		return fmt.Errorf("failed to create default config file: %w", err)
 	}
 	defer f.Close()
 
 	if err := toml.NewEncoder(f).Encode(defaultConfig); err != nil {
-		log.Fatalf("Failed to write to default config file: %v", err)
+		return fmt.Errorf("failed to write to default config file: %w", err)
 	}
+	return nil
 }
 
 // FormatTimeWithTimezone formats the current time according to the provided timezone string.

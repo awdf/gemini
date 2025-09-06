@@ -147,7 +147,7 @@ func parseFlags() *CliFlags {
 	flag.BoolVar(&flags.Live, "live", false, "Enable live responses from the AI")
 	flag.BoolVar(&flags.Voice, "voice", false, "Enable voice responses from the AI")
 	flag.BoolVar(&flags.Transcript, "ts", false, "Enable separate transcription step for voice chat")
-	flag.StringVar(&flags.ConfigPath, "config", "config.toml", "Path to the configuration file")
+	flag.StringVar(&flags.ConfigPath, "config", config.DefaultConfigFileName, "Path to the configuration file")
 
 	flag.Parse()
 
