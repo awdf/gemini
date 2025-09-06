@@ -173,40 +173,6 @@ func TestRetryWithBackoff(t *testing.T) {
 	})
 }
 
-func TestFindCacheableFiles(t *testing.T) {
-	t.Run("directory not found", func(t *testing.T) {
-		files, err := findCacheableFiles("non-existent-dir")
-		assert.NoError(t, err)
-		assert.Nil(t, files)
-	})
-
-	t.Run("empty directory", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		files, err := findCacheableFiles(tmpDir)
-		assert.NoError(t, err)
-		assert.Nil(t, files)
-	})
-
-	t.Run("directory with files", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("a"), 0o644))
-		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "file2.md"), []byte("b"), 0o644))
-		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".gitkeep"), []byte("c"), 0o644))
-		require.NoError(t, os.Mkdir(filepath.Join(tmpDir, "subdir"), 0o755))
-
-		files, err := findCacheableFiles(tmpDir)
-		require.NoError(t, err)
-		require.Len(t, files, 2)
-
-		var names []string
-		for _, f := range files {
-			names = append(names, f.Name())
-		}
-		assert.Contains(t, names, "file1.txt")
-		assert.Contains(t, names, "file2.md")
-	})
-}
-
 func TestRun_Disabled(_ *testing.T) {
 	wg := &sync.WaitGroup{}
 	bus := EventBus.New()

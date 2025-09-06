@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"iter"
 	"log"
 	"mime"
@@ -846,37 +845,6 @@ func (a *AI) AnswerWithVoice(prompt string) error {
 	return fmt.Errorf("no audio data received from API")
 }
 
-// findCacheableFiles scans a directory for files that can be cached or used as initial context.
-// It filters out directories and special files like .gitkeep.
-func findCacheableFiles(cacheDir string) ([]fs.DirEntry, error) {
-	if cacheDir == "" {
-		return nil, nil // Not an error, just no directory configured.
-	}
-
-	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
-		log.Printf("Cache directory '%s' not found, skipping.", cacheDir)
-		return nil, nil
-	}
-
-	files, err := os.ReadDir(cacheDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read cache directory %s: %w", cacheDir, err)
-	}
-
-	var filesToProcess []fs.DirEntry
-	for _, file := range files {
-		if !file.IsDir() && file.Name() != ".gitkeep" {
-			filesToProcess = append(filesToProcess, file)
-		}
-	}
-
-	if len(filesToProcess) == 0 {
-		return nil, nil
-	}
-
-	return filesToProcess, nil
-}
-
 // addInitialContextTurn adds a user message and a canned model response to the
 // conversation history and prints the response to the user.
 func (a *AI) addInitialContextTurn(
@@ -897,9 +865,7 @@ func (a *AI) addInitialContextTurn(
 }
 
 func (a *AI) prepareInitialFiles() {
-	cacheDir := config.C.AI.CacheDir
-
-	filesToInclude, err := findCacheableFiles(cacheDir)
+	filesToInclude, err := config.FindCacheableFiles()
 	if err != nil {
 		log.Printf("ERROR: could not scan for initial files: %v", err)
 		return
@@ -918,8 +884,7 @@ func (a *AI) prepareInitialFiles() {
 	}
 	initialPartsLen := len(parts)
 
-	for _, file := range filesToInclude {
-		localPath := filepath.Join(cacheDir, file.Name())
+	for _, localPath := range filesToInclude {
 		part, err := a.createPartFromFile(localPath)
 		if err != nil {
 			log.Printf("ERROR: could not prepare file %s for history: %v", localPath, err)
@@ -940,9 +905,7 @@ func (a *AI) prepareInitialFiles() {
 // uploadCache finds all files in the configured cache directory, uploads them,
 // and creates a single cache for the model to use in subsequent conversations.
 func (a *AI) uploadCache() {
-	cacheDir := config.C.AI.CacheDir
-
-	filesToCache, err := findCacheableFiles(cacheDir)
+	filesToCache, err := config.FindCacheableFiles()
 	if err != nil {
 		log.Printf("ERROR: could not scan for cacheable files: %v", err)
 		return
@@ -956,8 +919,7 @@ func (a *AI) uploadCache() {
 	log.Printf("Found %d files to upload to model cache.", len(filesToCache))
 
 	var cacheContents []*genai.Content
-	for _, file := range filesToCache {
-		localPath := filepath.Join(cacheDir, file.Name())
+	for _, localPath := range filesToCache {
 		content, err := a.createContentFromFile(localPath)
 		if err != nil {
 			log.Printf("ERROR: could not create content for %s: %v", localPath, err)

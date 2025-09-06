@@ -17,7 +17,8 @@ var (
 	C Config
 	// ProjectRoot is the root directory of the application, typically where the executable is.
 	// It's determined once at startup.
-	ProjectRoot string
+	ProjectRoot    string
+	DefaultProfile string
 )
 
 const (
@@ -187,18 +188,22 @@ func GetConfigPath(cliPath string) string {
 		if !filepath.IsAbs(cliPath) {
 			if _, err := os.Stat(cliPath); os.IsNotExist(err) {
 				resolvedPath := filepath.Join(ProjectRoot, cliPath)
-				if _, err := os.Stat(resolvedPath); err == nil {
+				if _, err := os.Stat(resolvedPath); err == nil { // If it exists relative to project root
 					log.Printf("Using config path from --config flag, resolved relative to project root: %s", resolvedPath)
+					DefaultProfile = filepath.Dir(resolvedPath)
 					return resolvedPath
 				}
 			}
 		}
+		// This handles absolute paths, or relative paths that exist in the CWD.
 		log.Printf("Using config path from --config flag: %s", cliPath)
+		DefaultProfile = filepath.Dir(cliPath)
 		return cliPath
 	}
 
 	// 2. Default path in the project root
 	defaultPath := filepath.Join(ProjectRoot, DefaultConfigFileName)
+	DefaultProfile = filepath.Dir(defaultPath)
 	log.Printf("Using default config path: %s", defaultPath)
 	return defaultPath
 }
@@ -495,4 +500,47 @@ func GetSafePath(userPath string) (string, error) {
 	}
 
 	return finalPath, nil
+}
+
+func GetLogPath() string {
+	logFilePath := C.LogFile
+	if !filepath.IsAbs(logFilePath) {
+		logFilePath = filepath.Join(ProjectRoot, logFilePath)
+	}
+	return logFilePath
+}
+
+// FindCacheableFiles scans a directory for files that can be cached or used as initial context.
+// It filters out directories and special files like .gitkeep.
+func FindCacheableFiles() ([]string, error) {
+	cacheDir := C.AI.CacheDir
+	if cacheDir == "" {
+		return nil, nil // Not an error, just no directory configured.
+	}
+
+	// The cache directory is always resolved relative to the profile's location.
+	cacheDir = filepath.Join(DefaultProfile, cacheDir)
+
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		log.Printf("Cache directory '%s' not found, skipping.", cacheDir)
+		return nil, nil
+	}
+
+	files, err := os.ReadDir(cacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read cache directory %s: %w", cacheDir, err)
+	}
+
+	var filesToProcess []string
+	for _, file := range files {
+		if !file.IsDir() && file.Name() != ".gitkeep" {
+			filesToProcess = append(filesToProcess, filepath.Join(cacheDir, file.Name()))
+		}
+	}
+
+	if len(filesToProcess) == 0 {
+		return nil, nil
+	}
+
+	return filesToProcess, nil
 }

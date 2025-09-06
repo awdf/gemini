@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1047,8 +1046,7 @@ func (l *LiveAI) handleShellOutput(output string) {
 // sendInitialFiles reads files from the cache directory and sends them as the first
 // user turn in the live session.
 func (l *LiveAI) sendInitialFiles() {
-	cacheDir := config.C.AI.CacheDir
-	filesToInclude, err := findCacheableFiles(cacheDir)
+	filesToInclude, err := config.FindCacheableFiles()
 	if err != nil {
 		log.Printf("ERROR: could not scan for initial files: %v", err)
 		return
@@ -1067,8 +1065,7 @@ func (l *LiveAI) sendInitialFiles() {
 	}
 
 	// Send each file as a separate turn.
-	for _, file := range filesToInclude {
-		localPath := filepath.Join(cacheDir, file.Name())
+	for _, localPath := range filesToInclude {
 		document, err := l.client.Files.UploadFromPath(l.ctx, localPath, &genai.UploadFileConfig{
 			MIMEType: "text/plain",
 		})

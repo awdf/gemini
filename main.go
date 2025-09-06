@@ -234,9 +234,10 @@ func (app *App) shutdown() {
 func (app *App) initLogging() {
 	// Set up logging
 	var err error
-	app.logFile, err = os.OpenFile(config.C.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	logFilePath := config.GetLogPath()
+	app.logFile, err = os.OpenFile(logFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
-		log.Fatalf("error opening log file %s: %v", config.C.LogFile, err)
+		log.Fatalf("error opening log file %s: %v", logFilePath, err)
 	}
 	log.SetOutput(app.logFile)
 	log.SetPrefix(" ")

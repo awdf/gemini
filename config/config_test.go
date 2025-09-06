@@ -169,3 +169,47 @@ func TestGetConfigPath(t *testing.T) {
 		assert.Equal(t, relCliPath, path, "should prefer path relative to CWD over ProjectRoot")
 	})
 }
+
+func TestFindCacheableFiles(t *testing.T) {
+	originalDefaultProfile := DefaultProfile
+	originalCacheDir := C.AI.CacheDir
+	defer func() {
+		DefaultProfile = originalDefaultProfile
+		C.AI.CacheDir = originalCacheDir
+	}()
+
+	t.Run("directory not found", func(t *testing.T) {
+		DefaultProfile = t.TempDir()
+		C.AI.CacheDir = "non-existent-dir"
+		files, err := FindCacheableFiles()
+		assert.NoError(t, err)
+		assert.Nil(t, files)
+	})
+
+	t.Run("empty directory", func(t *testing.T) {
+		DefaultProfile = t.TempDir()
+		C.AI.CacheDir = "." // Relative to DefaultProfile
+		files, err := FindCacheableFiles()
+		assert.NoError(t, err)
+		assert.Nil(t, files)
+	})
+
+	t.Run("directory with files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("a"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "file2.md"), []byte("b"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".gitkeep"), []byte("c"), 0o644))
+		require.NoError(t, os.Mkdir(filepath.Join(tmpDir, "subdir"), 0o755))
+
+		files, err := FindCacheableFiles()
+		require.NoError(t, err)
+		DefaultProfile = tmpDir
+		C.AI.CacheDir = "." // The cache dir is the profile dir itself.
+		files, err = FindCacheableFiles()
+		require.Len(t, files, 2, "should find two valid files")
+
+		// The function should now return full paths.
+		assert.Contains(t, files, filepath.Join(tmpDir, "file1.txt"))
+		assert.Contains(t, files, filepath.Join(tmpDir, "file2.md"))
+	})
+}
