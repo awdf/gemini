@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1064,16 +1065,51 @@ func (l *LiveAI) sendInitialFiles() {
 		parts = append(parts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
 	}
 
-	// Send each file as a separate turn.
-	for _, localPath := range filesToInclude {
-		document, err := l.client.Files.UploadFromPath(l.ctx, localPath, &genai.UploadFileConfig{
-			MIMEType: "text/plain",
-		})
+	// 1. List all existing files, clean up ones without a display name, and build a map of existing files.
+	log.Println("Checking for existing files on the server...")
+	serverFiles := make(map[string]*genai.File)
+	// Use the All method to get an iterator that handles pagination automatically.
+	iter := l.client.Files.All(l.ctx)
+	for file, err := range iter {
 		if err != nil {
-			log.Printf("ERROR: could not read file %s for live session context: %v", localPath, err)
-			continue
+			// It's important to handle potential errors during iteration.
+			log.Printf("ERROR: failed to retrieve file from server list: %v", err)
+			break // Stop iterating on error
 		}
-		log.Printf("Cache file %s succefully uploaded", localPath)
+
+		if file.DisplayName == "" {
+			log.Printf("  - Deleting existing file without DisplayName: %s", file.Name)
+			if _, err := l.client.Files.Delete(l.ctx, file.Name, nil); err != nil {
+				log.Printf("ERROR: failed to delete file %s: %v", file.Name, err)
+			}
+		} else {
+			log.Printf("  - Found existing file: %s (DisplayName: %s)", file.Name, file.DisplayName)
+			serverFiles[file.DisplayName] = file
+		}
+	}
+	log.Printf("Finished checking server files. Found %d files with display names.", len(serverFiles))
+
+	// 2. Process local files: use existing if DisplayName matches, otherwise upload.
+	for _, localPath := range filesToInclude {
+		baseName := filepath.Base(localPath)
+		var document *genai.File
+
+		if existingFile, ok := serverFiles[baseName]; ok {
+			log.Printf("Using existing server file for '%s'", baseName)
+			document = existingFile
+		} else {
+			log.Printf("Uploading new file for '%s'", baseName)
+			uploadedDoc, uploadErr := l.client.Files.UploadFromPath(l.ctx, localPath, &genai.UploadFileConfig{
+				MIMEType:    "text/plain",
+				DisplayName: baseName,
+			})
+			if uploadErr != nil {
+				log.Printf("ERROR: could not upload file %s for live session context: %v", localPath, uploadErr)
+				continue
+			}
+			document = uploadedDoc
+		}
+
 		part := genai.NewPartFromURI(document.URI, document.MIMEType)
 		parts = append(parts, part)
 	}
