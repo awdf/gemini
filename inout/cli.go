@@ -196,7 +196,7 @@ func NewCLI(wg *sync.WaitGroup, cmdChan chan<- string, bus *EventBus.Bus, aiEnab
 		cmdChan:             cmdChan,
 		bus:                 bus,
 		formatter:           NewFormatter(),
-		muted:               true,
+		muted:               false,
 		isSystemShellActive: false,
 		aiEnabled:           aiEnabled,
 		ready:               false,
@@ -494,19 +494,18 @@ func (c *CLI) handleBusEvents(event string) {
 	command := parts[0]
 
 	switch command {
+	case "block": // Critical flow blocking
+		c.ready = false
+	case "ready": // Critical flow unblocking
+		c.ready = true
+		config.DebugPrintln("CLI Initial prompt preparing to draw.")
+		c.draw() // Initial prompt
 	case "mute": // Normal flow
 		c.muted = true
 	case "draw": // Normal flow
 		config.DebugPrintln("CLI received draw event, preparing to draw prompt.")
 		c.muted = false
 		c.draw()
-	case "block": // Critical flow blocking
-		c.ready = false
-		c.muted = true
-	case "ready": // Critical flow unblocking
-		c.ready = true
-		c.muted = false
-		c.draw() // Initial prompt
 	case "afk":
 		if c.systemAFK {
 			handleAfk(c, nil)
@@ -740,7 +739,7 @@ func (c *CLI) runPromptModeLoop() {
 			return
 		case <-c.drawCompleteChan:
 			if c.drawCompleteBlock {
-				log.Println("WARNING: Prompt already exist and blocks console.")
+				log.Println("WARNING: Prompt exist. Draw aborted.")
 				continue
 			}
 
@@ -851,7 +850,7 @@ func (c *CLI) draw() {
 		promptStr := fmt.Sprintf(promptPatern, c.mode)
 		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
 		c.terminalMu.RUnlock()
-		if c.mode != SystemMode && c.drawCompleteBlock {
+		if c.drawCompleteBlock {
 			log.Println("WARNING: Prompt already exist and blocks console.")
 			// reset current text prompt to draw new after voice
 			if _, err := c.terminal.Write([]byte{'\n'}); err != nil {

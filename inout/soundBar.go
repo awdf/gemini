@@ -39,7 +39,7 @@ func NewRMSDisplay(wg *sync.WaitGroup, rmsChan <-chan float64, bus *EventBus.Bus
 		rmsChan:              rmsChan,
 		bus:                  bus,
 		ready:                false,
-		muted:                true,
+		muted:                false,
 	}
 }
 
@@ -83,20 +83,17 @@ func (d *RMSDisplay) Run() {
 		config.DebugPrintf("Bar received event: %s\n", event)
 		d.Mu.Lock() // Full lock to write state
 		defer d.Mu.Unlock()
+		// Sound bar ignore Draw event, it must be drawn on Show event
 		switch {
-		case strings.HasPrefix(event, "mute:"):
-			d.muted = true
+		case strings.HasPrefix(event, "ready:"):
+			d.ready = true
 		case strings.HasPrefix(event, "block:"):
 			d.ready = false
+		case strings.HasPrefix(event, "mute:"):
 			d.muted = true
-		case strings.HasPrefix(event, "draw:"):
-			d.muted = false
 		case strings.HasPrefix(event, "show:"):
 			d.muted = false
 			// The main loop's ticker will handle the redraw, avoiding deadlocks.
-		case strings.HasPrefix(event, "ready:"):
-			d.ready = true
-			d.muted = false
 		default:
 			config.DebugPrintf("Bar drop event: %s\n", event)
 		}
