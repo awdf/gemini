@@ -50,8 +50,16 @@ func GetClient(ctx context.Context) (*http.Client, error) {
 // createGoogleClient contains the logic to perform the OAuth2 flow.
 // It's called only once by the GetClient singleton.
 func createGoogleClient(ctx context.Context) (*http.Client, error) {
-	credentialsFile := config.C.Google.CredentialsFile
-	tokenFile := config.C.Google.TokenFile
+	credentialsFile, err := config.ExpandPath(config.C.Google.CredentialsFile)
+	if err != nil {
+		return nil, fmt.Errorf("could not expand credentials file path: %w", err)
+	}
+	tokenFile, err := config.ExpandPath(config.C.Google.TokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("could not expand token file path: %w", err)
+	}
+
+	log.Printf("Using Google credentials file: %s", credentialsFile)
 
 	b, err := os.ReadFile(credentialsFile)
 	if err != nil {

@@ -442,7 +442,7 @@ func (v *VADConfig) WarmUpDuration() time.Duration {
 }
 
 // expandPath handles tilde expansion for file paths (e.g., "~/Documents").
-func expandPath(path string) (string, error) {
+func ExpandPath(path string) (string, error) {
 	if !strings.HasPrefix(path, "~") {
 		return path, nil
 	}
@@ -473,7 +473,7 @@ func GetSafePath(userPath string) (string, error) {
 		return "", fmt.Errorf("workspace directory is not configured")
 	}
 
-	expandedBaseDir, err := expandPath(baseDir)
+	expandedBaseDir, err := ExpandPath(baseDir)
 	if err != nil {
 		return "", fmt.Errorf("could not expand workspace directory path '%s': %w", baseDir, err)
 	}

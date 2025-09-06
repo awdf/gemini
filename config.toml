@@ -119,9 +119,9 @@ UpdateIntervalMs = 50
 # Enable Google Workspace integrations (e.g., Gmail).
 Enabled = true
 # Path to the client_secret.json from Google Cloud Console.
-CredentialsFile = "/home/awdf/Workspace/go/src/client_secret.json"
+CredentialsFile = "~/client_secret.json"
 # Path to store the generated OAuth2 token.
-TokenFile = "/home/awdf/Workspace/go/src/token.json"
+TokenFile = "~/token.json"
 
 [pipeline]
 # GStreamer source buffer time in microseconds. Helps prevent race conditions.
