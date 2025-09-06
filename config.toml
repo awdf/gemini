@@ -2,10 +2,10 @@
 LogFile = "gemini.log"
 
 # Enable or disable debug logging for all modules.
-Debug = true
+Debug = false
 Trace = false
 LiveAI = false
-Mode = "prompt"
+Mode = "video"
 
 [ai]
 # The API Key for the AI service. Can be set directly or via an environment variable.
@@ -136,7 +136,7 @@ Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"
 
 [video]
 Enabled = true          # Set to true to enable video streaming
-Source = "videotestsrc" # Use "pipewiresrc" for screen capture, "videotestsrc" for testing
+Source = "pipewiresrc" # Use "pipewiresrc" for screen capture, "videotestsrc" for testing
 # Device = ""           # pipewiresrc generally doesn't use this, leave empty or commented
 MonitorID = 0           # pipewiresrc generally doesn't use this, leave as default or adjust if your PipeWire setup needs it
 Width = 640             # Good balance for visual context

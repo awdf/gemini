@@ -57,6 +57,7 @@ func NewVideoStreamComponent(
 	}
 
 	// Configure source-specific properties
+
 	switch config.C.Video.Source {
 	case "v4l2src":
 		if config.C.Video.Device != "" {
@@ -65,6 +66,7 @@ func NewVideoStreamComponent(
 		} else {
 			log.Println("Using v4l2src with default device.")
 		}
+		helpers.Verify(v.pipeline.Add(source))
 	case "gnomescreencast":
 		if config.C.Video.MonitorID >= 0 {
 			source.SetProperty("monitor-id", uint(config.C.Video.MonitorID))
@@ -72,63 +74,45 @@ func NewVideoStreamComponent(
 		} else {
 			log.Println("Using gnomesscreencast (default monitor).")
 		}
-	case "pipewiresrc": // No monitor-id property for pipewiresrc
-		log.Println("Using pipewiresrc (PipeWire video source). It typically does not use 'monitor-id' property.")
+		helpers.Verify(v.pipeline.Add(source))
+	case "pipewiresrc":
+		// By default, pipewiresrc will try to connect to a default video source,
+		// like a webcam. do-timestamp=true is critical for ensuring buffers have correct
+		// timestamps for synchronization in the rest of the pipeline.
+		source.SetProperty("do-timestamp", true)
+		log.Println("Using pipewiresrc, which will attempt to connect to the default video source (e.g., a webcam).")
+		helpers.Verify(v.pipeline.Add(source))
 	case "videotestsrc":
 		log.Println("Using videotestsrc for testing purposes.")
 		source.SetProperty("is-live", true) // Critical for test sources in live pipelines
+		helpers.Verify(v.pipeline.Add(source))
 	default:
 		log.Printf("WARNING: Unknown video source '%s'. Proceeding with default properties.", config.C.Video.Source)
+		helpers.Verify(v.pipeline.Add(source))
 	}
 	// Common elements for processing and encoding into JPEG frames
-	// Add a generic capsfilter right after the source. This is a common pattern to
-	// resolve negotiation errors with live sources, as it simplifies the initial
-	// negotiation for the source element, matching the working command-line prototype.
-	sourceCapsFilter := helpers.Check(gst.NewElement("capsfilter"))
-	helpers.Verify(sourceCapsFilter.SetProperty("caps", gst.NewCapsFromString("video/x-raw")))
 	converter := helpers.Check(gst.NewElement("videoconvert"))
-	scaler := helpers.Check(gst.NewElement("videoscale"))
 	rate := helpers.Check(gst.NewElement("videorate"))
-	queue := helpers.Check(gst.NewElement("queue"))
 
-	// Configure the capsfilter to enforce the desired output format at creation time.
-	// This drives the videoscale and videorate elements upstream.
-	finalCaps := gst.NewCapsFromString(fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1",
-		config.C.Video.Width, config.C.Video.Height, config.C.Video.FrameRate))
-	prop := map[string]any{
-		"caps": finalCaps,
-	}
-	capsFilter := helpers.Check(gst.NewElementWithProperties("capsfilter", prop))
+	// Configure the capsfilter to enforce the desired output framerate.
+	// This drives the videorate element upstream.
+	finalCaps := gst.NewCapsFromString(fmt.Sprintf("video/x-raw,framerate=%d/1", config.C.Video.FrameRate))
+	capsFilter := helpers.Check(gst.NewElement("capsfilter"))
+	helpers.Verify(capsFilter.SetProperty("caps", finalCaps))
+
 	encoder := helpers.Check(gst.NewElement("jpegenc"))
 	v.appSink = helpers.Check(app.NewAppSink())
 
-	// Configure encoder quality
-	if config.C.Video.Quality >= 0 && config.C.Video.Quality <= 100 {
-		helpers.Verify(encoder.SetProperty("quality", config.C.Video.Quality))
-		log.Printf("JPEG encoder quality set to %d.", config.C.Video.Quality)
-	} else {
-		log.Printf("WARNING: Invalid JPEG quality %d. Using default encoder quality.", config.C.Video.Quality)
-	}
-
-	// Configure app.Sink
-	v.appSink.SetDrop(true)    // Drop old frames to always get the latest
-	v.appSink.SetMaxBuffers(1) // Only keep the latest frame
-
 	// Build the pipeline
-	if err = v.pipeline.AddMany(source, sourceCapsFilter, converter, scaler, rate, queue, capsFilter, encoder, v.appSink.Element); err != nil {
+	// The source element is added separately based on its type.
+	if err = v.pipeline.AddMany(converter, rate, capsFilter, encoder, v.appSink.Element); err != nil {
 		return nil, fmt.Errorf("failed to add GStreamer elements to pipeline: %w", err)
 	}
 
-	// Link the elements to precisely match the working command-line prototype.
-	// An initial generic capsfilter stabilizes the source negotiation. The 'queue'
-	// element then decouples the upstream elements from the final format-enforcing
-	// capsfilter, which is a critical pattern for robust programmatic pipelines.
-	helpers.Verify(source.Link(sourceCapsFilter))
-	helpers.Verify(sourceCapsFilter.Link(converter))
-	helpers.Verify(converter.Link(scaler))
-	helpers.Verify(scaler.Link(rate))
-	helpers.Verify(rate.Link(queue))
-	helpers.Verify(queue.Link(capsFilter))
+	// Link the elements to form the processing chain.
+	helpers.Verify(source.Link(converter))
+	helpers.Verify(converter.Link(rate))
+	helpers.Verify(rate.Link(capsFilter))
 	helpers.Verify(capsFilter.Link(encoder))
 	helpers.Verify(encoder.Link(v.appSink.Element))
 

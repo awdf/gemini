@@ -59,10 +59,6 @@ func TestVideoStreamComponent_Integration_RealSource(t *testing.T) {
 func TestVideoStreamComponent_Run_Integration_RealSource(t *testing.T) {
 	setupIntegrationTest(t)
 
-	if config.C.Video.Source == "pipewiresrc" {
-		t.Skip("Skipping test with 'pipewiresrc' as it requires user interaction.")
-	}
-
 	_, err := gst.NewElement(config.C.Video.Source)
 	if err != nil {
 		t.Skipf("Skipping integration test: could not create configured video source '%s'. Error: %v", config.C.Video.Source, err)
