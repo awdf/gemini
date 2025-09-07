@@ -30,6 +30,7 @@ type VideoStreamComponent struct {
 
 // NewVideoStreamComponent creates and initializes a new video streaming component.
 // Example Pipeline: gst-launch-1.0 pipewiresrc ! "video/x-raw" ! videoconvert ! videoscale ! videorate ! queue ! "video/x-raw,width=640,height=480,framerate=10/1" ! jpegenc ! fakesink -v
+// Example: gst-launch-1.0 v4l2src device=/dev/video2 ! videoconvert ! autovideosink
 func NewVideoStreamComponent(
 	bus *EventBus.Bus,
 	frameChan chan<- []byte, // Provided by LiveAI
@@ -57,7 +58,6 @@ func NewVideoStreamComponent(
 	}
 
 	// Configure source-specific properties
-
 	switch config.C.Video.Source {
 	case "v4l2src":
 		if config.C.Video.Device != "" {
@@ -67,24 +67,18 @@ func NewVideoStreamComponent(
 			log.Println("Using v4l2src with default device.")
 		}
 		helpers.Verify(v.pipeline.Add(source))
-	case "gnomescreencast":
-		if config.C.Video.MonitorID >= 0 {
-			source.SetProperty("monitor-id", uint(config.C.Video.MonitorID))
-			log.Printf("Using gnomesscreencast with monitor-id: %d", config.C.Video.MonitorID)
-		} else {
-			log.Println("Using gnomesscreencast (default monitor).")
-		}
-		helpers.Verify(v.pipeline.Add(source))
 	case "pipewiresrc":
-		// By default, pipewiresrc will try to connect to a default video source,
-		// like a webcam. do-timestamp=true is critical for ensuring buffers have correct
-		// timestamps for synchronization in the rest of the pipeline.
 		source.SetProperty("do-timestamp", true)
-		log.Println("Using pipewiresrc, which will attempt to connect to the default video source (e.g., a webcam).")
+		if config.C.Video.MonitorID != -1 {
+			source.SetProperty("monitor-id", uint(config.C.Video.MonitorID))
+			log.Printf("Using pipewiresrc with monitor-id: %d", config.C.Video.MonitorID)
+		} else {
+			log.Println("Using pipewiresrc with default device (webcam).")
+		}
 		helpers.Verify(v.pipeline.Add(source))
 	case "videotestsrc":
 		log.Println("Using videotestsrc for testing purposes.")
-		source.SetProperty("is-live", true) // Critical for test sources in live pipelines
+		source.SetProperty("is-live", true)
 		helpers.Verify(v.pipeline.Add(source))
 	default:
 		log.Printf("WARNING: Unknown video source '%s'. Proceeding with default properties.", config.C.Video.Source)
@@ -92,26 +86,26 @@ func NewVideoStreamComponent(
 	}
 	// Common elements for processing and encoding into JPEG frames
 	converter := helpers.Check(gst.NewElement("videoconvert"))
+	scaler := helpers.Check(gst.NewElement("videoscale"))
 	rate := helpers.Check(gst.NewElement("videorate"))
 
-	// Configure the capsfilter to enforce the desired output framerate.
-	// This drives the videorate element upstream.
-	finalCaps := gst.NewCapsFromString(fmt.Sprintf("video/x-raw,framerate=%d/1", config.C.Video.FrameRate))
+	finalCapsStr := fmt.Sprintf("video/x-raw,framerate=%d/1,width=%d,height=%d",
+		config.C.Video.FrameRate, config.C.Video.Width, config.C.Video.Height)
+	finalCaps := gst.NewCapsFromString(finalCapsStr)
 	capsFilter := helpers.Check(gst.NewElement("capsfilter"))
 	helpers.Verify(capsFilter.SetProperty("caps", finalCaps))
 
 	encoder := helpers.Check(gst.NewElement("jpegenc"))
+	helpers.Verify(encoder.SetProperty("quality", config.C.Video.Quality))
 	v.appSink = helpers.Check(app.NewAppSink())
 
-	// Build the pipeline
-	// The source element is added separately based on its type.
-	if err = v.pipeline.AddMany(converter, rate, capsFilter, encoder, v.appSink.Element); err != nil {
+	if err = v.pipeline.AddMany(converter, scaler, rate, capsFilter, encoder, v.appSink.Element); err != nil {
 		return nil, fmt.Errorf("failed to add GStreamer elements to pipeline: %w", err)
 	}
 
-	// Link the elements to form the processing chain.
 	helpers.Verify(source.Link(converter))
-	helpers.Verify(converter.Link(rate))
+	helpers.Verify(converter.Link(scaler))
+	helpers.Verify(scaler.Link(rate))
 	helpers.Verify(rate.Link(capsFilter))
 	helpers.Verify(capsFilter.Link(encoder))
 	helpers.Verify(encoder.Link(v.appSink.Element))
