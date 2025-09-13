@@ -382,10 +382,7 @@ func (l *LiveAI) CloseSession() {
 	if l.session == nil {
 		return
 	}
-	if l.responseTimer != nil {
-		l.responseTimer.Stop()
-		l.responseTimer = nil
-	}
+	l.stopResponseTimer()
 	l.session.Close()
 	l.session = nil
 	l.Online = false
@@ -764,10 +761,7 @@ func (l *LiveAI) handleResponses() {
 			if msg.ServerContent.ModelTurn != nil {
 				if !inModelTurn {
 					// The model has started its turn. We can cancel the timeout.
-					if l.responseTimer != nil {
-						l.responseTimer.Stop()
-						l.responseTimer = nil
-					}
+					l.stopResponseTimer()
 
 					// Do once per content block
 					log.Println("Live model stream generation started.")
@@ -1314,10 +1308,7 @@ func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 	// However, if it's just shell or video data streaming in, that's part of
 	// the current context, not an interruption, so we don't stop the timer.
 	if streamType == AudioStream {
-		if l.responseTimer != nil {
-			l.responseTimer.Stop()
-			l.responseTimer = nil
-		}
+		l.stopResponseTimer()
 	}
 
 	if !online {
@@ -1356,13 +1347,7 @@ func (l *LiveAI) notifyActivityStart(streamType StreamType) {
 func (l *LiveAI) notifyActivityEnd(streamType StreamType) {
 	online := l.Online
 
-	if l.responseTimer != nil {
-		l.responseTimer.Stop()
-	}
-	l.responseTimer = time.AfterFunc(30*time.Second, func() {
-		l.formatter.PrintNl("Model not provided answer.", inout.ColorDarkRed)
-		(*l.bus).Publish(config.MainTopic, "draw:ai.timeout")
-	})
+	l.startResponseTimer()
 
 	if !online {
 		return
@@ -1402,6 +1387,31 @@ func (l *LiveAI) notifyActivityEnd(streamType StreamType) {
 	if err != nil {
 		log.Printf(sendLiveInputErrorPrefix+"%v", err) // Corrected usage
 	}
+}
+
+// stopResponseTimer stops and nils the response timer if it's active.
+func (l *LiveAI) stopResponseTimer() {
+	if l.mode == inout.SystemMode {
+		return // No response timer in system mode
+	}
+
+	if l.responseTimer != nil {
+		l.responseTimer.Stop()
+		l.responseTimer = nil
+	}
+}
+
+// startResponseTimer starts a new response timer, stopping any existing one.
+func (l *LiveAI) startResponseTimer() {
+	if l.mode == inout.SystemMode {
+		return // No response timer in system mode
+	}
+
+	l.stopResponseTimer() // Ensure any existing timer is stopped.
+	l.responseTimer = time.AfterFunc(30*time.Second, func() {
+		l.formatter.PrintNl("Model not provided answer.", inout.ColorDarkRed)
+		(*l.bus).Publish(config.MainTopic, "draw:ai.timeout")
+	})
 }
 
 // executeToolCalls handles a request from the model to execute one or more tool calls.
