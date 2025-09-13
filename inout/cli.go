@@ -739,6 +739,7 @@ func (c *CLI) runPromptModeLoop() {
 			return
 		case <-c.drawCompleteChan:
 			if c.drawCompleteBlock {
+				// Probably it is inpropirate prompt drawing
 				log.Println("WARNING: Prompt exist. Draw aborted.")
 				continue
 			}
@@ -851,15 +852,12 @@ func (c *CLI) draw() {
 		c.terminal.SetPrompt(promptStr) // Update the prompt for the next ReadLine call.
 		c.terminalMu.RUnlock()
 		if c.drawCompleteBlock {
-			log.Println("WARNING: Prompt already exist and blocks console.")
-			// reset current text prompt to draw new after voice
-			if _, err := c.terminal.Write([]byte{'\n'}); err != nil {
-				log.Printf("Can't reset current text prompt: %v", err)
-			} else {
-				c.drawCompleteBlock = false
-			}
+			log.Println("CLI Prompt owerriden, redraw prompt.")
+			fmt.Printf(promptPatern, c.mode)
+		} else {
+			// Prompt was correctly finished and we can continue work with new prompt
+			helpers.SafeSend(c.drawCompleteChan, struct{}{}) // Signal the prompt draw new prompt.
 		}
-		helpers.SafeSend(c.drawCompleteChan, struct{}{})    // Signal the prompt loop to continue.
 		(*c.bus).Publish(config.MainTopic, "show:cli.draw") // Draw soundbar
 	}
 }

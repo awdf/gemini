@@ -5,7 +5,7 @@ LogFile = "gemini.log"
 Debug = false
 Trace = false
 LiveAI = false
-Mode = "video"
+Mode = "prompt" # Options: "prompt", "shell", "video"
 
 [ai]
 # The API Key for the AI service. Can be set directly or via an environment variable.
@@ -132,16 +132,16 @@ BufferTimeUs = 500000
 #
 # Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 # Device = "alsa_output.usb-JBL_Quantum_400_0079CM-0265355EM-00.analog-stereo.monitor"
-Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"
+ Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"
 
 [video]
 Enabled = true          # Set to true to enable video streaming
 Source = "v4l2src"      # Use "v4l2src" for screen capture, "videotestsrc" for testing
-Device = "/dev/video2"  # pipewiresrc generally doesn't use this, leave empty or commented
+Device = "/dev/video0"  # pipewiresrc generally doesn't use this, leave empty or commented
 MonitorID = -1          # pipewiresrc generally doesn't use this, leave as default or adjust if your PipeWire setup needs it
 Width = 640             # Good balance for visual context
 Height = 440            # Adjust to maintain aspect ratio if needed (e.g., 360 for 16:9 with 640 width)
-FrameRate = 10          # A good default balance. Can be increased for smoother video.
+FrameRate = 2           # A good default balance. Can be increased for smoother video.
 Quality = 85            # JPEG quality (0-100). 85 is a good default balance of quality and size.
 
 [shell]

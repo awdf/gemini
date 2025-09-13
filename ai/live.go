@@ -982,7 +982,10 @@ func (l *LiveAI) handleEvents(event string) {
 			if payload == inout.VideoMode {
 				if !config.C.Video.Enabled {
 					log.Println("Video mode selected, but video is disabled in config.")
-				} else if l.videoStream == nil {
+					return
+				}
+
+				if l.videoStream == nil {
 					l.startVideoStream()
 					// Video activity starts automatically on first frame arrived.
 				}

@@ -66,24 +66,21 @@ func NewVideoStreamComponent(
 		} else {
 			log.Println("Using v4l2src with default device.")
 		}
-		helpers.Verify(v.pipeline.Add(source))
 	case "pipewiresrc":
 		source.SetProperty("do-timestamp", true)
 		if config.C.Video.MonitorID != -1 {
 			source.SetProperty("monitor-id", uint(config.C.Video.MonitorID))
 			log.Printf("Using pipewiresrc with monitor-id: %d", config.C.Video.MonitorID)
 		} else {
-			log.Println("Using pipewiresrc with default device (webcam).")
+			log.Println("Using pipewiresrc with default device (screen capture).")
 		}
-		helpers.Verify(v.pipeline.Add(source))
 	case "videotestsrc":
 		log.Println("Using videotestsrc for testing purposes.")
 		source.SetProperty("is-live", true)
-		helpers.Verify(v.pipeline.Add(source))
 	default:
 		log.Printf("WARNING: Unknown video source '%s'. Proceeding with default properties.", config.C.Video.Source)
-		helpers.Verify(v.pipeline.Add(source))
 	}
+
 	// Common elements for processing and encoding into JPEG frames
 	converter := helpers.Check(gst.NewElement("videoconvert"))
 	scaler := helpers.Check(gst.NewElement("videoscale"))
@@ -99,7 +96,8 @@ func NewVideoStreamComponent(
 	helpers.Verify(encoder.SetProperty("quality", config.C.Video.Quality))
 	v.appSink = helpers.Check(app.NewAppSink())
 
-	if err = v.pipeline.AddMany(converter, scaler, rate, capsFilter, encoder, v.appSink.Element); err != nil {
+	// Add all elements to the pipeline at once.
+	if err = v.pipeline.AddMany(source, converter, scaler, rate, capsFilter, encoder, v.appSink.Element); err != nil {
 		return nil, fmt.Errorf("failed to add GStreamer elements to pipeline: %w", err)
 	}
 
