@@ -130,7 +130,10 @@ type CLI struct {
 }
 
 // commandHandler defines the function signature for a CLI command handler.
-type commandHandler func(c *CLI, args []string) (hide bool, exit bool)
+type commandHandler func(c *CLI, args []string) (
+	hide bool,
+	exit bool,
+)
 
 // promptRequest is used to pass a text prompt and receive a string response
 // between the blocking PromptForInput method and the non-blocking Run loop.
@@ -543,7 +546,7 @@ func (c *CLI) startStdinReader(inputChan chan<- byte, done <-chan struct{}, wg *
 			select {
 			case inputChan <- b:
 			case <-done:
-				// We were cancelled after reading a byte but before we could send it.
+				// We were canceled after reading a byte but before we could send it.
 				// We must put the byte back into the buffer so the next reader can see it.
 				if err := c.stdinReader.UnreadByte(); err != nil {
 					log.Printf("FATAL: could not unread byte, input state corrupted: %v", err)
@@ -862,64 +865,94 @@ func (c *CLI) draw() {
 	}
 }
 
-func handleSave(c *CLI, _ []string) (hide bool, exit bool) {
+func handleSave(c *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	(*c.bus).Publish(config.AITopic, "save:history.txt")
 	c.formatter.PrintRaw("Conversation history save requested to history.txt.\n")
 	return false, false
 }
 
-func handlePause(c *CLI, _ []string) (hide bool, exit bool) {
+func handlePause(c *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	(*c.bus).Publish(config.MainTopic, "pause:cli.handlePause")
 	c.formatter.PrintRaw("VAD pause toggled.\n")
 	return false, false
 }
 
-func handleDebug(_ *CLI, _ []string) (hide bool, exit bool) {
+func handleDebug(_ *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	config.C.Debug = !config.C.Debug
 	log.Printf("Debug mode set to: %t", config.C.Debug)
 	return false, false
 }
 
-func handleVoice(c *CLI, _ []string) (hide bool, exit bool) {
+func handleVoice(c *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	config.C.AI.VoiceEnabled = !config.C.AI.VoiceEnabled
 	log.Printf("Voice output set to: %t", config.C.AI.VoiceEnabled)
 	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleVoice")
 	return false, false
 }
 
-func handleTools(c *CLI, _ []string) (hide bool, exit bool) {
+func handleTools(c *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	config.C.AI.EnableTools = !config.C.AI.EnableTools
 	log.Printf("AI tools enabled set to: %t", config.C.AI.EnableTools)
 	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleTools")
 	return false, false
 }
 
-func handleTranscript(c *CLI, _ []string) (hide bool, exit bool) {
+func handleTranscript(c *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	config.C.AI.Transcript = !config.C.AI.Transcript
 	log.Printf("Separate transcription step set to: %t", config.C.AI.Transcript)
 	(*c.bus).Publish(config.AITopic, "restart_session:cli.handleTranscript")
 	return false, false
 }
 
-func handleHistory(_ *CLI, _ []string) (hide bool, exit bool) {
+func handleHistory(_ *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	config.C.AI.VoiceHistory = !config.C.AI.VoiceHistory
 	log.Printf("Voice history set to: %t", config.C.AI.VoiceHistory)
 	return false, false
 }
 
-func handleCache(_ *CLI, _ []string) (hide bool, exit bool) {
+func handleCache(_ *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	config.C.AI.EnableCache = !config.C.AI.EnableCache
 	log.Printf("AI caching set to: %t", config.C.AI.EnableCache)
 	return false, false
 }
 
-func handleThoughts(_ *CLI, _ []string) (hide bool, exit bool) {
+func handleThoughts(_ *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	config.C.AI.Thoughts = !config.C.AI.Thoughts
 	log.Printf("AI thoughts set to: %t", config.C.AI.Thoughts)
 	return false, false
 }
 
-func handleThinking(c *CLI, args []string) (hide bool, exit bool) {
+func handleThinking(c *CLI, args []string) (
+	hide bool,
+	exit bool,
+) {
 	hint := func() {
 		c.formatter.PrintRaw(fmt.Sprintf("Available levels: %s, %s, %s, %s, %s\n", dynamic, none, low, medium, high))
 	}
@@ -939,7 +972,10 @@ func handleThinking(c *CLI, args []string) (hide bool, exit bool) {
 	return false, false
 }
 
-func handleMode(c *CLI, args []string) (hide bool, exit bool) {
+func handleMode(c *CLI, args []string) (
+	hide bool,
+	exit bool,
+) {
 	hint := func() {
 		c.formatter.PrintRaw(fmt.Sprintf("Available AI modes: %s, %s, %s, %s, %s\n", Prompt, SystemMode, VoiceMode, ImageMode, VideoMode))
 	}
@@ -979,36 +1015,59 @@ func handleMode(c *CLI, args []string) (hide bool, exit bool) {
 	return hide, false
 }
 
-func handlePrompt(c *CLI, args []string) (hide bool, exit bool) {
+func handlePrompt(c *CLI, args []string) (
+	hide bool,
+	exit bool,
+) {
 	if c.mode == SystemMode {
 		promptText := strings.TrimSpace(strings.Join(args, " "))
 		if promptText != "" {
 			helpers.SafeSend(c.cmdChan, promptText)
 			return true, false
 		}
-		c.formatter.PrintRaw("Usage: /prompt <text for AI>\n")
-		(*c.bus).Publish(config.MainTopic, "draw:cli.promptUsage")
+		c.formatter.Println("Usage: /prompt <text for AI>")
 	}
 	return false, false
 }
 
-func handleAfk(c *CLI, _ []string) (hide bool, exit bool) {
-	c.systemAFK = !c.systemAFK
+func handleAfk(c *CLI, args []string) (
+	hide bool,
+	exit bool,
+) {
+	if c.mode != SystemMode {
+		c.formatter.Println("Works in system mode only.")
+		return false, false
+	}
+
+	c.systemAFK = !c.systemAFK // Toggle AFK mode first, logic inverted!
 	log.Printf("System AFK mode set to: %t", c.systemAFK)
+
 	if c.systemAFK {
-		c.formatter.PrintRaw("System AFK mode enabled. Turns will be auto-submitted after each command.\n")
+		c.formatter.Println("System AFK mode enabled. Turns will be auto-submitted after each command.")
+		promptText := strings.TrimSpace(strings.Join(args, " "))
+		if promptText != "" {
+			helpers.SafeSend(c.cmdChan, promptText)
+			return true, false
+		}
 	} else {
-		c.formatter.PrintRaw("System AFK mode disabled.\n")
+		c.formatter.Println("System AFK mode disabled.")
 	}
+
 	return false, false
 }
 
-func handleExit(_ *CLI, _ []string) (hide bool, exit bool) {
+func handleExit(_ *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	flow.Quit()
 	return false, true
 }
 
-func handleHelp(c *CLI, _ []string) (hide bool, exit bool) {
+func handleHelp(c *CLI, _ []string) (
+	hide bool,
+	exit bool,
+) {
 	type helpEntry struct {
 		command     string
 		description string
@@ -1027,7 +1086,7 @@ func handleHelp(c *CLI, _ []string) (hide bool, exit bool) {
 
 	systemCommands := []helpEntry{
 		{"/prompt <text>", "Send a text prompt to the AI"},
-		{"/afk", "Toggle AFK(away from keyboard) mode to auto-submit turns after each command"},
+		{"/afk  <text>", "Switch to AFK(away from keyboard) mode to auto-submit turns after each command"},
 	}
 
 	postAICommands := []helpEntry{
