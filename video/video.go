@@ -61,52 +61,58 @@ func NewVideoStreamComponent(
 	switch config.C.Video.Source {
 	case "v4l2src":
 		if config.C.Video.Device != "" {
-			source.SetProperty("device", config.C.Video.Device)
+			helpers.Verify(source.SetProperty("device", config.C.Video.Device))
 			log.Printf("Using v4l2src with device: %s", config.C.Video.Device)
 		} else {
 			log.Println("Using v4l2src with default device.")
 		}
 	case "pipewiresrc":
-		source.SetProperty("do-timestamp", true)
+		helpers.Verify(source.SetProperty("do-timestamp", true))
 		if config.C.Video.MonitorID != -1 {
-			source.SetProperty("monitor-id", uint(config.C.Video.MonitorID))
+			helpers.Verify(source.SetProperty("monitor-id", uint(config.C.Video.MonitorID)))
 			log.Printf("Using pipewiresrc with monitor-id: %d", config.C.Video.MonitorID)
 		} else {
 			log.Println("Using pipewiresrc with default device (screen capture).")
 		}
 	case "videotestsrc":
 		log.Println("Using videotestsrc for testing purposes.")
-		source.SetProperty("is-live", true)
+		helpers.Verify(source.SetProperty("is-live", true))
 	default:
 		log.Printf("WARNING: Unknown video source '%s'. Proceeding with default properties.", config.C.Video.Source)
 	}
 
 	// Common elements for processing and encoding into JPEG frames
 	converter := helpers.Check(gst.NewElement("videoconvert"))
-	scaler := helpers.Check(gst.NewElement("videoscale"))
 	rate := helpers.Check(gst.NewElement("videorate"))
 
-	finalCapsStr := fmt.Sprintf("video/x-raw,framerate=%d/1,width=%d,height=%d",
-		config.C.Video.FrameRate, config.C.Video.Width, config.C.Video.Height)
+	// The capsfilter enforces framerate for all sources. For pipewiresrc,
+	// it also enforces width and height to ensure a consistent stream size,
+	// which is often desirable for screen recording. Other sources will use
+	// their natural dimensions.
+	var finalCapsStr string
+	if config.C.Video.Source == "pipewiresrc" {
+		finalCapsStr = fmt.Sprintf("video/x-raw,framerate=%d/1,width=%d,height=%d",
+			config.C.Video.FrameRate, config.C.Video.Width, config.C.Video.Height)
+	} else {
+		finalCapsStr = fmt.Sprintf("video/x-raw,framerate=%d/1", config.C.Video.FrameRate)
+	}
 	finalCaps := gst.NewCapsFromString(finalCapsStr)
 	capsFilter := helpers.Check(gst.NewElement("capsfilter"))
 	helpers.Verify(capsFilter.SetProperty("caps", finalCaps))
 
 	encoder := helpers.Check(gst.NewElement("jpegenc"))
 	helpers.Verify(encoder.SetProperty("quality", config.C.Video.Quality))
+
+	// The appsink is the final element that allows our application to pull frames.
 	v.appSink = helpers.Check(app.NewAppSink())
 
 	// Add all elements to the pipeline at once.
-	if err = v.pipeline.AddMany(source, converter, scaler, rate, capsFilter, encoder, v.appSink.Element); err != nil {
+	if err = v.pipeline.AddMany(source, converter, rate, capsFilter, encoder, v.appSink.Element); err != nil {
 		return nil, fmt.Errorf("failed to add GStreamer elements to pipeline: %w", err)
 	}
 
-	helpers.Verify(source.Link(converter))
-	helpers.Verify(converter.Link(scaler))
-	helpers.Verify(scaler.Link(rate))
-	helpers.Verify(rate.Link(capsFilter))
-	helpers.Verify(capsFilter.Link(encoder))
-	helpers.Verify(encoder.Link(v.appSink.Element))
+	// Link all the elements together in sequence.
+	helpers.Verify(gst.ElementLinkMany(source, converter, rate, capsFilter, encoder, v.appSink.Element))
 
 	return v, nil
 }

@@ -137,7 +137,7 @@ BufferTimeUs = 500000
 [video]
 Enabled = true          # Set to true to enable video streaming
 Source = "v4l2src"      # Use "v4l2src" for screen capture, "videotestsrc" for testing
-Device = "/dev/video0"  # pipewiresrc generally doesn't use this, leave empty or commented
+Device = "/dev/video2"  # pipewiresrc generally doesn't use this, leave empty or commented
 MonitorID = -1          # pipewiresrc generally doesn't use this, leave as default or adjust if your PipeWire setup needs it
 Width = 640             # Good balance for visual context
 Height = 440            # Adjust to maintain aspect ratio if needed (e.g., 360 for 16:9 with 640 width)
