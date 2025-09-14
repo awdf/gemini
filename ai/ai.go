@@ -8,6 +8,7 @@ import (
 	"io"
 	"iter"
 	"log"
+	"math/rand"
 	"mime"
 	"net/http"
 	"net/url"
@@ -340,10 +341,14 @@ func (a *AI) retryWithBackoff(action func() error) error {
 		// Check if the error is a googleapi.Error and if it's a retryable status code.
 		var gerr *googleapi.Error
 		if errors.As(lastErr, &gerr) {
+			// Add a random jitter to the delay to prevent thundering herd problem.
+			// Jitter will be between 0 and 500ms.
+			jitter := time.Duration(rand.Intn(500)) * time.Millisecond
+
 			// Retry on 500 (Internal Server Error), 503 (Service Unavailable), and 429 (Resource Exhausted/Rate Limiting).
 			if gerr.Code == 500 || gerr.Code == 503 || gerr.Code == 429 {
-				log.Printf("Retryable error detected (code %d). Retrying in %v... (Retry %d of %d)", gerr.Code, delay, i+1, maxRetries)
-				time.Sleep(delay)
+				log.Printf("Retryable error detected (code %d). Retrying in %v (delay + %v jitter)... (Retry %d of %d)", gerr.Code, delay+jitter, jitter, i+1, maxRetries)
+				time.Sleep(delay + jitter)
 				// Exponential backoff
 				delay *= 2
 				if delay > maxDelay {
@@ -936,59 +941,19 @@ func (a *AI) addInitialContextTurn(
 	log.Println(logMessage)
 }
 
-func (a *AI) prepareInitialFiles() {
-	filesToInclude, err := config.FindCacheableFiles()
+// uploadAndPrepareFileParts is a shared helper function that finds local files,
+// checks for existing versions on the server, uploads new ones, and returns
+// a slice of genai.Part objects created from the file URIs.
+func (a *AI) uploadAndPrepareFileParts() ([]*genai.Part, error) {
+	filesToProcess, err := config.FindCacheableFiles()
 	if err != nil {
-		log.Printf("ERROR: could not scan for initial files: %v", err)
-		return
+		return nil, fmt.Errorf("could not scan for files: %w", err)
+	}
+	if len(filesToProcess) == 0 {
+		return nil, nil // No files to process.
 	}
 
-	if len(filesToInclude) == 0 {
-		return
-	}
-
-	log.Printf("Found %d files to include as initial context.", len(filesToInclude))
-
-	var parts []*genai.Part
-	// Add the system prompt for the files first.
-	if config.C.AI.CacheSystemPrompt != "" {
-		parts = append(parts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
-	}
-	initialPartsLen := len(parts)
-
-	for _, localPath := range filesToInclude {
-		part, err := a.createPartFromFile(localPath)
-		if err != nil {
-			log.Printf("ERROR: could not prepare file %s for history: %v", localPath, err)
-			continue
-		}
-		parts = append(parts, part)
-	}
-
-	// Only add the context turn if at least one file was successfully processed.
-	if len(parts) > initialPartsLen {
-		userContent := genai.NewContentFromParts(parts, genai.RoleUser)
-		modelResponseText := "OK. I have received the files and will use them as context. How can I help you?"
-		logMessage := "Initial file context and canned response have been added to the conversation history."
-		a.addInitialContextTurn(userContent, modelResponseText, logMessage)
-	}
-}
-
-// uploadCache finds all files in the configured cache directory, uploads them,
-// and creates a single cache for the model to use in subsequent conversations.
-func (a *AI) uploadCache() {
-	filesToCache, err := config.FindCacheableFiles()
-	if err != nil {
-		log.Printf("ERROR: could not scan for cacheable files: %v", err)
-		return
-	}
-
-	if len(filesToCache) == 0 {
-		log.Println("No files to cache found in cache directory.")
-		return
-	}
-
-	log.Printf("Found %d files to upload to model cache.", len(filesToCache))
+	log.Printf("Found %d files to process.", len(filesToProcess))
 
 	// 1. List all existing files on the server to avoid re-uploading.
 	log.Println("Checking for existing files on the server...")
@@ -996,25 +961,17 @@ func (a *AI) uploadCache() {
 	iter := a.client.Files.All(a.ctx)
 	for file, err := range iter {
 		if err != nil {
-			log.Printf("ERROR: failed to retrieve file from server list: %v", err)
-			break // Stop iterating on error
+			return nil, fmt.Errorf("failed to retrieve file from server list: %w", err)
 		}
-
-		if file.DisplayName == "" {
-			log.Printf("  - Deleting existing file without DisplayName: %s", file.Name)
-			if _, err := a.client.Files.Delete(a.ctx, file.Name, nil); err != nil {
-				log.Printf("ERROR: failed to delete file %s: %v", file.Name, err)
-			}
-		} else {
-			log.Printf("  - Found existing server file: %s (DisplayName: %s)", file.Name, file.DisplayName)
+		if file.DisplayName != "" {
 			serverFiles[file.DisplayName] = file
 		}
 	}
 	log.Printf("Finished checking server files. Found %d files with display names.", len(serverFiles))
 
 	// 2. Process local files: use existing if DisplayName matches, otherwise upload.
-	var cacheContents []*genai.Content
-	for _, localPath := range filesToCache {
+	var parts []*genai.Part
+	for _, localPath := range filesToProcess {
 		baseName := filepath.Base(localPath)
 		var document *genai.File
 
@@ -1025,18 +982,56 @@ func (a *AI) uploadCache() {
 			log.Printf("Uploading new file for '%s'", baseName)
 			document, err = a.uploadFile(localPath, baseName)
 			if err != nil {
-				log.Printf("ERROR: could not upload file %s for cache: %v", localPath, err)
-				continue
+				log.Printf("ERROR: could not upload file %s: %v", localPath, err)
+				continue // Skip this file on error.
 			}
 		}
-
-		content, err := a.createContentFromFile(document)
-		if err != nil {
-			log.Printf("ERROR: could not create content for %s: %v", localPath, err)
-			continue // Skip this file and try the next
-		}
-		cacheContents = append(cacheContents, content)
+		parts = append(parts, genai.NewPartFromURI(document.URI, document.MIMEType))
 	}
+	return parts, nil
+}
+
+// prepareInitialFiles finds all files in the configured cache directory, uploads them if they don't
+// already exist on the server, and adds them as the first user turn in the conversation history.
+func (a *AI) prepareInitialFiles() {
+	fileParts, err := a.uploadAndPrepareFileParts()
+	if err != nil {
+		log.Printf("ERROR: could not scan for initial files: %v", err)
+		return
+	}
+	if len(fileParts) == 0 {
+		return
+	}
+
+	var parts []*genai.Part
+	if config.C.AI.CacheSystemPrompt != "" {
+		parts = append(parts, genai.NewPartFromText(config.C.AI.CacheSystemPrompt))
+	}
+	parts = append(parts, fileParts...)
+
+	// Only add the context turn if at least one file was successfully processed.
+	if len(parts) > 0 {
+		userContent := genai.NewContentFromParts(parts, genai.RoleUser)
+		modelResponseText := "OK. I have received the files and will use them as context. How can I help you?"
+		logMessage := "Initial file context and canned response have been added to the conversation history."
+		a.addInitialContextTurn(userContent, modelResponseText, logMessage)
+	}
+}
+
+// uploadCache finds all files in the configured cache directory, uploads them,
+// and creates a single cache for the model to use in subsequent conversations.
+func (a *AI) uploadCache() {
+	fileParts, err := a.uploadAndPrepareFileParts()
+	if err != nil {
+		log.Printf("ERROR: could not prepare files for cache: %v", err)
+		return
+	}
+	if len(fileParts) == 0 {
+		return
+	}
+
+	var cacheContents []*genai.Content
+	cacheContents = append(cacheContents, genai.NewContentFromParts(fileParts, genai.RoleUser))
 
 	if len(cacheContents) > 0 {
 		log.Println("Creating a single cache for all provided files...")
@@ -1074,37 +1069,6 @@ func (a *AI) uploadFile(localPath, displayName string) (*genai.File, error) {
 		return nil, fmt.Errorf("failed to upload file %s: %w", localPath, err)
 	}
 	return document, nil
-}
-
-// createPartFromFile uploads a single file and returns a *genai.Part object.
-func (a *AI) createPartFromFile(localPath string) (*genai.Part, error) {
-	mimeType := mime.TypeByExtension(filepath.Ext(localPath))
-	if mimeType == "" {
-		mimeType = "application/octet-stream" // Fallback
-	}
-
-	// For text-based files, it's often more robust to send them as raw text
-	// rather than uploading them and using a file URI. This avoids potential
-	// conflicts when mixing file types in a single prompt (e.g., audio + other files).
-	if strings.HasPrefix(mimeType, "text/") {
-		log.Printf("Reading text-based file %s as a text part...", localPath)
-		data, err := os.ReadFile(localPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read text file %s: %w", localPath, err)
-		}
-		return genai.NewPartFromText(string(data)), nil
-	}
-
-	log.Printf("Uploading %s with MIME type %s...", localPath, mimeType)
-	document, err := a.client.Files.UploadFromPath(
-		a.ctx,
-		localPath,
-		&genai.UploadFileConfig{MIMEType: mimeType},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to upload file %s: %w", localPath, err)
-	}
-	return genai.NewPartFromURI(document.URI, document.MIMEType), nil
 }
 
 // createContentFromFile uploads a single file and wraps it in a *genai.Content object.
@@ -1257,10 +1221,12 @@ func (a *AI) parsePromptForMultimedia(prompt string) ([]*genai.Part, bool, error
 			}
 		case "file":
 			log.Printf("Detected local file URL in prompt: %s", u.String())
-			part, err := a.createPartFromFile(u.Path)
+			baseName := filepath.Base(u.Path)
+			document, err := a.uploadFile(u.Path, baseName)
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to process file URL %s: %w", u.String(), err)
 			}
+			part := genai.NewPartFromURI(document.URI, document.MIMEType)
 			parts = append(parts, part)
 			multimediaFound = true
 		default:

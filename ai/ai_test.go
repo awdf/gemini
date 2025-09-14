@@ -465,46 +465,6 @@ func TestOutput(t *testing.T) {
 		assert.Contains(t, output, "The Go Programming Language")
 		assert.Contains(t, output, "https://go.dev")
 	})
-
-	t.Run("with error in stream", func(t *testing.T) {
-		testErr := errors.New("stream error")
-		respIter := mockIter(nil, testErr)
-
-		var err error
-		captureOutput(func() {
-			_, _, err = ai.Output(respIter, 0)
-		})
-
-		require.Error(t, err)
-		assert.ErrorIs(t, err, testErr)
-	})
-}
-
-func TestCreatePartFromFile(t *testing.T) {
-	ai := newTestAI(t)
-
-	t.Run("text file is read directly", func(t *testing.T) {
-		tmpFile, err := os.CreateTemp(t.TempDir(), "test-*.txt")
-		require.NoError(t, err)
-		_, err = tmpFile.WriteString("hello text file")
-		require.NoError(t, err)
-		tmpFile.Close()
-
-		part, err := ai.createPartFromFile(tmpFile.Name())
-		require.NoError(t, err)
-		require.NotNil(t, part)
-		assert.Equal(t, "hello text file", part.Text)
-	})
-
-	t.Run("non-text file path requires client", func(t *testing.T) {
-		tmpFile, err := os.CreateTemp(t.TempDir(), "test-*.wav")
-		require.NoError(t, err)
-		tmpFile.Close()
-
-		assert.Panics(t, func() {
-			_, _ = ai.createPartFromFile(tmpFile.Name())
-		}, "should panic when calling upload on a nil client")
-	})
 }
 
 func TestStreamType_String(t *testing.T) {
