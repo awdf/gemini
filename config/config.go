@@ -22,10 +22,11 @@ var (
 )
 
 const (
-	DefaultConfigFileName = "config.toml"
-	MainTopic             = "main:topic"
-	AgentTopic            = "agent:tool_response"
-	AITopic               = "ai:topic"
+	DefaultPostConfigFileName = "post.toml"
+	DefaultLiveConfigFileName = "live.toml"
+	MainTopic                 = "main:topic"
+	AgentTopic                = "agent:tool_response"
+	AITopic                   = "ai:topic"
 )
 
 const (
@@ -178,10 +179,18 @@ func (sc *ShellConfig) GetCommandEndMarker() string {
 
 // GetConfigPath determines the path to the configuration file based on a priority order.
 // 1. Highest priority: A path from the --config command-line flag (`cliPath`).
-// 2. Default: A `config.toml` file located in the `ProjectRoot`.
-func GetConfigPath(cliPath string) string {
+// 2. Default: `live.toml` or `post.toml` in the `ProjectRoot`, depending on `isLive`.
+func GetConfigPath(cliPath string, isLive bool) string {
+	defaultConfig := DefaultPostConfigFileName
+	if isLive {
+		defaultConfig = DefaultLiveConfigFileName
+	}
+
 	// 1. From --config command-line flag
-	if cliPath != "" && cliPath != DefaultConfigFileName { // Ignore default value
+	// Ignore default value if it matches the mode-specific default.
+	isDefaultCliPath := cliPath == DefaultPostConfigFileName || cliPath == DefaultLiveConfigFileName
+
+	if cliPath != "" && !isDefaultCliPath {
 		// If the path is not absolute, check if it exists as-is (relative to CWD).
 		// If not, try resolving it relative to the ProjectRoot. This allows for
 		// profile-like configurations (e.g., --config profiles/dev.toml).
@@ -202,7 +211,7 @@ func GetConfigPath(cliPath string) string {
 	}
 
 	// 2. Default path in the project root
-	defaultPath := filepath.Join(ProjectRoot, DefaultConfigFileName)
+	defaultPath := filepath.Join(ProjectRoot, defaultConfig)
 	DefaultProfile = filepath.Dir(defaultPath)
 	log.Printf("Using default config path: %s", defaultPath)
 	return defaultPath
@@ -217,7 +226,7 @@ func Load(cliPath string) {
 	}
 	ProjectRoot = rootPath
 	log.Printf("Using project root from GEMINI_PATH: %s", ProjectRoot)
-	path := GetConfigPath(cliPath)
+	path := GetConfigPath(cliPath, C.LiveAI)
 
 	content, err := os.ReadFile(path)
 	if err != nil {

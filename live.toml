@@ -1,0 +1,150 @@
+# Main application configuration
+LogFile = "gemini.log"
+
+# Enable or disable debug logging for all modules.
+Debug = false
+Trace = false
+LiveAI = false
+Mode = "prompt" # Options: "prompt", "shell", "video"
+
+[ai]
+# The API Key for the AI service. Can be set directly or via an environment variable.
+# Example: APIKey = "${GOOGLE_API_KEY}"
+APIKey = "${GOOGLE_API_KEY}"
+# The timezone for the AI to use for context (e.g., "UTC", "America/New_York", "Europe/Kyiv").
+Timezone = "Europe/Kyiv"
+# Post AI models, default
+Model = "gemini-2.5-flash"
+ModelRPM = 10
+ModelTTS = "gemini-2.5-flash-preview-tts"
+ModelObjectDetection = "gemini-2.5-flash-preview-05-20"
+ModelObjectDetectionRPM = 10
+# Live AI models, CLI option -live
+ModelLive = "gemini-live-2.5-flash-preview"
+ModelLiveTTS = "gemini-live-2.5-flash-preview"
+# Model prompts
+SystemPrompt = "Role: You are expert in software development. Context: It is your interview process, so respond from 1st person."
+# Zero derictive is reserved
+DirectivesPrompt = """1.Never reffer to yourself as LLM.
+2.Never make attention on your expertise or experience, if you are not asked directly.
+3.Never respond with code blocks, if you are not asked directly write a code snippet.
+4.In case of small talk, you should be pleasant and friendly, otherwise expected your clean professional response.
+5.In case of questions about your developer experience or past projects, please check attached to context files.
+6.In case of questions about your developer life or your person, find any human like answer.
+7.In other cases, play role and show your expertise in software development, science and technology.
+"""
+TranscriptionPrompt = "Please provide a verbatim transcript of the audio."
+VoicePrompt = """Step by step:
+Step 1 - Please provide a verbatim transcript of the audio(if exist) as first part of answer in format '**Transcript:** <transcript>'.
+Step 2 - Determine language of the transcript(if exist) and provide as second part of answer in format '**Language:** <language>'.
+Step 3 - Generate a concise and accurate response in the same language as the transcript(if exist) as third part of answer in format '**Response:** <response>'.
+"""
+# Works as prompt for Context caching if not disabled, otherwise for initial files uploading
+CacheSystemPrompt = "The following data are provided as context:"
+
+# Model options
+VoiceEnabled = false #Set to true to activate voice responses
+Voice = "Kore" # Example voices: Kore, Indi, Luma, Fini, Zola, Sol
+VoiceHistory = false # Turn off(false) voice history for best model latency
+Thinking = -1 # Dynamic:-1, None:0, low:512, Medium:8192, High:24576
+Thoughts = false # Turn off(false)
+Transcript = false # Set to true to turn on transcrit
+
+# Tools options
+EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
+EnableStandardTools = true # Set to false to disable Google Search and URL Context tools.
+URLContextDisabled = false # Set to true to disable URL Context tool.
+EnableCodeExecution = false # Set to false to disable code execution tool. Not recomended to use with Function calling.
+EnableFunctionCalling = true # Set to false to disable function tool calling. Not recomended to use with Code execution.
+WorkspaceDir = "."
+
+#Enable it manualy in case of model support cache. Paid tier 1+.
+EnableCache = false # Set to true to enable caching. Note: Not all models or API tiers support caching.
+CacheDir = "cache" #All files from this path will be added to cache
+
+# Warm up specialized AI agents on startup to reduce first-use latency.
+# This sends a small, low-cost request to each agent's model.
+AgentWarmUp = false
+
+[ai.context_window_compression]
+# Configuration for live session context window compression.
+Enabled = true
+# The number of tokens that triggers context window compression.
+# Set to 0 to use the API default (80% of the model's context window).
+TriggerTokens = 0
+# The number of tokens to keep in the context window after compression. Must be less than TriggerTokens if both are set. Set to 0 to use API default.
+TargetTokens = 0
+
+[ai.session_resumption]
+# To prevent session termination when the server periodically resets the WebSocket connection
+Enabled = true
+
+[ai.proactivity]
+# Configuration for model proactivity features.
+Enabled = false
+# If enabled, the model can proactively interrupt the user to provide relevant information.
+ProactiveAudio = true
+
+[ai.retry]
+# Configuration for retrying failed API calls.
+MaxRetries = 3 # Number of times to retry a failed request after the first attempt.
+InitialDelayMs = 1000 # Initial wait time in milliseconds before the first retry.
+MaxDelayMs = 10000 # Maximum wait time in milliseconds for exponential backoff.
+
+[vad]
+# The normalized RMS level below which we consider the audio to be silent.
+SilenceThreshold = 0.02 # Range 0.0 - 1.0
+# The amount of time in seconds to continue recording after the audio level drops below the silence threshold.
+HangoverDurationSec = 2.0
+# Duration to ignore audio at startup to allow the pipeline to stabilize.
+# This prevents initial hardware "pops" from triggering a recording.
+WarmupDuration = "3000ms"
+# Disable the native VAD in the Gemini Live API. When true, the application's
+# VAD is used to send explicit start/stop signals. When false, the API handles
+# voice activity detection automatically.
+DisableNativeVAD = true
+
+[recorder]
+# Recordings shorter than this (in bytes) will be deleted.
+# Example: 600 000 bytes it is mouse click record size.
+MinFileSizeBytes = 600000
+
+[display]
+# Width of the RMS volume bar in characters.
+BarWidth = 100
+# How often to refresh the display in milliseconds.
+UpdateIntervalMs = 50
+
+[google]
+# Enable Google Workspace integrations (e.g., Gmail).
+Enabled = true
+# Path to the client_secret.json from Google Cloud Console.
+CredentialsFile = "~/client_secret.json"
+# Path to store the generated OAuth2 token.
+TokenFile = "~/token.json"
+
+[pipeline]
+# GStreamer source buffer time in microseconds. Helps prevent race conditions.
+BufferTimeUs = 500000 
+
+# Physical sound device for input (Default system device by default)
+# List devices: pactl list | grep -A2 'Source #' | grep 'Name: ' | cut -d" " -f2
+#
+# Device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+# Device = "alsa_output.usb-JBL_Quantum_400_0079CM-0265355EM-00.analog-stereo.monitor"
+ Device = "alsa_input.usb-JBL_Quantum_400_0079CM-0265355EM-00.mono-fallback"
+
+[video]
+Enabled = true          # Set to true to enable video streaming
+Source = "v4l2src"      # Use "v4l2src" for screen capture, "videotestsrc" for testing
+Device = "/dev/video2"  # pipewiresrc generally doesn't use this, leave empty or commented
+MonitorID = -1          # pipewiresrc generally doesn't use this, leave as default or adjust if your PipeWire setup needs it
+Width = 640             # Good balance for visual context
+Height = 440            # Adjust to maintain aspect ratio if needed (e.g., 360 for 16:9 with 640 width)
+FrameRate = 2           # A good default balance. Can be increased for smoother video.
+Quality = 85            # JPEG quality (0-100). 85 is a good default balance of quality and size.
+
+[shell]
+# A unique string that the shell will print after every command to signal its completion.
+# This should be a core string that is very unlikely to appear in normal command output.
+command_end_marker_core = "GEMINI_CMD_DONE"

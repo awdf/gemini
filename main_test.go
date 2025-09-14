@@ -115,7 +115,7 @@ func TestParseFlags(t *testing.T) {
 				Voice:      false,
 				Transcript: false,
 				AIEnabled:  true,
-				ConfigPath: config.DefaultConfigFileName,
+				ConfigPath: config.DefaultPostConfigFileName,
 			},
 		},
 		{

@@ -54,6 +54,7 @@ type AI struct {
 	agents              map[string]agents.Callable
 	initialContextAdded bool
 	cli                 *inout.CLI
+	responseTimer       *time.Timer
 	mode                string
 }
 
@@ -629,6 +630,11 @@ func (a *AI) generateAndProcessContent(
 
 	defer close(done) // Signal the waiting display to stop.
 
+	// Start a timer to notify the user if the model takes too long to respond.
+	// This timer will be stopped as soon as the first chunk of the response is received.
+	a.startResponseTimer()
+	defer a.stopResponseTimer() // Ensure the timer is always stopped on function exit.
+
 	for { // Loop for tool calling
 		genConfig := &genai.GenerateContentConfig{
 			ThinkingConfig: &genai.ThinkingConfig{
@@ -918,9 +924,47 @@ func (a *AI) uploadCache() {
 
 	log.Printf("Found %d files to upload to model cache.", len(filesToCache))
 
+	// 1. List all existing files on the server to avoid re-uploading.
+	log.Println("Checking for existing files on the server...")
+	serverFiles := make(map[string]*genai.File)
+	iter := a.client.Files.All(a.ctx)
+	for file, err := range iter {
+		if err != nil {
+			log.Printf("ERROR: failed to retrieve file from server list: %v", err)
+			break // Stop iterating on error
+		}
+
+		if file.DisplayName == "" {
+			log.Printf("  - Deleting existing file without DisplayName: %s", file.Name)
+			if _, err := a.client.Files.Delete(a.ctx, file.Name, nil); err != nil {
+				log.Printf("ERROR: failed to delete file %s: %v", file.Name, err)
+			}
+		} else {
+			log.Printf("  - Found existing server file: %s (DisplayName: %s)", file.Name, file.DisplayName)
+			serverFiles[file.DisplayName] = file
+		}
+	}
+	log.Printf("Finished checking server files. Found %d files with display names.", len(serverFiles))
+
+	// 2. Process local files: use existing if DisplayName matches, otherwise upload.
 	var cacheContents []*genai.Content
 	for _, localPath := range filesToCache {
-		content, err := a.createContentFromFile(localPath)
+		baseName := filepath.Base(localPath)
+		var document *genai.File
+
+		if existingFile, ok := serverFiles[baseName]; ok {
+			log.Printf("Using existing server file for '%s'", baseName)
+			document = existingFile
+		} else {
+			log.Printf("Uploading new file for '%s'", baseName)
+			document, err = a.uploadFile(localPath, baseName)
+			if err != nil {
+				log.Printf("ERROR: could not upload file %s for cache: %v", localPath, err)
+				continue
+			}
+		}
+
+		content, err := a.createContentFromFile(document)
 		if err != nil {
 			log.Printf("ERROR: could not create content for %s: %v", localPath, err)
 			continue // Skip this file and try the next
@@ -945,6 +989,25 @@ func (a *AI) uploadCache() {
 			a.addInitialContextTurn(userContent, modelResponseText, logMessage)
 		}
 	}
+}
+
+// uploadFile handles the logic of uploading a single file to the Gemini API.
+func (a *AI) uploadFile(localPath, displayName string) (*genai.File, error) {
+	mimeType := mime.TypeByExtension(filepath.Ext(localPath))
+	if mimeType == "" {
+		mimeType = "application/octet-stream" // Fallback
+	}
+
+	log.Printf("Uploading %s with MIME type %s...", localPath, mimeType)
+	document, err := a.client.Files.UploadFromPath(
+		a.ctx,
+		localPath,
+		&genai.UploadFileConfig{MIMEType: mimeType, DisplayName: displayName},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload file %s: %w", localPath, err)
+	}
+	return document, nil
 }
 
 // createPartFromFile uploads a single file and returns a *genai.Part object.
@@ -979,11 +1042,12 @@ func (a *AI) createPartFromFile(localPath string) (*genai.Part, error) {
 }
 
 // createContentFromFile uploads a single file and wraps it in a *genai.Content object.
-func (a *AI) createContentFromFile(localPath string) (*genai.Content, error) {
-	part, err := a.createPartFromFile(localPath)
-	if err != nil {
-		return nil, err
+func (a *AI) createContentFromFile(document *genai.File) (*genai.Content, error) {
+	part := genai.NewPartFromURI(document.URI, document.MIMEType)
+	if part == nil {
+		return nil, fmt.Errorf("failed to create part from document URI %s", document.URI)
 	}
+
 	parts := []*genai.Part{part}
 	// The role for file data is 'user'
 	return genai.NewContentFromParts(parts, genai.RoleUser), nil
@@ -1149,4 +1213,27 @@ func (a *AI) parsePromptForMultimedia(prompt string) ([]*genai.Part, bool, error
 	}
 
 	return parts, multimediaFound, nil
+}
+
+// stopResponseTimer stops and nils the response timer if it's active.
+func (a *AI) stopResponseTimer() {
+	if a.responseTimer != nil {
+		a.responseTimer.Stop()
+		a.responseTimer = nil
+	}
+}
+
+// startResponseTimer starts a new response timer, stopping any existing one.
+func (a *AI) startResponseTimer() {
+	a.stopResponseTimer() // Ensure any existing timer is stopped.
+	a.responseTimer = time.AfterFunc(30*time.Second, func() {
+		// This function will be called if the timer fires.
+		// It's safe to access the formatter here as it's part of the AI struct.
+		if a.formatter != nil {
+			a.formatter.PrintNl("Model has not provided an answer yet. Please wait or check your connection.", inout.ColorDarkRed)
+		}
+		if a.bus != nil {
+			(*a.bus).Publish(config.MainTopic, "draw:ai.timeout")
+		}
+	})
 }

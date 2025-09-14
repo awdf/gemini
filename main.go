@@ -147,7 +147,8 @@ func parseFlags() *CliFlags {
 	flag.BoolVar(&flags.Live, "live", false, "Enable live responses from the AI")
 	flag.BoolVar(&flags.Voice, "voice", false, "Enable voice responses from the AI")
 	flag.BoolVar(&flags.Transcript, "ts", false, "Enable separate transcription step for voice chat")
-	flag.StringVar(&flags.ConfigPath, "config", config.DefaultConfigFileName, "Path to the configuration file")
+	// When app runned without parameters default is post AI
+	flag.StringVar(&flags.ConfigPath, "config", config.DefaultPostConfigFileName, "Path to the configuration file (defaults to post.toml or live.toml)")
 
 	flag.Parse()
 
@@ -160,28 +161,27 @@ func main() {
 	flags := parseFlags()
 	flow.EnableControl()
 
-	config.Load(flags.ConfigPath)
-
-	// Command-line flags override config file settings for convenience.
+	// Set LiveAI flag from CLI *before* loading config. This allows Load()
+	// to select the correct default config file (live.toml) when --live is used.
 	if flags.Live {
 		config.C.LiveAI = true
 	}
+	// Apply other CLI flags as final overrides after loading.
 	if flags.Voice {
 		config.C.AI.VoiceEnabled = true
 	}
 	if flags.Transcript {
 		config.C.AI.Transcript = true
 	}
+
+	// Load the configuration. The loaded file can override the LiveAI setting,
+	// but the initial file path is determined by the --live flag set above.
+	config.Load(flags.ConfigPath)
+
 	gst.Init(nil)
 
 	app := NewApp(flags)
 	defer desktop.C.Close() // Ensure controller is closed on exit.
-
-	// TODO: Remove after object detection live testing
-	// desktop.C.MoveMouse(72, 303)
-	// desktop.C.MouseClick(2)
-	// desktop.C.Close()
-	// return
 
 	app.run()
 }

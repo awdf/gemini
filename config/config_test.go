@@ -13,7 +13,7 @@ import (
 func TestLoad(t *testing.T) {
 	t.Run("creates default config if not exists", func(t *testing.T) {
 		tempDir := t.TempDir()
-		configPath := filepath.Join(tempDir, DefaultConfigFileName)
+		configPath := filepath.Join(tempDir, DefaultPostConfigFileName)
 
 		// Ensure file doesn't exist
 		_, err := os.Stat(configPath)
@@ -36,7 +36,7 @@ func TestLoad(t *testing.T) {
 
 	t.Run("loads existing config", func(t *testing.T) {
 		tempDir := t.TempDir()
-		configPath := filepath.Join(tempDir, DefaultConfigFileName)
+		configPath := filepath.Join(tempDir, DefaultPostConfigFileName)
 
 		// Create a custom config file
 		content := `
@@ -64,7 +64,7 @@ EnableCache = true
 
 	t.Run("expands environment variables", func(t *testing.T) {
 		tempDir := t.TempDir()
-		configPath := filepath.Join(tempDir, DefaultConfigFileName)
+		configPath := filepath.Join(tempDir, DefaultPostConfigFileName)
 		apiKey := "test-api-key-from-env"
 
 		t.Setenv("TEST_API_KEY", apiKey)
@@ -111,28 +111,39 @@ func TestGetConfigPath(t *testing.T) {
 	ProjectRoot = tempProjectRoot
 	defer func() { ProjectRoot = originalProjectRoot }()
 
-	absCliPath := "/from/cli/" + DefaultConfigFileName
+	absCliPath := "/from/cli/" + DefaultPostConfigFileName
 	relCliPath := "profiles/dev.toml"
-	defaultPath := filepath.Join(tempProjectRoot, DefaultConfigFileName)
+	defaultPostPath := filepath.Join(tempProjectRoot, DefaultPostConfigFileName)
+	defaultLivePath := filepath.Join(tempProjectRoot, DefaultLiveConfigFileName)
 
 	t.Run("uses absolute cliPath when set", func(t *testing.T) {
-		path := GetConfigPath(absCliPath)
+		path := GetConfigPath(absCliPath, false)
 		assert.Equal(t, absCliPath, path)
 	})
 
-	t.Run("uses default path when cliPath is empty", func(t *testing.T) {
-		path := GetConfigPath("")
-		assert.Equal(t, defaultPath, path)
+	t.Run("uses default post path when cliPath is empty and not live", func(t *testing.T) {
+		path := GetConfigPath("", false)
+		assert.Equal(t, defaultPostPath, path)
+	})
+
+	t.Run("uses default live path when cliPath is empty and live", func(t *testing.T) {
+		path := GetConfigPath("", true)
+		assert.Equal(t, defaultLivePath, path)
 	})
 
 	t.Run("uses default path when cliPath is the default value", func(t *testing.T) {
-		path := GetConfigPath(DefaultConfigFileName)
-		assert.Equal(t, defaultPath, path)
+		path := GetConfigPath(DefaultPostConfigFileName, false)
+		assert.Equal(t, defaultPostPath, path)
+	})
+
+	t.Run("uses default live path when cliPath is the live default value", func(t *testing.T) {
+		path := GetConfigPath(DefaultLiveConfigFileName, true)
+		assert.Equal(t, defaultLivePath, path)
 	})
 
 	t.Run("uses default path when cliPath is empty", func(t *testing.T) {
-		path := GetConfigPath("")
-		assert.Equal(t, defaultPath, path)
+		path := GetConfigPath("", false)
+		assert.Equal(t, defaultPostPath, path)
 	})
 
 	t.Run("resolves relative cliPath against project root if it exists there", func(t *testing.T) {
@@ -142,7 +153,7 @@ func TestGetConfigPath(t *testing.T) {
 		profilePath := filepath.Join(profileDir, "dev.toml")
 		require.NoError(t, os.WriteFile(profilePath, []byte(""), 0o644))
 
-		path := GetConfigPath(relCliPath)
+		path := GetConfigPath(relCliPath, false)
 		assert.Equal(t, profilePath, path)
 	})
 
@@ -165,7 +176,7 @@ func TestGetConfigPath(t *testing.T) {
 		cwdProfilePath := filepath.Join(cwdProfileDir, "dev.toml")
 		require.NoError(t, os.WriteFile(cwdProfilePath, []byte(""), 0o644))
 
-		path := GetConfigPath(relCliPath)
+		path := GetConfigPath(relCliPath, false)
 		assert.Equal(t, relCliPath, path, "should prefer path relative to CWD over ProjectRoot")
 	})
 }
