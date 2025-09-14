@@ -87,6 +87,18 @@ The application can be used as a standalone voice-activated recorder, without in
 4.  **Recording:**
     The application will now listen to the selected audio source. When the volume exceeds the configured threshold, it will automatically start recording to a `.wav` file in the current directory (e.g., `recording-1.wav`, `recording-2.wav`, etc.). Recording stops after a period of silence.
 
+### 7. Transcription-Only Mode
+For users who need quick, high-quality audio transcription without engaging the AI for a full response, the application offers a dedicated transcription mode. This is useful for converting spoken notes, meeting snippets, or any other audio into text directly in your terminal.
+
+1.  **Run in Transcription-Only Mode:**
+    Launch the application with both the `--ts` (transcript) and `--no-ai` flags.
+    ```sh
+    ./gemini --ts --no-ai
+    ```
+
+2.  **Transcribing:**
+    The application will listen for audio using its Voice Activity Detection. When you speak, it will capture the audio, send it to the Gemini API for transcription, and print the resulting text to the console. It will then immediately be ready to transcribe the next piece of audio.
+
 ---
 
 ## Architecture

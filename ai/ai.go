@@ -34,7 +34,8 @@ import (
 // Flags holds the command-line flags that control AI behavior.
 type Flags struct {
 	// Enabled is the master switch for the AI component. Other toggles are in config.
-	Enabled bool // Corresponds to the -no-ai flag (negated)
+	Enabled        bool // Corresponds to the -no-ai flag (negated)
+	TranscriptOnly bool
 }
 
 // AI encapsulates the state and logic for interacting with the Gemini AI.
@@ -96,12 +97,6 @@ func NewAI(
 		Backend: genai.BackendGeminiAPI,
 	}))
 
-	// --- Agent Initialization ---
-	toolset := agents.NewToolSet()
-	if config.C.AI.EnableTools && config.C.AI.EnableFunctionCalling {
-		agents.BuildAgentNetwork(ctx, client, toolset, bus)
-	}
-
 	ai := &AI{
 		ctx:                 ctx,
 		client:              client,
@@ -115,16 +110,28 @@ func NewAI(
 		bus:                 bus,
 		initialContextAdded: false,
 		mode:                config.C.Mode,
-		toolset:             toolset,
 		agents:              agents.AgentRegistry,
 		cli:                 cli,
 	}
 
-	if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
-		// This log confirms that PostAI mode is aware of the workspace for file system tools.
-		log.Printf("AI function calling is enabled. Workspace is set to: %s", config.C.AI.WorkspaceDir)
+	// If the AI is disabled, we return the basic AI struct without any further setup.
+	// This prevents unnecessary API calls for tools, caching, or context files.
+	if !flags.Enabled {
+		return ai
 	}
 
+	// --- AI-specific initializations ---
+	if config.C.AI.EnableTools && config.C.AI.EnableFunctionCalling {
+		// The toolset is only created and populated if function calling is enabled.
+		ai.toolset = agents.NewToolSet()
+		agents.BuildAgentNetwork(ctx, client, ai.toolset, bus)
+		if config.C.AI.EnableFunctionCalling && config.C.AI.WorkspaceDir != "" {
+			// This log confirms that PostAI mode is aware of the workspace for file system tools.
+			log.Printf("AI function calling is enabled. Workspace is set to: %s", config.C.AI.WorkspaceDir)
+		}
+	}
+
+	// Handle caching or initial file context.
 	if config.C.AI.EnableCache {
 		ai.uploadCache()
 	} else {
@@ -138,11 +145,12 @@ func NewAI(
 // Run is the main loop for the AI component. It listens for completed audio files,
 // sends them for processing, and handles the response.
 func (a *AI) Run() {
+	defer a.autoSaveTranscriptHistory()
 	defer a.wg.Done()
 
-	// helpers.Verify(a.Livestream("Hi! It's my first message"))
-
-	if !a.flags.Enabled {
+	// If AI is disabled but transcript-only mode is active, run a special loop.
+	// Otherwise, if AI is fully disabled, run the passive loop.
+	if !a.flags.Enabled && !a.flags.TranscriptOnly {
 		// Blocking call
 		a.passiveRun()
 		return
@@ -159,23 +167,35 @@ func (a *AI) Run() {
 			}
 			log.Printf("Chat: Processing %s", file)
 			a.withPipelinePausedIfVoice(a.pipeline, func() {
-				a.withScreenshotIfImageMode(func(buffer *images.ScreenshotBuffer) {
-					// The buffer will be non-nil only in ImageMode, otherwise it's nil.
-					// This simplifies the logic by removing the need for an inner switch.
-					action := func() error {
-						if config.C.AI.Transcript {
-							return a.VoiceQuestionWithTranscript(file, buffer, config.C.AI.VoicePrompt)
-						}
-						return a.VoiceQuestion(file, buffer, config.C.AI.VoicePrompt)
-					}
-					err := a.retryWithBackoff(action)
+				if a.flags.TranscriptOnly {
+					// Special transcription-only mode.
+					err := a.retryWithBackoff(func() error { return a.TranscribeOnly(file) })
 					if err != nil {
-						log.Printf("ERROR: AI processing failed for %s after all retries, leaving file for manual processing: %v", file, err)
+						log.Printf("ERROR: Transcription failed for %s after all retries: %v", file, err)
 					} else {
-						log.Printf("Chat: Successfully processed %s. Removing file.", file)
+						log.Printf("Chat: Successfully transcribed %s. Removing file.", file)
 						os.Remove(file)
 					}
-				})
+				} else {
+					// Regular AI processing mode.
+					a.withScreenshotIfImageMode(func(buffer *images.ScreenshotBuffer) {
+						action := func() error {
+							// The buffer will be non-nil only in ImageMode, otherwise it's nil.
+							// This simplifies the logic by removing the need for an inner switch.
+							if config.C.AI.Transcript {
+								return a.VoiceQuestionWithTranscript(file, buffer, config.C.AI.VoicePrompt)
+							}
+							return a.VoiceQuestion(file, buffer, config.C.AI.VoicePrompt)
+						}
+						err := a.retryWithBackoff(action)
+						if err != nil {
+							log.Printf("ERROR: AI processing failed for %s after all retries, leaving file for manual processing: %v", file, err)
+						} else {
+							log.Printf("Chat: Successfully processed %s. Removing file.", file)
+							os.Remove(file)
+						}
+					})
+				}
 			})
 		case cmd, ok := <-a.textCmdChan:
 			if !ok {
@@ -183,6 +203,14 @@ func (a *AI) Run() {
 				continue
 			}
 			log.Printf("Chat: Processing text prompt in %s mode...\n", a.mode)
+			if a.flags.TranscriptOnly {
+				// In transcription-only mode (--ts and --no-ai), the application's sole
+				// purpose is to transcribe audio. This block prevents text prompts from
+				// the CLI from being processed by the AI, enforcing the mode's contract.
+				log.Println("Skipping text prompt in transcription-only mode.")
+				continue
+			}
+
 			a.withPipelinePausedIfVoice(a.pipeline, func() {
 				a.withScreenshotIfImageMode(func(buffer *images.ScreenshotBuffer) {
 					action := func() error {
@@ -202,7 +230,7 @@ func (a *AI) Run() {
 }
 
 func (a *AI) passiveRun() {
-	log.Println("AI Chat processor is disabled. Draining channels to prevent blocking.")
+	log.Println("AI Chat processor is disabled and not in transcript-only mode. Draining channels to prevent blocking.")
 	// We must still consume from the channels to prevent other goroutines from blocking.
 	for a.fileChan != nil || a.textCmdChan != nil {
 		select {
@@ -426,6 +454,44 @@ func (a *AI) VoiceQuestionWithTranscript(
 	}
 	// The second step is a pure text-based query, so we can reuse the history logic.
 	return a.generateAndProcessContent(parts, fURLContextEnabled, fNoVoicePrompt)
+}
+
+// TranscribeOnly performs only the transcription step and prints the result.
+func (a *AI) TranscribeOnly(wavPath string) error {
+	log.Println("Transcription-Only Mode: Transcribing audio...")
+	transcript, err := a.generateTranscript(wavPath)
+	if err != nil {
+		return fmt.Errorf("transcription failed: %w", err)
+	}
+	if transcript == "" {
+		log.Println("Transcription returned empty, nothing to process.")
+		return nil // Not an error, just silence or non-speech audio.
+	}
+
+	// Print the transcript to the console.
+	formatter := inout.NewFormatter()
+	formatter.Println("Transcript:", inout.ColorDarkCyan)
+	formatter.Print(transcript)
+	fmt.Println()
+
+	// Add the transcript to the conversation history so it can be saved.
+	transcriptContent := genai.NewContentFromParts(
+		[]*genai.Part{genai.NewPartFromText(transcript)},
+		genai.RoleUser, // Treat each transcript as a user turn.
+	)
+	a.conversationHistory = append(a.conversationHistory, transcriptContent)
+	return nil
+}
+
+// autoSaveTranscriptHistory checks if the application is in transcription-only mode
+// and saves the accumulated history to a file upon exit.
+func (a *AI) autoSaveTranscriptHistory() {
+	if a.flags.TranscriptOnly && len(a.conversationHistory) > 0 {
+		log.Println("Transcription-only mode: automatically saving history on exit.")
+		if err := a.saveConversationHistory("transcript_history.txt"); err != nil {
+			log.Printf("ERROR: failed to automatically save transcript history: %v", err)
+		}
+	}
 }
 
 // generateTranscript performs a dedicated API call to get a transcript from an audio file.

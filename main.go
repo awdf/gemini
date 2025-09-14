@@ -99,7 +99,8 @@ func NewApp(flags *CliFlags) *App {
 	// Copy of flags for AI component
 	aiFlags := &ai.Flags{
 		// Voice and Transcript are now managed via the global config.
-		Enabled: flags.AIEnabled,
+		Enabled:        flags.AIEnabled,
+		TranscriptOnly: flags.Transcript && !flags.AIEnabled,
 	}
 
 	// The CLI must be created first, as it's a dependency for the AI components
