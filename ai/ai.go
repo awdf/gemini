@@ -629,6 +629,7 @@ func (a *AI) Output(resp iter.Seq2[*genai.GenerateContentResponse, error], durat
 
 	// Print execution time metric
 	a.formatter.Println(fmt.Sprintf("Request execution time: %.2fs\n", duration.Seconds()), inout.ColorDarkGray)
+	a.stopResponseTimer()
 
 	// Restore other output
 	(*a.bus).Publish(config.MainTopic, "draw:ai.output")

@@ -164,20 +164,19 @@ func main() {
 
 	// Set LiveAI flag from CLI *before* loading config. This allows Load()
 	// to select the correct default config file (live.toml) when --live is used.
-	if flags.Live {
-		config.C.LiveAI = true
-	}
-	// Apply other CLI flags as final overrides after loading.
-	if flags.Voice {
-		config.C.AI.VoiceEnabled = true
-	}
-	if flags.Transcript {
-		config.C.AI.Transcript = true
-	}
+	config.C.LiveAI = flags.Live
 
 	// Load the configuration. The loaded file can override the LiveAI setting,
 	// but the initial file path is determined by the --live flag set above.
 	config.Load(flags.ConfigPath)
+
+	// Override specific config settings from CLI flags.
+	// This allows quick toggling of voice and transcript features without
+	// modifying the config file.
+	// Note: AIEnabled is not applied here, as it controls application logic
+	// rather than a specific config setting.
+	config.C.AI.VoiceEnabled = flags.Voice
+	config.C.AI.Transcript = flags.Transcript
 
 	gst.Init(nil)
 
