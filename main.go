@@ -32,7 +32,7 @@ import (
 // CliFlags holds the parsed command-line flags for the application.
 type CliFlags struct {
 	Voice      bool
-	Live       bool
+	Post       bool
 	Transcript bool
 	AIEnabled  bool
 	ConfigPath string
@@ -109,7 +109,7 @@ func NewApp(flags *CliFlags) *App {
 
 	// Create the main components with Dependency Injection.
 	// 2 modes: PostAI and LiveAI
-	if flags.Live {
+	if !flags.Post {
 		app.live = ai.NewLiveSink(app.wg, app.fileControlChan, app.textCommandChan, app.bus, aiFlags, app.cli, app.videoFrameChan) // New: Pass videoFrameChan
 		// The Live API requires 16kHz mono audio.
 		app.pipeline = pipeline.NewVADPipeline(app.wg, app.live.Element, app.rmsDisplayChan, app.vadControlChan, app.bus, audio.LiveChannels, audio.LiveSampleRate)
@@ -145,11 +145,11 @@ func parseFlags() *CliFlags {
 	// Use a local variable for the negated flag.
 	aiOff := flag.Bool("no-ai", false, "Disable AI processing, only record audio")
 
-	flag.BoolVar(&flags.Live, "live", false, "Enable live responses from the AI")
+	flag.BoolVar(&flags.Post, "post", false, "Run in post-processing AI mode (default is live mode)")
 	flag.BoolVar(&flags.Voice, "voice", false, "Enable voice responses from the AI")
 	flag.BoolVar(&flags.Transcript, "ts", false, "Enable separate transcription step for voice chat")
-	// When app runned without parameters default is post AI
-	flag.StringVar(&flags.ConfigPath, "config", config.DefaultPostConfigFileName, "Path to the configuration file (defaults to post.toml or live.toml)")
+	// The default config is now live.toml unless --post is specified.
+	flag.StringVar(&flags.ConfigPath, "config", "", "Path to the configuration file (defaults to live.toml or post.toml)")
 
 	flag.Parse()
 
@@ -162,9 +162,9 @@ func main() {
 	flags := parseFlags()
 	flow.EnableControl()
 
-	// Set LiveAI flag from CLI *before* loading config. This allows Load()
-	// to select the correct default config file (live.toml) when --live is used.
-	config.C.LiveAI = flags.Live
+	// Set LiveAI flag from CLI *before* loading config. This allows Load() to
+	// select the correct default config file (live.toml or post.toml).
+	config.C.PostAI = flags.Post
 
 	// Load the configuration. The loaded file can override the LiveAI setting,
 	// but the initial file path is determined by the --live flag set above.

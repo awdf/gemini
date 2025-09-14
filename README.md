@@ -44,8 +44,8 @@ Leverage the context file feature for in-depth analysis of your projects.
 -   **Code Review**: `> In the provided Go files, are there any obvious race conditions?`
 -   **Documentation Query**: `> Based on the README.md, what are the main installation steps?`
 -   **Project Onboarding**: `> Give me a high-level overview of the project structure based on the files.`
-
-### 4. Hands-Free Voice Operation
+ 
+### 4. Hands-Free Voice Operation (Live Mode)
 Enable voice responses for a fully conversational experience, perfect for when you're multitasking.
 
 -   Run with the voice flag: `./gemini --voice`
@@ -53,7 +53,7 @@ Enable voice responses for a fully conversational experience, perfect for when y
 ### 5. Interactive File System Operations (Live Mode)
 When running in live mode (`--live`), the assistant can interact with a dedicated workspace directory (configurable via `WorkspaceDir` in `config.toml`, defaults to `~/gemini_workspace/`). You can ask it to list files, read them, create new ones, or delete them. This is useful for drafting documents, saving code snippets, or managing small project files directly through conversation.
 
-- **List files**: `> What files are in my workspace?`
+- **List files**: `> What files are in my workspace?` 
 - **Create a file**: `> Create a file named 'hello.go' with a simple hello world program.`
 - **Read a file**: `> Can you show me the content of 'hello.go'?`
 - **Delete a file**: `> Please delete the 'hello.go' file.`

@@ -23,7 +23,7 @@ const AgentWebScraperName = "webScraperAgent"
 func init() {
 	RegisterFactory(AgentWebScraperName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		// This agent is redundant for Post AI with native URL understanding.
-		if config.C.LiveAI {
+		if !config.C.PostAI {
 			return NewWebScraperAgent(ctx, client, toolset, bus)
 		}
 		return nil

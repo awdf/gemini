@@ -18,7 +18,7 @@ const AgentYoutubeName = "youtubeAgent"
 func init() {
 	RegisterFactory(AgentYoutubeName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		// This agent is redundant for Post AI with native youtube understanding.
-		if config.C.LiveAI {
+		if !config.C.PostAI {
 			return NewYoutubeAgent(ctx, client, toolset, bus)
 		}
 		return nil

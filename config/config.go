@@ -42,7 +42,7 @@ const TimeFormat = time.RFC1123
 type Config struct {
 	Debug    bool           `toml:"Debug"`
 	Trace    bool           `toml:"Trace"`
-	LiveAI   bool           `toml:"LiveAI"`
+	PostAI   bool           `toml:"LiveAI"`
 	Mode     string         `toml:"Mode"`
 	LogFile  string         `toml:"LogFile"`
 	AI       AIConfig       `toml:"ai"`
@@ -180,10 +180,10 @@ func (sc *ShellConfig) GetCommandEndMarker() string {
 // GetConfigPath determines the path to the configuration file based on a priority order.
 // 1. Highest priority: A path from the --config command-line flag (`cliPath`).
 // 2. Default: `live.toml` or `post.toml` in the `ProjectRoot`, depending on `isLive`.
-func GetConfigPath(cliPath string, isLive bool) string {
-	defaultConfig := DefaultPostConfigFileName
-	if isLive {
-		defaultConfig = DefaultLiveConfigFileName
+func GetConfigPath(cliPath string, isPost bool) string {
+	defaultConfig := DefaultLiveConfigFileName
+	if isPost {
+		defaultConfig = DefaultPostConfigFileName
 	}
 
 	// 1. From --config command-line flag
@@ -222,11 +222,11 @@ func Load(cliPath string) {
 	// ProjectRoot is determined exclusively by the GEMINI_PATH environment variable.
 	rootPath := os.Getenv("GEMINI_PATH")
 	if rootPath == "" {
-		log.Fatalf("Fatal: GEMINI_PATH environment variable is not set. It must point to the project's root directory.")
+		log.Fatalf("Fatal: GEMINI_PATH environment variable is not set. It must point to the project's root directory. Example: export GEMINI_PATH=$(pwd)")
 	}
 	ProjectRoot = rootPath
 	log.Printf("Using project root from GEMINI_PATH: %s", ProjectRoot)
-	path := GetConfigPath(cliPath, C.LiveAI)
+	path := GetConfigPath(cliPath, C.PostAI)
 
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -271,7 +271,7 @@ func createDefaultConfig(path string) error {
 	// Populate with default values
 	defaultConfig.Debug = false
 	defaultConfig.Trace = false
-	defaultConfig.LiveAI = false
+	defaultConfig.PostAI = false
 	defaultConfig.AI.AgentInstructions = make(map[string]string)
 	defaultConfig.Mode = "prompt"
 	defaultConfig.AI.Timezone = "UTC"

@@ -19,7 +19,7 @@ const AgentPdfReaderName = "pdfReaderAgent"
 func init() {
 	RegisterFactory(AgentPdfReaderName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		// This agent is redundant for Post AI with native pdf understanding.
-		if config.C.LiveAI {
+		if !config.C.PostAI {
 			return NewPdfReaderAgent(ctx, client, toolset, bus)
 		}
 		return nil
