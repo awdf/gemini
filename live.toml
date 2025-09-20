@@ -54,7 +54,7 @@ Transcript = false # Set to true to turn on transcrit
 EnableTools = true # Set to true to enable tools like Google Search. This may increase response time and cost.
 EnableStandardTools = true # Set to false to disable Google Search and URL Context tools.
 URLContextDisabled = false # Set to true to disable URL Context tool.
-EnableCodeExecution = false # Set to false to disable code execution tool. Not recomended to use with Function calling.
+EnableCodeExecution = true # Set to false to disable code execution tool. Not recomended to use with Function calling.
 EnableFunctionCalling = true # Set to false to disable function tool calling. Not recomended to use with Code execution.
 WorkspaceDir = "."
 
