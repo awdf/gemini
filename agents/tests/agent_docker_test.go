@@ -16,6 +16,8 @@ import (
 	"gemini/agents"
 )
 
+const dockerhubSearchToolName = "dockerhub.search"
+
 // setupDockerAgentTest is a helper function to set up the DockerAgent for testing.
 func setupDockerAgentTest(t *testing.T) (context.Context, context.CancelFunc, *genai.Tool, *agents.DockerAgent) {
 	t.Helper()
@@ -75,7 +77,7 @@ func TestDockerAgent(t *testing.T) {
 	// Find the 'search' tool declaration.
 	var searchTool *genai.FunctionDeclaration
 	for _, fn := range toolset.FunctionDeclarations {
-		if fn.Name == "search" {
+		if fn.Name == dockerhubSearchToolName {
 			searchTool = fn
 			break
 		}
@@ -85,7 +87,7 @@ func TestDockerAgent(t *testing.T) {
 	// Execute the 'search' tool call via the agent's Handle method.
 	t.Log("Executing 'search' tool call with query 'ubuntu'...")
 	searchCall := &genai.FunctionCall{
-		Name: "search",
+		Name: dockerhubSearchToolName,
 		Args: map[string]any{
 			"query": "ubuntu",
 		},
@@ -138,7 +140,7 @@ func TestDockerAgent_ToolDiscoveryAndSearch(t *testing.T) {
 		// Optionally, check for a specific expected tool, e.g., "search"
 		var searchToolFound bool
 		for _, fn := range toolset.FunctionDeclarations {
-			if fn.Name == "search" {
+			if fn.Name == dockerhubSearchToolName {
 				searchToolFound = true
 				break
 			}
@@ -153,7 +155,7 @@ func TestDockerAgent_ToolDiscoveryAndSearch(t *testing.T) {
 		// Ensure the 'search' tool is available before attempting to call it.
 		var searchTool *genai.FunctionDeclaration
 		for _, fn := range toolset.FunctionDeclarations {
-			if fn.Name == "search" {
+			if fn.Name == dockerhubSearchToolName {
 				searchTool = fn
 				break
 			}
@@ -163,7 +165,7 @@ func TestDockerAgent_ToolDiscoveryAndSearch(t *testing.T) {
 		// Execute the 'search' tool call via the agent's Handle method.
 		t.Log("Executing 'search' tool call with query 'alpine'...")
 		searchCall := &genai.FunctionCall{
-			Name: "search",
+			Name: dockerhubSearchToolName,
 			Args: map[string]any{
 				"query": "alpine",
 			},

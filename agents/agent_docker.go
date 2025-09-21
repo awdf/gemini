@@ -22,7 +22,10 @@ var (
 	userCurrent = user.Current
 )
 
-const AgentDockerName = "dockerAgent"
+const (
+	AgentDockerName = "dockerAgent"
+	clientName      = "dockerhub"
+)
 
 type McpServerConfig struct {
 	Command string            `json:"command"`
@@ -35,6 +38,9 @@ type McpSettings struct {
 }
 
 func init() {
+	return
+	// disabled for now, schema generation is not working well with the mcp package
+
 	RegisterFactory(AgentDockerName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewDockerAgent(ctx, client, toolset, bus)
 	})
@@ -75,9 +81,9 @@ func NewDockerAgent(ctx context.Context, client *genai.Client, toolset *genai.To
 		return nil
 	}
 
-	mcpConfig, ok := settings.McpServers["dockerhub"]
+	mcpConfig, ok := settings.McpServers[clientName]
 	if !ok {
-		formatter.Println("WARNING: Could not find 'dockerhub' configuration in MCP settings.")
+		formatter.Printlnf("WARNING: Could not find '%s' configuration in MCP settings.", clientName)
 		return nil
 	}
 
@@ -106,7 +112,7 @@ func NewDockerAgent(ctx context.Context, client *genai.Client, toolset *genai.To
 
 func (a *DockerAgent) discoverTools(ctx context.Context, toolset *genai.Tool) error {
 	cmd := exec.Command(a.mcpConfig.Command, a.mcpConfig.Args...)
-	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: clientName, Version: "v1.0.0"}, nil)
 	cs, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return err
@@ -120,7 +126,7 @@ func (a *DockerAgent) discoverTools(ctx context.Context, toolset *genai.Tool) er
 		}
 		a.Printf("Discovered tool: %s", tool.Name)
 		fn := &genai.FunctionDeclaration{
-			Name:        tool.Name,
+			Name:        clientName + "." + tool.Name,
 			Description: tool.Description,
 			Parameters:  convertSchema(tool.InputSchema),
 		}
@@ -166,8 +172,11 @@ func (a *DockerAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 }
 
 func (a *DockerAgent) executeMcpCommand(call *genai.FunctionCall) *genai.FunctionResponse {
+	// Normalize the tool name by removing the "dockerhub." prefix
+	normalizedName := call.Name[len(clientName)+1:]
+
 	params := &mcp.CallToolParams{
-		Name:      call.Name,
+		Name:      normalizedName,
 		Arguments: call.Args,
 	}
 
