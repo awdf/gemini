@@ -38,6 +38,18 @@ const (
 // TimeFormat defines the standard time format used across the application.
 const TimeFormat = time.RFC1123
 
+// McpServerConfig holds settings for a single MCP server.
+type McpServerConfig struct {
+	Command string            `toml:"command"`
+	Args    []string          `toml:"args"`
+	Env     map[string]string `toml:"env"`
+}
+
+// McpServersConfig holds settings for all MCP servers.
+type McpServersConfig struct {
+	Dockerhub McpServerConfig `toml:"dockerhub"`
+}
+
 // Config defines the structure of the configuration file.
 type Config struct {
 	Debug    bool           `toml:"Debug"`
@@ -52,7 +64,8 @@ type Config struct {
 	Google   GoogleConfig   `toml:"google"`
 	Pipeline PipelineConfig `toml:"pipeline"`
 	Video    VideoConfig    `toml:"video"`
-	Shell    ShellConfig    `toml:"shell"`
+	Shell      ShellConfig      `toml:"shell"`
+	
 }
 
 // AIConfig holds settings related to the AI model.

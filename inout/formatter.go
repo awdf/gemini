@@ -266,6 +266,11 @@ func (f *Formatter) Println(text string, color ...string) {
 	}
 }
 
+// Printlnf prints a formatted line.
+func (f *Formatter) Printlnf(format string, a ...any) {
+	fmt.Printf(format+"\033[K\r\n", a...)
+}
+
 // PrintNl prints a newline, then a line with an optional prefix color.
 func (f *Formatter) PrintNl(text string, color ...string) {
 	if len(color) > 0 {

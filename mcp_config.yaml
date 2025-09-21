@@ -1,0 +1,7 @@
+
+dockerhub:
+  username: iamawdf
+mcp_servers:
+  my-mcp-server:
+    url: "https://your-mcp-server.com"
+    token: "YOUR_API_TOKEN"
