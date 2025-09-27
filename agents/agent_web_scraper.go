@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,26 +32,36 @@ func init() {
 	})
 }
 
-// newRemoteExecutor creates a context that connects to an existing browser instance.
-// This allows the agent to control a browser that the user has opened manually
-// with remote debugging enabled (e.g., `google-chrome --remote-debugging-port=9222`).
-func newRemoteExecutor(parent context.Context) (context.Context, context.CancelFunc) {
-	// Set up a timeout for the entire operation.
-	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
+// getExecutorContext attempts to connect to a running browser instance.
+// If it fails, it falls back to creating a new headless browser instance.
+func getExecutorContext(parent context.Context) (context.Context, context.CancelFunc, bool) {
+	// 1. Try to connect to the remote debugging port.
+	conn, err := net.DialTimeout("tcp", "localhost:9222", 1*time.Second)
+	if err == nil {
+		// Connection successful, use the remote browser.
+		conn.Close()
+		log.Println("Remote browser detected. Connecting...")
 
-	// Create a remote allocator that connects to the browser's debugging port.
-	// It will automatically find the correct WebSocket URL.
-	allocatorContext, cancelAllocator := chromedp.NewRemoteAllocator(ctx, "http://localhost:9222")
+		ctx, cancel := context.WithTimeout(parent, 45*time.Second)
+		allocatorContext, cancelAllocator := chromedp.NewRemoteAllocator(ctx, "http://localhost:9222")
+		taskCtx, cancelTask := chromedp.NewContext(allocatorContext)
 
-	// Create a new context from the remote allocator. This represents a new tab.
-	taskCtx, cancelTask := chromedp.NewContext(allocatorContext)
-
-	// Return a single cancel function that cleans up everything.
-	return taskCtx, func() {
-		cancelTask()
-		cancelAllocator()
-		cancel()
+		return taskCtx, func() {
+			cancelTask()
+			cancelAllocator()
+			cancel()
+		}, true // isRemote is true
 	}
+
+	// 2. If connection failed, fall back to a new headless browser.
+	log.Println("Remote browser not detected. Launching new headless browser.")
+	ctx, cancel := chromedp.NewContext(parent)
+	ctx, cancelTimeout := context.WithTimeout(ctx, 30*time.Second)
+
+	return ctx, func() {
+		cancelTimeout()
+		cancel()
+	}, false // isRemote is false
 }
 
 type WebScraperAgent struct {
@@ -135,16 +147,15 @@ To do this, you have access to the following tools. Use them strategically:
 
 	getRenderedScreenshotFunc := genai.FunctionDeclaration{
 		Name:        "getRenderedScreenshot",
-		Description: "WEB BROWSER: Renders a web page using a headless browser and captures a screenshot of the full page. The screenshot is then uploaded to the session context for visual analysis.",
+		Description: "WEB BROWSER: Captures a screenshot of the web page in the user's currently active browser tab, or navigates to a new URL and captures it. The screenshot is then uploaded to the session context for visual analysis. Use this to 'see' the web page.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
 				"url": {
 					Type:        genai.TypeString,
-					Description: "The full, URL-encoded URL of the web page to capture.",
+					Description: "Optional. The full, URL-encoded URL of a web page to capture. If omitted, captures the current active tab.",
 				},
 			},
-			Required: []string{"url"},
 		},
 		Behavior: genai.BehaviorNonBlocking,
 	}
@@ -320,9 +331,8 @@ func (a *WebScraperAgent) handleGetRenderedContentTool(call *genai.FunctionCall)
 	go func() {
 		a.Printf("Starting background rendering for web page URL: %s", decodedURL)
 		// 3. Use chromedp to get rendered HTML
-		// Connect to the user's running browser instance.
-		ctx, cancel := newRemoteExecutor(context.Background())
-		defer cancel() // This will cancel the task, allocator, and timeout contexts.
+		ctx, cancel, _ := getExecutorContext(context.Background())
+		defer cancel()
 
 		var htmlContent string
 		processErr := chromedp.Run(ctx,
@@ -347,42 +357,64 @@ func (a *WebScraperAgent) handleGetRenderedContentTool(call *genai.FunctionCall)
 
 func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	// 1. Parse arguments
-	rawURL, urlOK := call.Args["url"].(string)
-	if !urlOK || rawURL == "" {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
-	}
-
-	decodedURL, err := url.QueryUnescape(rawURL)
-	if err != nil {
-		a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
-		decodedURL = rawURL
-	}
+	rawURL, _ := call.Args["url"].(string) // URL is now optional
 
 	go func() {
-		a.Printf("Starting background screenshot capture for web page URL: %s", decodedURL)
-		// Connect to the user's running browser instance.
-		ctx, cancel := newRemoteExecutor(context.Background())
-		defer cancel() // This will cancel the task, allocator, and timeout contexts.
+		ctx, cancel, isRemote := getExecutorContext(context.Background())
+		defer cancel()
 
 		var screenshotBuf []byte
-		// Create a new tab context to avoid disrupting the user's current tab.
-		screenshotCtx, cancelScreenshotTab := chromedp.NewContext(ctx)
-		defer cancelScreenshotTab()
+		var processErr error
+		var pageDescription string
 
-		// Use FullScreenshot with quality 0 for a full-page PNG.
-		processErr := chromedp.Run(screenshotCtx,
-			chromedp.Navigate(decodedURL),
-			chromedp.Sleep(2*time.Second), // Wait for JS
-			chromedp.FullScreenshot(&screenshotBuf, 0),
-		)
+		if rawURL != "" {
+			// --- Behavior with URL: Navigate and screenshot ---
+			decodedURL, err := url.QueryUnescape(rawURL)
+			if err != nil {
+				a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
+				decodedURL = rawURL
+			}
+			pageDescription = fmt.Sprintf("the page at %s", decodedURL)
+			a.Printf("Starting background screenshot capture for web page URL: %s", decodedURL)
+
+			// In remote mode, we open a new tab to avoid disrupting the user.
+			// In headless mode, we use the existing context.
+			runCtx := ctx
+			if isRemote {
+				newTabCtx, cancelTab := chromedp.NewContext(ctx)
+				defer cancelTab()
+				runCtx = newTabCtx
+			}
+
+			processErr = chromedp.Run(runCtx,
+				chromedp.Navigate(decodedURL),
+				// Wait for a common element to be visible, with a fallback sleep.
+				chromedp.WaitVisible(`body`, chromedp.ByQuery),
+				// Add a short, explicit delay after the element is visible to allow for rendering.
+				chromedp.Sleep(2*time.Second),
+				chromedp.FullScreenshot(&screenshotBuf, 0),
+			)
+		} else {
+			if isRemote {
+				// --- Behavior without URL (Remote): Screenshot the currently active tab ---
+				pageDescription = "your current screen"
+				a.Printf("Starting background screenshot capture of the current active tab.")
+				processErr = chromedp.Run(ctx,
+					chromedp.FullScreenshot(&screenshotBuf, 0),
+				)
+			} else {
+				// --- Behavior without URL (Headless): Not supported ---
+				processErr = fmt.Errorf("a URL is required to take a screenshot in headless mode")
+			}
+		}
 
 		var finalResponse *genai.FunctionResponse
 		if processErr != nil {
-			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to get screenshot for %s: %w", decodedURL, processErr), false)
+			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to get screenshot for %s: %w", pageDescription, processErr), false)
 		} else {
 			// 4. Prepare content for the model
 			parts := []*genai.Part{
-				genai.NewPartFromText(fmt.Sprintf("Here is the screenshot of the page at %s that you requested for visual analysis.", decodedURL)),
+				genai.NewPartFromText(fmt.Sprintf("Here is the screenshot of %s that you requested for visual analysis.", pageDescription)),
 				genai.NewPartFromBytes(screenshotBuf, config.MIMEImage), // config.MIMEImage is "image/png"
 			}
 			turn := genai.NewContentFromParts(parts, genai.RoleUser)
@@ -417,7 +449,12 @@ func (a *WebScraperAgent) handleOpenPageTool(call *genai.FunctionCall) *genai.Fu
 
 	// 2. Connect to the browser and open the page in a new tab.
 	// We don't defer the cancel function here because we want the tab to stay open.
-	ctx, _ := newRemoteExecutor(context.Background())
+	ctx, _, isRemote := getExecutorContext(context.Background())
+
+	if !isRemote {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("the 'openPage' tool requires a running browser with remote debugging enabled"))
+	}
+
 	newTabCtx, _ := chromedp.NewContext(ctx)
 
 	// Run the navigation in a goroutine so it doesn't block the main thread.
