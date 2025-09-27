@@ -18,13 +18,18 @@ import (
 
 const dockerhubSearchToolName = "dockerhub_search"
 
-// setupDockerAgentTest is a helper function to set up the DockerAgent for testing.
-func setupDockerAgentTest(t *testing.T) (context.Context, context.CancelFunc, *genai.Tool, *agents.DockerAgent) {
+// setupMCPAgentTest is a helper function to set up the MCPAgent for testing.
+func setupMCPAgentTest(t *testing.T) (context.Context, context.CancelFunc, *genai.Tool, agents.Callable) {
 	t.Helper()
 
 	// Give Docker time to pull the image if it's not present locally.
 	t.Log("Giving Docker up to 2 minutes to pull the mcp-server image if needed...")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+
+	config := agents.McpServerConfig{
+		Command: "docker",
+		Args:    []string{"run", "--rm", "-i", "docker/mcp-server"},
+	}
 
 	tmpDir := t.TempDir()
 	geminiDir := filepath.Join(tmpDir, ".gemini")
@@ -33,10 +38,7 @@ func setupDockerAgentTest(t *testing.T) (context.Context, context.CancelFunc, *g
 
 	settings := agents.McpSettings{
 		McpServers: map[string]agents.McpServerConfig{
-			"dockerhub": {
-				Command: "docker",
-				Args:    []string{"run", "--rm", "-i", "docker/mcp-server"},
-			},
+			"dockerhub": config,
 		},
 	}
 	settingsFile := filepath.Join(geminiDir, "settings.json")
@@ -52,22 +54,23 @@ func setupDockerAgentTest(t *testing.T) (context.Context, context.CancelFunc, *g
 		cancel() // Ensure context is cancelled
 	})
 
-	toolset := &genai.Tool{
-		FunctionDeclarations: []*genai.FunctionDeclaration{},
-	}
+	toolset := agents.NewToolSet()
 	bus := EventBus.New()
-	agent := agents.NewDockerAgent(ctx, nil, toolset, &bus)
-	assert.NotNil(t, agent, "NewDockerAgent should not return nil")
+	agents.BuildMCPNetwork(ctx, nil, toolset, &bus)
+
+	agent, ok := agents.AgentRegistry["dockerhub"]
+	assert.True(t, ok, "Agent 'dockerhub' should be in the registry")
+	assert.NotNil(t, agent, "MCPAgent should not be nil")
 
 	return ctx, cancel, toolset, agent
 }
 
-func TestDockerAgent(t *testing.T) {
+func TestMCPAgent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
 	}
 
-	_, _, toolset, agent := setupDockerAgentTest(t)
+	_, _, toolset, agent := setupMCPAgentTest(t)
 	var err error
 
 	// Assert that the agent has discovered tools from the MCP server.
@@ -104,7 +107,7 @@ func TestDockerAgent(t *testing.T) {
 	// The "output" value is a slice of maps, where each map contains "type" and "text".
 	responseContent, ok := outputMap["output"].([]mcp.Content)
 	t.Logf("responseContent: %+v, ok: %t", responseContent, ok)
-	assert.True(t, ok, "outputMap[\"output\"] should be a slice of []*mcp.Content")
+	assert.True(t, ok, "outputMap[\"output\"] should be a slice of []any")
 	assert.NotEmpty(t, responseContent, "Response content should not be empty")
 
 	// Extract the text content from the first element.
@@ -125,13 +128,13 @@ func TestDockerAgent(t *testing.T) {
 	t.Logf("Search for 'ubuntu' returned %d results.", len(searchResult.Text))
 }
 
-func TestDockerAgent_ToolDiscoveryAndSearch(t *testing.T) {
+func TestMCPAgent_ToolDiscoveryAndSearch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
 	}
 
 	t.Run("Tool Discovery", func(t *testing.T) {
-		_, _, toolset, _ := setupDockerAgentTest(t)
+		_, _, toolset, _ := setupMCPAgentTest(t)
 
 		// Assert that the agent has discovered tools from the MCP server.
 		assert.NotEmpty(t, toolset.FunctionDeclarations, "Agent should discover tools from MCP server")
@@ -149,7 +152,7 @@ func TestDockerAgent_ToolDiscoveryAndSearch(t *testing.T) {
 	})
 
 	t.Run("Search Tool Execution", func(t *testing.T) {
-		_, _, toolset, agent := setupDockerAgentTest(t)
+		_, _, toolset, agent := setupMCPAgentTest(t)
 		var err error
 
 		// Ensure the 'search' tool is available before attempting to call it.
@@ -167,7 +170,7 @@ func TestDockerAgent_ToolDiscoveryAndSearch(t *testing.T) {
 		searchCall := &genai.FunctionCall{
 			Name: dockerhubSearchToolName,
 			Args: map[string]any{
-				"query": "alpine",
+				"_query": "alpine",
 			},
 		}
 

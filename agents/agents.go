@@ -2,8 +2,12 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"os/user"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -18,6 +22,16 @@ import (
 )
 
 const PrintTemplate = "Executing tool call: %s with args: %v"
+
+type McpServerConfig struct {
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env"`
+}
+
+type McpSettings struct {
+	McpServers map[string]McpServerConfig `json:"mcpServers"`
+}
 
 type Callable interface {
 	ModelName() string
@@ -94,9 +108,48 @@ func RegisterFactory(name string, factory AgentFactory) {
 }
 
 func BuildAgentNetwork(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) {
+	// Static agents
 	for name := range agentFactories {
 		Registerate(ctx, client, toolset, bus, name)
 	}
+
+	// Dynamic agents
+	BuildMCPNetwork(ctx, client, toolset, bus)
+}
+
+func BuildMCPNetwork(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) {
+	// Dynamically create MCP agents from settings.
+	usr, err := user.Current()
+	if err != nil {
+		log.Printf("WARNING: Could not get current user for MCP settings: %v", err)
+		return
+	}
+	settingsPath := filepath.Join(usr.HomeDir, ".gemini", "settings.json")
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		// This is not a fatal error, the user may not have MCP servers configured.
+		log.Printf("WARNING: Could not read MCP settings file at %s: %v", settingsPath, err)
+		return
+	}
+
+	var settings McpSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		log.Printf("WARNING: Could not parse MCP settings file at %s: %v", settingsPath, err)
+		return
+	}
+
+	for name, config := range settings.McpServers {
+		RegisterMcpAgent(ctx, client, toolset, bus, name, config)
+	}
+}
+
+func RegisterMcpAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus, name string, config McpServerConfig) {
+	agent := NewMCPAgent(ctx, client, toolset, bus, name, config)
+	if agent == nil || (reflect.ValueOf(agent).Kind() == reflect.Ptr && reflect.ValueOf(agent).IsNil()) {
+		return
+	}
+	AgentRegistry[name] = agent
 }
 
 // Registerate acts as a factory and registry for agents. It centralizes the

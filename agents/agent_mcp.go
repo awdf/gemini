@@ -2,12 +2,8 @@ package agents
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"os/user"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,34 +13,9 @@ import (
 	"google.golang.org/genai"
 )
 
-var (
-	execCommand = exec.Command
-	userCurrent = user.Current
-)
+const mask = "_"
 
-const (
-	mask            = "_"
-	AgentDockerName = "dockerAgent"
-	clientName      = "dockerhub"
-)
-
-type McpServerConfig struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Env     map[string]string `json:"env"`
-}
-
-type McpSettings struct {
-	McpServers map[string]McpServerConfig `json:"mcpServers"`
-}
-
-func init() {
-	RegisterFactory(AgentDockerName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
-		return NewDockerAgent(ctx, client, toolset, bus)
-	})
-}
-
-type DockerAgent struct {
+type MCPAgent struct {
 	*Agent
 	mcpConfig McpServerConfig
 	functions map[string]*genai.FunctionDeclaration // A map to quickly look up discovered functions.
@@ -52,62 +23,37 @@ type DockerAgent struct {
 	bus       *EventBus.Bus                         // The event bus for asynchronous communication.
 }
 
-func NewDockerAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *DockerAgent {
+func NewMCPAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus, name string, config McpServerConfig) *MCPAgent {
 	// Create the base agent first, so we can use its logging methods.
 	baseAgent := NewAgent(ctx, client, AgentConfig{
-		Name: AgentDockerName,
+		Name: name,
 	})
 
-	dockerAgent := &DockerAgent{
+	mcpAgent := &MCPAgent{
 		Agent:     baseAgent,
 		bus:       bus,
 		functions: make(map[string]*genai.FunctionDeclaration),
+		mcpConfig: config,
 	}
 
-	usr, err := userCurrent()
-	if err != nil {
-		dockerAgent.Printf("WARNING: Could not get current user for MCP settings: %v", err)
+	if mcpAgent.mcpConfig.Command == "" {
+		mcpAgent.Println("WARNING: Could not create MCP agent, MCP server command is not configured.")
 		return nil
 	}
-	settingsPath := filepath.Join(usr.HomeDir, ".gemini", "settings.json")
-
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		dockerAgent.Printf("WARNING: Could not read MCP settings file at %s: %v", settingsPath, err)
-		return nil
-	}
-
-	var settings McpSettings
-	if err := json.Unmarshal(data, &settings); err != nil {
-		dockerAgent.Printf("WARNING: Could not parse MCP settings file at %s: %v", settingsPath, err)
-		return nil
-	}
-
-	mcpConfig, ok := settings.McpServers[clientName]
-	if !ok {
-		dockerAgent.Printf("WARNING: Could not find '%s' configuration in MCP settings.", clientName)
-		return nil
-	}
-
-	if mcpConfig.Command == "" {
-		dockerAgent.Println("WARNING: Could not create Docker agent, MCP server command is not configured.")
-		return nil
-	}
-	dockerAgent.mcpConfig = mcpConfig
 
 	// Discover tools from the MCP server
-	if err := dockerAgent.discoverTools(ctx, toolset); err != nil {
-		dockerAgent.Printf("WARNING: Could not discover Docker tools: %v", err)
+	if err := mcpAgent.discoverTools(ctx, toolset); err != nil {
+		mcpAgent.Printf("WARNING: Could not discover MCP tools: %v", err)
 		return nil
 	}
 
-	dockerAgent.Println("Initialized successfully.")
-	return dockerAgent
+	mcpAgent.Println("Initialized successfully.")
+	return mcpAgent
 }
 
-func (a *DockerAgent) discoverTools(ctx context.Context, toolset *genai.Tool) error {
+func (a *MCPAgent) discoverTools(ctx context.Context, toolset *genai.Tool) error {
 	cmd := exec.Command(a.mcpConfig.Command, a.mcpConfig.Args...)
-	client := mcp.NewClient(&mcp.Implementation{Name: clientName, Version: "v1.0.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: a.name, Version: "v1.0.0"}, nil)
 	cs, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		return err
@@ -121,7 +67,7 @@ func (a *DockerAgent) discoverTools(ctx context.Context, toolset *genai.Tool) er
 		}
 		a.Printf("Discovered tool: %s", tool.Name)
 		fn := &genai.FunctionDeclaration{
-			Name:        clientName + mask + tool.Name,
+			Name:        a.name + mask + tool.Name,
 			Description: tool.Description,
 			Parameters:  convertSchema(tool.InputSchema),
 		}
@@ -188,20 +134,20 @@ func convertSchema(js *jsonschema.Schema) *genai.Schema {
 	return gs
 }
 
-func (a *DockerAgent) WarmUp() time.Duration {
+func (a *MCPAgent) WarmUp() time.Duration {
 	return 0
 }
 
-func (a *DockerAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
+func (a *MCPAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 	if _, ok := a.functions[call.Name]; ok {
 		return a.executeMcpCommand(call)
 	}
 	return nil
 }
 
-func (a *DockerAgent) executeMcpCommand(call *genai.FunctionCall) *genai.FunctionResponse {
-	// Normalize the tool name by removing the "dockerhub." prefix
-	normalizedName := call.Name[len(clientName)+len(mask):]
+func (a *MCPAgent) executeMcpCommand(call *genai.FunctionCall) *genai.FunctionResponse {
+	// Normalize the tool name by removing the agent name prefix
+	normalizedName := call.Name[len(a.name)+len(mask):]
 
 	normalizedArgs := make(map[string]any)
 	for key, value := range call.Args {
