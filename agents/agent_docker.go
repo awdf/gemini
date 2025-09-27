@@ -3,10 +3,12 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/asaskevich/EventBus"
@@ -23,6 +25,7 @@ var (
 )
 
 const (
+	mask            = "_"
 	AgentDockerName = "dockerAgent"
 	clientName      = "dockerhub"
 )
@@ -38,7 +41,7 @@ type McpSettings struct {
 }
 
 func init() {
-	return
+	// return
 	// disabled for now, schema generation is not working well with the mcp package
 
 	RegisterFactory(AgentDockerName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
@@ -126,7 +129,7 @@ func (a *DockerAgent) discoverTools(ctx context.Context, toolset *genai.Tool) er
 		}
 		a.Printf("Discovered tool: %s", tool.Name)
 		fn := &genai.FunctionDeclaration{
-			Name:        clientName + "." + tool.Name,
+			Name:        clientName + mask + tool.Name,
 			Description: tool.Description,
 			Parameters:  convertSchema(tool.InputSchema),
 		}
@@ -138,15 +141,42 @@ func (a *DockerAgent) discoverTools(ctx context.Context, toolset *genai.Tool) er
 }
 
 func convertSchema(js *jsonschema.Schema) *genai.Schema {
+	// Schema: https://json-schema.org/draft-07/schema
+
 	if js == nil {
 		return nil
 	}
 
+	// If MCP Schema don't have type, we must set unknown
+	var gType genai.Type = genai.TypeUnspecified
+	if len(js.Type) > 0 {
+		gType = genai.Type(strings.ToUpper(js.Type))
+	} else if js.Not != nil {
+		// Because genai.Schema doesn't have a Not(exclude) field, function currently ignores it
+		gType = genai.TypeNULL
+	}
+
 	gs := &genai.Schema{
-		Type:        genai.Type(js.Type),
+		Type:        gType,
 		Description: js.Description,
 		Properties:  make(map[string]*genai.Schema),
 		Required:    js.Required,
+	}
+
+	if js.AnyOf != nil {
+		gs.AnyOf = make([]*genai.Schema, len(js.AnyOf))
+		for i, anyOf := range js.AnyOf {
+			gs.AnyOf[i] = convertSchema(anyOf)
+		}
+	}
+
+	if js.Enum != nil {
+		// The jsonschema Enum is []any, but genai.Schema expects []string.
+		// We must convert each element.
+		gs.Enum = make([]string, 0, len(js.Enum))
+		for _, v := range js.Enum {
+			gs.Enum = append(gs.Enum, fmt.Sprint(v))
+		}
 	}
 
 	if js.Items != nil {
@@ -154,7 +184,13 @@ func convertSchema(js *jsonschema.Schema) *genai.Schema {
 	}
 
 	for key, val := range js.Properties {
-		gs.Properties[key] = convertSchema(val)
+		// Prefix parameter names to avoid conflicts with reserved keywords.
+		prefixedKey := mask + key
+		gs.Properties[prefixedKey] = convertSchema(val)
+	}
+
+	for i, req := range gs.Required {
+		gs.Required[i] = mask + req
 	}
 
 	return gs
@@ -173,11 +209,17 @@ func (a *DockerAgent) Handle(call *genai.FunctionCall) *genai.FunctionResponse {
 
 func (a *DockerAgent) executeMcpCommand(call *genai.FunctionCall) *genai.FunctionResponse {
 	// Normalize the tool name by removing the "dockerhub." prefix
-	normalizedName := call.Name[len(clientName)+1:]
+	normalizedName := call.Name[len(clientName)+len(mask):]
+
+	normalizedArgs := make(map[string]any)
+	for key, value := range call.Args {
+		// Remove the underscore prefix we added during discovery.
+		normalizedArgs[strings.TrimPrefix(key, mask)] = value
+	}
 
 	params := &mcp.CallToolParams{
 		Name:      normalizedName,
-		Arguments: call.Args,
+		Arguments: normalizedArgs,
 	}
 
 	result, err := a.cs.CallTool(context.Background(), params)

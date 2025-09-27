@@ -77,7 +77,7 @@ TargetTokens = 0
 
 [ai.session_resumption]
 # To prevent session termination when the server periodically resets the WebSocket connection
-Enabled = false
+Enabled = true
 
 [ai.proactivity]
 # Configuration for model proactivity features.

@@ -16,7 +16,7 @@ import (
 	"gemini/agents"
 )
 
-const dockerhubSearchToolName = "dockerhub.search"
+const dockerhubSearchToolName = "dockerhub_search"
 
 // setupDockerAgentTest is a helper function to set up the DockerAgent for testing.
 func setupDockerAgentTest(t *testing.T) (context.Context, context.CancelFunc, *genai.Tool, *agents.DockerAgent) {

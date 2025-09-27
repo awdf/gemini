@@ -604,7 +604,7 @@ func (c *CLI) runSystemModeLoop() {
 				if c.systemAFK && !c.IsBusy() {
 					// afkTurnPending = false // Consume the flag.
 					log.Println("AFK mode: Command finished, auto-submitting turn to AI.")
-					helpers.SafeSend(c.cmdChan, "This is AFK mode. Have task done? No, continue with next step. Yes, use disable_afk_mode tool.")
+					helpers.SafeSend(c.cmdChan, "This is AFK mode. Have task done? No, continue with next step. Yes or Need user input? - use disable_afk_mode tool.")
 				}
 
 			case line, ok := <-outputChan:
