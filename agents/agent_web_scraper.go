@@ -30,6 +30,28 @@ func init() {
 	})
 }
 
+// newRemoteExecutor creates a context that connects to an existing browser instance.
+// This allows the agent to control a browser that the user has opened manually
+// with remote debugging enabled (e.g., `google-chrome --remote-debugging-port=9222`).
+func newRemoteExecutor(parent context.Context) (context.Context, context.CancelFunc) {
+	// Set up a timeout for the entire operation.
+	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
+
+	// Create a remote allocator that connects to the browser's debugging port.
+	// It will automatically find the correct WebSocket URL.
+	allocatorContext, cancelAllocator := chromedp.NewRemoteAllocator(ctx, "http://localhost:9222")
+
+	// Create a new context from the remote allocator. This represents a new tab.
+	taskCtx, cancelTask := chromedp.NewContext(allocatorContext)
+
+	// Return a single cancel function that cleans up everything.
+	return taskCtx, func() {
+		cancelTask()
+		cancelAllocator()
+		cancel()
+	}
+}
+
 type WebScraperAgent struct {
 	*Agent
 	bus *EventBus.Bus
@@ -127,6 +149,22 @@ To do this, you have access to the following tools. Use them strategically:
 		Behavior: genai.BehaviorNonBlocking,
 	}
 
+	openPageFunc := genai.FunctionDeclaration{
+		Name:        "openPage",
+		Description: "WEB BROWSER: Opens a new tab in the user's browser and navigates to the specified URL.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"url": {
+					Type:        genai.TypeString,
+					Description: "The full, URL-encoded URL of the web page to open.",
+				},
+			},
+			Required: []string{"url"},
+		},
+		Behavior: genai.BehaviorBlocking, // Blocking, as the action is immediate.
+	}
+
 	downloadWebFileFunc := genai.FunctionDeclaration{
 		Name:        "downloadWebFile",
 		Description: "WEB BROWSER: Downloads a file from a given URL and saves it to the workspace. Similar to the 'wget' command.",
@@ -146,7 +184,7 @@ To do this, you have access to the following tools. Use them strategically:
 		},
 		Behavior: genai.BehaviorBlocking,
 	}
-	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc, &getRenderedScreenshotFunc, &downloadWebFileFunc)
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc, &getRenderedScreenshotFunc, &openPageFunc, &downloadWebFileFunc)
 
 	agentConfig := AgentConfig{
 		Name:              AgentWebScraperName,
@@ -183,6 +221,8 @@ func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespon
 		return a.handleGetRenderedScreenshotTool(call)
 	case "downloadWebFile":
 		return a.handleDownloadWebFileTool(call)
+	case "openPage":
+		return a.handleOpenPageTool(call)
 	default:
 		return a.Agent.Handle(call)
 	}
@@ -280,11 +320,9 @@ func (a *WebScraperAgent) handleGetRenderedContentTool(call *genai.FunctionCall)
 	go func() {
 		a.Printf("Starting background rendering for web page URL: %s", decodedURL)
 		// 3. Use chromedp to get rendered HTML
-		// Create a new context with a timeout to prevent hanging.
-		ctx, cancel := chromedp.NewContext(context.Background())
-		defer cancel()
-		ctx, cancel = context.WithTimeout(ctx, 30*time.Second) // 30-second timeout for rendering
-		defer cancel()
+		// Connect to the user's running browser instance.
+		ctx, cancel := newRemoteExecutor(context.Background())
+		defer cancel() // This will cancel the task, allocator, and timeout contexts.
 
 		var htmlContent string
 		processErr := chromedp.Run(ctx,
@@ -322,15 +360,17 @@ func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCa
 
 	go func() {
 		a.Printf("Starting background screenshot capture for web page URL: %s", decodedURL)
-		// 3. Use chromedp to get screenshot
-		ctx, cancel := chromedp.NewContext(context.Background())
-		defer cancel()
-		ctx, cancel = context.WithTimeout(ctx, 30*time.Second) // 30-second timeout
-		defer cancel()
+		// Connect to the user's running browser instance.
+		ctx, cancel := newRemoteExecutor(context.Background())
+		defer cancel() // This will cancel the task, allocator, and timeout contexts.
 
 		var screenshotBuf []byte
+		// Create a new tab context to avoid disrupting the user's current tab.
+		screenshotCtx, cancelScreenshotTab := chromedp.NewContext(ctx)
+		defer cancelScreenshotTab()
+
 		// Use FullScreenshot with quality 0 for a full-page PNG.
-		processErr := chromedp.Run(ctx,
+		processErr := chromedp.Run(screenshotCtx,
 			chromedp.Navigate(decodedURL),
 			chromedp.Sleep(2*time.Second), // Wait for JS
 			chromedp.FullScreenshot(&screenshotBuf, 0),
@@ -338,7 +378,7 @@ func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCa
 
 		var finalResponse *genai.FunctionResponse
 		if processErr != nil {
-			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to get screenshot for %s: %w", decodedURL, processErr))
+			finalResponse = a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to get screenshot for %s: %w", decodedURL, processErr), false)
 		} else {
 			// 4. Prepare content for the model
 			parts := []*genai.Part{
@@ -350,7 +390,7 @@ func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCa
 
 			a.Println("Successfully prepared screenshot to be sent to live session.")
 			result := map[string]any{"status": "Screenshot captured and prepared for analysis.", "send_content": content}
-			finalResponse = a.CreateFunctionResponse(call, result, nil)
+			finalResponse = a.CreateFunctionResponse(call, result, nil, false) // Final response, willContinue is false.
 		}
 		(*a.bus).Publish(config.AgentTopic, finalResponse)
 	}()
@@ -358,6 +398,38 @@ func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCa
 	// Immediately return the initial response to acknowledge the request.
 	a.Printf("Acknowledging web page screenshot request. Will report back when complete.")
 	return a.CreateFunctionResponse(call, map[string]any{"status": "Web page screenshot capture started."}, nil, true)
+}
+
+func (a *WebScraperAgent) handleOpenPageTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	// 1. Parse arguments
+	rawURL, urlOK := call.Args["url"].(string)
+	if !urlOK || rawURL == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
+	}
+
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
+		decodedURL = rawURL
+	}
+
+	// 2. Connect to the browser and open the page in a new tab.
+	// We don't defer the cancel function here because we want the tab to stay open.
+	ctx, _ := newRemoteExecutor(context.Background())
+	newTabCtx, _ := chromedp.NewContext(ctx)
+
+	// Run the navigation in a goroutine so it doesn't block the main thread.
+	go func() {
+		if err := chromedp.Run(newTabCtx, chromedp.Navigate(decodedURL)); err != nil {
+			a.Printf("Error navigating to %s: %v", decodedURL, err)
+		}
+	}()
+
+	status := fmt.Sprintf("A new tab should now be opening with the URL: %s", decodedURL)
+	result := map[string]any{"status": status}
+	return a.CreateFunctionResponse(call, result, nil)
 }
 
 func (a *WebScraperAgent) handleDownloadWebFileTool(call *genai.FunctionCall) *genai.FunctionResponse {
