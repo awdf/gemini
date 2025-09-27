@@ -15,8 +15,6 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/genai"
-
-	"gemini/inout"
 )
 
 var (
@@ -41,9 +39,6 @@ type McpSettings struct {
 }
 
 func init() {
-	// return
-	// disabled for now, schema generation is not working well with the mcp package
-
 	RegisterFactory(AgentDockerName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewDockerAgent(ctx, client, toolset, bus)
 	})
@@ -52,60 +47,57 @@ func init() {
 type DockerAgent struct {
 	*Agent
 	mcpConfig McpServerConfig
-	functions map[string]*genai.FunctionDeclaration
-	formatter *inout.Formatter
-	cs        *mcp.ClientSession
-	bus       *EventBus.Bus
+	functions map[string]*genai.FunctionDeclaration // A map to quickly look up discovered functions.
+	cs        *mcp.ClientSession                    // The active client session to the MCP server.
+	bus       *EventBus.Bus                         // The event bus for asynchronous communication.
 }
 
 func NewDockerAgent(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) *DockerAgent {
-	formatter := inout.NewFormatter()
+	// Create the base agent first, so we can use its logging methods.
+	baseAgent := NewAgent(ctx, client, AgentConfig{
+		Name: AgentDockerName,
+	})
+
 	dockerAgent := &DockerAgent{
-		formatter: formatter,
+		Agent:     baseAgent,
 		bus:       bus,
+		functions: make(map[string]*genai.FunctionDeclaration),
 	}
 
 	usr, err := userCurrent()
 	if err != nil {
-		formatter.Printlnf("WARNING: Could not get current user for MCP settings: %v", err)
+		dockerAgent.Printf("WARNING: Could not get current user for MCP settings: %v", err)
 		return nil
 	}
 	settingsPath := filepath.Join(usr.HomeDir, ".gemini", "settings.json")
 
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
-		formatter.Printlnf("WARNING: Could not read MCP settings file at %s: %v", settingsPath, err)
+		dockerAgent.Printf("WARNING: Could not read MCP settings file at %s: %v", settingsPath, err)
 		return nil
 	}
 
 	var settings McpSettings
 	if err := json.Unmarshal(data, &settings); err != nil {
-		formatter.Printlnf("WARNING: Could not parse MCP settings file at %s: %v", settingsPath, err)
+		dockerAgent.Printf("WARNING: Could not parse MCP settings file at %s: %v", settingsPath, err)
 		return nil
 	}
 
 	mcpConfig, ok := settings.McpServers[clientName]
 	if !ok {
-		formatter.Printlnf("WARNING: Could not find '%s' configuration in MCP settings.", clientName)
+		dockerAgent.Printf("WARNING: Could not find '%s' configuration in MCP settings.", clientName)
 		return nil
 	}
 
 	if mcpConfig.Command == "" {
-		formatter.Println("WARNING: Could not create Docker agent, MCP server command is not configured.")
+		dockerAgent.Println("WARNING: Could not create Docker agent, MCP server command is not configured.")
 		return nil
 	}
-
-	baseAgent := NewAgent(ctx, client, AgentConfig{
-		Name: AgentDockerName,
-	})
-
-	dockerAgent.Agent = baseAgent
 	dockerAgent.mcpConfig = mcpConfig
-	dockerAgent.functions = make(map[string]*genai.FunctionDeclaration)
 
 	// Discover tools from the MCP server
 	if err := dockerAgent.discoverTools(ctx, toolset); err != nil {
-		formatter.Printlnf("WARNING: Could not discover Docker tools: %v", err)
+		dockerAgent.Printf("WARNING: Could not discover Docker tools: %v", err)
 		return nil
 	}
 
@@ -228,6 +220,6 @@ func (a *DockerAgent) executeMcpCommand(call *genai.FunctionCall) *genai.Functio
 	}
 
 	// The result from CallTool is a struct. We only care about the Content map.
-	a.formatter.Printlnf("Tool call '%s' result content: %v", call.Name, result.Content)
+	a.Printf("Tool call '%s' result content: %v", call.Name, result.Content)
 	return a.CreateFunctionResponse(call, result.Content, nil)
 }
