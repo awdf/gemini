@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -129,19 +128,16 @@ func (b *userBrowser) SelectTab(tabID target.ID) context.Context {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// If a valid context for this tab already exists, return it.
-	if tab, ok := b.selectedTabs[tabID]; ok && tab.ctx.Err() == nil {
-		return tab.ctx
+	// If a context for this tab doesn't exist, create and store it.
+	if _, ok := b.selectedTabs[tabID]; !ok {
+		taskCtx, cancel := chromedp.NewContext(b.context, chromedp.WithTargetID(tabID))
+		b.selectedTabs[tabID] = struct {
+			ctx    context.Context
+			cancel context.CancelFunc
+		}{ctx: taskCtx, cancel: cancel}
 	}
 
-	// Otherwise, create a new context.
-	taskCtx, cancel := chromedp.NewContext(b.context, chromedp.WithTargetID(tabID))
-	b.selectedTabs[tabID] = struct {
-		ctx    context.Context
-		cancel context.CancelFunc
-	}{ctx: taskCtx, cancel: cancel}
-
-	return taskCtx
+	return b.selectedTabs[tabID].ctx
 }
 
 // CreateTab creates a new tab, registers it, and returns its context and ID.
@@ -150,39 +146,62 @@ func (b *userBrowser) CreateTab(url string) (target.ID, error) {
 		return "", fmt.Errorf("browser is not connected")
 	}
 
-	// To create a new tab, we need to execute a command against the browser itself.
-	// We can do this by creating a temporary task context from the main allocator context.
-	taskCtx, cancel := chromedp.NewContext(b.context)
-	defer cancel()
-
-	// Ensure the browser is running on the context before we try to use its executor.
-	if err := chromedp.Run(taskCtx); err != nil {
-		return "", fmt.Errorf("failed to ensure browser is running: %w", err)
-	}
-
-	var newTabID target.ID
-	// Use the browser's executor to create the target directly, which avoids
-	// chromedp.Run creating an unwanted intermediate window.
-	browserExecutor := cdp.WithExecutor(taskCtx, chromedp.FromContext(taskCtx).Browser)
-	newTabID, err := target.CreateTarget(url).WithNewWindow(false).Do(browserExecutor)
+	tabs, err := b.Tabs()
 	if err != nil {
-		return "", fmt.Errorf("failed to create new tab for %s: %w", url, err)
-	}
-	if newTabID == "" {
-		return "", fmt.Errorf("failed to create new tab, received empty target ID")
+		return "", err
 	}
 
-	// Now, create a context specifically for the new tab and register it.
-	newTabCtx, cancelTab := chromedp.NewContext(b.context, chromedp.WithTargetID(newTabID))
+	taskCtx, _ := chromedp.NewContext(b.context, chromedp.WithTargetID(tabs[0].TargetID))
 
-	b.mu.Lock()
-	b.selectedTabs[newTabID] = struct {
-		ctx    context.Context
-		cancel context.CancelFunc
-	}{ctx: newTabCtx, cancel: cancelTab}
-	b.mu.Unlock()
+	// Treate dirty tab
+	var dirtyID target.ID
+	err = chromedp.Run(taskCtx,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			var err error
+			// We get dirty ID not able to proceed by chromedp
+			dirtyID, err = target.CreateTarget(url).WithForTab(true).Do(ctx)
+			return err
+		}),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create new tab: %w", err)
+	}
+	if dirtyID == "" {
+		return "", fmt.Errorf("create new tab returned empty target ID")
+	}
 
-	return newTabID, nil
+	// Create a set of old tab IDs for efficient lookup.
+	oldTabIDs := make(map[target.ID]struct{}, len(tabs))
+	for _, tab := range tabs {
+		oldTabIDs[tab.TargetID] = struct{}{}
+	}
+
+	// Get updated tabs with real IDs
+	newTabs, err := b.Tabs()
+	if err != nil {
+		return "", err
+	}
+
+	var newlyCreatedTab *target.Info
+	// Find the new tab real ID in the updated list.
+	for _, tab := range newTabs {
+		if _, exists := oldTabIDs[tab.TargetID]; !exists {
+			newlyCreatedTab = tab
+			break // Found it
+		}
+	}
+
+	if newlyCreatedTab == nil {
+		return "", fmt.Errorf("could not find newly created tab in the browser's tab list")
+	}
+
+	// Introduce a small delay to ensure the browser has fully processed the
+	// new tab creation and is ready to receive commands for it.
+	time.Sleep(250 * time.Millisecond)
+
+	// Create and store the definitive context for the new tab.
+	b.SelectTab(newlyCreatedTab.TargetID)
+	return newlyCreatedTab.TargetID, nil
 }
 
 // DropTab closes a specific tab by its ID.
@@ -260,7 +279,6 @@ func TestWebScraperAgent_ReadActiveTabTitle(t *testing.T) {
 
 // TestWebScraperAgent_ReadActiveTabContent tests reading the active tab content using a remote browser.
 func TestWebScraperAgent_ReadActiveTabContent(t *testing.T) {
-	time.Sleep(1 * time.Second)
 	if !UserBrowser.IsConnected() {
 		t.Skip("Skipping remote browser interaction tests as no remote browser is running or connected.")
 	}
@@ -305,14 +323,18 @@ func TestWebScraperAgent_OpenNewTabAndNavigate(t *testing.T) {
 	if newTabID == "" {
 		t.Fatal("CreateTab returned an empty tab ID.")
 	}
+	fmt.Printf("Created new tab with ID: %s\n", newTabID)
 
 	newTabCtx := UserBrowser.SelectTab(newTabID)
 	var title string
-	err = chromedp.Run(newTabCtx, chromedp.Title(&title))
+	// Poll the document title until it contains "Google", waiting up to 5 seconds.
+	// This is more reliable than a fixed sleep or just waiting for the body,
+	// as the title is set by JavaScript after the initial load.
+	err = chromedp.Run(newTabCtx, chromedp.Poll(`document.title.includes("Google")`, nil, chromedp.WithPollingTimeout(5*time.Second)))
 	if err != nil {
 		t.Fatalf("Failed to get title: %v", err)
 	}
-
+	err = chromedp.Run(newTabCtx, chromedp.Title(&title))
 	if !strings.Contains(title, "Google") {
 		t.Errorf("Expected title to contain 'Google', but got '%s'", title)
 	}
