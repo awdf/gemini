@@ -382,7 +382,7 @@ func (a *Agent) Handle(_ *genai.FunctionCall) *genai.FunctionResponse {
 func (a *Agent) CreateFunctionResponse(call *genai.FunctionCall, result any, err error, flags ...bool) *genai.FunctionResponse {
 	if err != nil {
 		a.Printf("ERROR executing tool call '%s': %v", call.Name, err)
-		result = map[string]any{"error": err.Error()}
+		result = map[string]any{"error": err}
 	}
 
 	inout.LogToolResult(call.Name, result)
