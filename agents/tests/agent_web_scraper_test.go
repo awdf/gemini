@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -143,6 +144,47 @@ func (b *userBrowser) SelectTab(tabID target.ID) context.Context {
 	return taskCtx
 }
 
+// CreateTab creates a new tab, registers it, and returns its context and ID.
+func (b *userBrowser) CreateTab(url string) (target.ID, error) {
+	if !b.isConnected {
+		return "", fmt.Errorf("browser is not connected")
+	}
+
+	// To create a new tab, we need to execute a command against the browser itself.
+	// We can do this by creating a temporary task context from the main allocator context.
+	taskCtx, cancel := chromedp.NewContext(b.context)
+	defer cancel()
+
+	// Ensure the browser is running on the context before we try to use its executor.
+	if err := chromedp.Run(taskCtx); err != nil {
+		return "", fmt.Errorf("failed to ensure browser is running: %w", err)
+	}
+
+	var newTabID target.ID
+	// Use the browser's executor to create the target directly, which avoids
+	// chromedp.Run creating an unwanted intermediate window.
+	browserExecutor := cdp.WithExecutor(taskCtx, chromedp.FromContext(taskCtx).Browser)
+	newTabID, err := target.CreateTarget(url).WithNewWindow(false).Do(browserExecutor)
+	if err != nil {
+		return "", fmt.Errorf("failed to create new tab for %s: %w", url, err)
+	}
+	if newTabID == "" {
+		return "", fmt.Errorf("failed to create new tab, received empty target ID")
+	}
+
+	// Now, create a context specifically for the new tab and register it.
+	newTabCtx, cancelTab := chromedp.NewContext(b.context, chromedp.WithTargetID(newTabID))
+
+	b.mu.Lock()
+	b.selectedTabs[newTabID] = struct {
+		ctx    context.Context
+		cancel context.CancelFunc
+	}{ctx: newTabCtx, cancel: cancelTab}
+	b.mu.Unlock()
+
+	return newTabID, nil
+}
+
 // DropTab closes a specific tab by its ID.
 func (b *userBrowser) DropTab(tabID target.ID) error {
 	if !b.isConnected {
@@ -248,4 +290,32 @@ func TestWebScraperAgent_ReadActiveTabContent(t *testing.T) {
 		t.Error("Expected active tab to have non-empty body content, but it was empty.")
 	}
 	t.Log("Successfully read non-empty body content from the active tab.")
+}
+
+// TestWebScraperAgent_OpenNewTabAndNavigate tests creating a new tab and navigating.
+func TestWebScraperAgent_OpenNewTabAndNavigate(t *testing.T) {
+	if !UserBrowser.IsConnected() {
+		t.Skip("Skipping remote browser interaction tests as no remote browser is running or connected.")
+	}
+
+	newTabID, err := UserBrowser.CreateTab("https://www.google.com")
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	if newTabID == "" {
+		t.Fatal("CreateTab returned an empty tab ID.")
+	}
+
+	newTabCtx := UserBrowser.SelectTab(newTabID)
+	var title string
+	err = chromedp.Run(newTabCtx, chromedp.Title(&title))
+	if err != nil {
+		t.Fatalf("Failed to get title: %v", err)
+	}
+
+	if !strings.Contains(title, "Google") {
+		t.Errorf("Expected title to contain 'Google', but got '%s'", title)
+	}
+
+	t.Logf("Successfully navigated to Google and read title: '%s'", title)
 }
