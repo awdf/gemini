@@ -21,8 +21,11 @@ type userBrowser struct {
 	isRemote     bool
 	isConnected  bool
 	wipe         bool
-	selectedTabs map[target.ID]context.CancelFunc
-	mu           sync.Mutex
+	selectedTabs map[target.ID]struct {
+		ctx    context.Context
+		cancel context.CancelFunc
+	}
+	mu sync.Mutex
 }
 
 // User requested wipe on close
@@ -51,21 +54,24 @@ func (b *userBrowser) Open() {
 	b.context, b.cancel = chromedp.NewRemoteAllocator(context.Background(), "http://localhost:9222")
 	if b.isRemote {
 		b.isConnected = true
-		b.selectedTabs = make(map[target.ID]context.CancelFunc)
+		b.selectedTabs = make(map[target.ID]struct {
+			ctx    context.Context
+			cancel context.CancelFunc
+		})
 	}
 }
 
 // Close terminates the browser connection.
 func (b *userBrowser) Close() {
-	if !b.wipe || !b.isConnected {
+	if !b.isConnected {
 		return
 	}
 
-	if len(b.selectedTabs) > 0 {
+	if b.wipe && len(b.selectedTabs) > 0 {
 		b.mu.Lock()
 		// Cancel all remaining selected tab contexts
-		for id, cancelFunc := range b.selectedTabs {
-			cancelFunc()
+		for id, tab := range b.selectedTabs {
+			tab.cancel()
 			delete(b.selectedTabs, id)
 		}
 		b.mu.Unlock()
@@ -118,15 +124,21 @@ func (b *userBrowser) SelectTab(tabID target.ID) context.Context {
 		cancel()
 		return ctx
 	}
-	taskCtx, cancel := chromedp.NewContext(b.context, chromedp.WithTargetID(tabID))
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	// If a context for this tab already exists, cancel the old one before replacing it.
-	if oldCancel, ok := b.selectedTabs[tabID]; ok {
-		oldCancel()
+
+	// If a valid context for this tab already exists, return it.
+	if tab, ok := b.selectedTabs[tabID]; ok && tab.ctx.Err() == nil {
+		return tab.ctx
 	}
-	b.selectedTabs[tabID] = cancel
+
+	// Otherwise, create a new context.
+	taskCtx, cancel := chromedp.NewContext(b.context, chromedp.WithTargetID(tabID))
+	b.selectedTabs[tabID] = struct {
+		ctx    context.Context
+		cancel context.CancelFunc
+	}{ctx: taskCtx, cancel: cancel}
 
 	return taskCtx
 }
@@ -138,8 +150,8 @@ func (b *userBrowser) DropTab(tabID target.ID) error {
 	}
 
 	b.mu.Lock()
-	if cancel, ok := b.selectedTabs[tabID]; ok {
-		cancel()
+	if tab, ok := b.selectedTabs[tabID]; ok {
+		tab.cancel()
 		delete(b.selectedTabs, tabID)
 	}
 	b.mu.Unlock()
@@ -158,9 +170,11 @@ func (b *userBrowser) DropTab(tabID target.ID) error {
 var UserBrowser = &userBrowser{}
 
 func TestMain(m *testing.M) {
+	fmt.Println("----------TESTS STARTED----------")
 	UserBrowser.Open()
 	code := m.Run()
 	UserBrowser.Close()
+	fmt.Println("----------TESTS DONE----------")
 	os.Exit(code)
 }
 
