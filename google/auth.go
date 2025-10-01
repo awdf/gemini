@@ -71,7 +71,7 @@ func createGoogleClient(ctx context.Context) (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse client secret file to config: %w", err)
 	}
-	oauthConfig.RedirectURL = "http://localhost:8080/oauth2callback"
+	oauthConfig.RedirectURL = "http://localhost:8000/oauth2callback"
 
 	// First, try to get a validated client from a saved token.
 	client, err := getClientFromToken(ctx, oauthConfig, tokenFile)
@@ -124,14 +124,12 @@ func getClientFromWeb(ctx context.Context, config *oauth2.Config, tokenFile stri
 	fmt.Printf("Go to the following link in your browser to authorize the application: \n%v\n", authURL)
 
 	codeCh := make(chan string)
-	server := &http.Server{Addr: ":8080"}
+	// Create a new ServeMux to ensure no conflicts with other handlers.
+	mux := http.NewServeMux()
+	server := &http.Server{Addr: ":8000", Handler: mux}
 
-	// Temporarily replace the default ServeMux to handle only our callback.
-	originalMux := http.DefaultServeMux
-	http.DefaultServeMux = http.NewServeMux()
-	defer func() { http.DefaultServeMux = originalMux }()
-
-	http.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
+	// Register the handler on our specific mux.
+	mux.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		if code == "" {
 			http.Error(w, "No code in request", http.StatusBadRequest)
@@ -148,7 +146,7 @@ func getClientFromWeb(ctx context.Context, config *oauth2.Config, tokenFile stri
 		}()
 	})
 
-	fmt.Printf("Listening for OAuth callback on http://localhost:8080/oauth2callback\n")
+	fmt.Printf("Listening for OAuth callback on http://localhost:8000/oauth2callback\n")
 	go func() {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
 			log.Printf("OAuth callback server failed: %v", err)
