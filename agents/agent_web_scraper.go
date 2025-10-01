@@ -180,7 +180,19 @@ To do this, you have access to the following tools. Use them strategically:
 		},
 		Behavior: genai.BehaviorBlocking,
 	}
-	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations, &analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc, &getRenderedScreenshotFunc, &openPageFunc, &downloadWebFileFunc)
+
+	readActivePageFunc := genai.FunctionDeclaration{
+		Name:        "readActiveTabPage",
+		Description: "WEB BROWSER: Reads the title and main content (body HTML) of the currently active tab in the user's browser.",
+		Parameters:  &genai.Schema{Type: genai.TypeObject}, // No parameters
+		Behavior:    genai.BehaviorBlocking,
+	}
+
+	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations,
+		&analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc,
+		&getRenderedScreenshotFunc, &openPageFunc, &downloadWebFileFunc,
+		&readActivePageFunc,
+	)
 
 	agentConfig := AgentConfig{
 		Name:              AgentWebScraperName,
@@ -219,6 +231,8 @@ func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespon
 		return a.handleDownloadWebFileTool(call)
 	case "openPage":
 		return a.handleOpenPageTool(call)
+	case "readActiveTabPage":
+		return a.handleReadActiveTabPage(call)
 	default:
 		return a.Agent.Handle(call)
 	}
@@ -534,6 +548,37 @@ func (a *WebScraperAgent) handleDownloadWebFileTool(call *genai.FunctionCall) *g
 		"path":        filename, // Return relative path
 		"bytes_saved": bytesCopied,
 	}
+	return a.CreateFunctionResponse(call, result, nil)
+}
+
+func (a *WebScraperAgent) handleReadActiveTabPage(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	UserBrowser.Open()
+	if !UserBrowser.isRemote {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("reading the active tab requires a running browser with remote debugging enabled"))
+	}
+
+	tabs, err := UserBrowser.Tabs()
+	if err != nil || len(tabs) == 0 {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("could not get active tab to read page: %w", err))
+	}
+
+	// The first tab in the list is typically the active one.
+	activeTabID := tabs[0].TargetID
+	taskCtx := UserBrowser.SelectTab(activeTabID)
+
+	var title, content string
+	if err := chromedp.Run(taskCtx,
+		chromedp.Title(&title),
+		chromedp.OuterHTML("body", &content),
+	); err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to get active tab title and content: %w", err))
+	}
+
+	a.Printf("Successfully read active tab title: '%s' and content.", title)
+	result := map[string]any{"title": title, "html_content": content}
+
 	return a.CreateFunctionResponse(call, result, nil)
 }
 

@@ -2,14 +2,16 @@ package tests
 
 import (
 	"fmt"
-	"gemini/agents"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"gemini/agents"
+
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMain(m *testing.M) {
@@ -19,6 +21,38 @@ func TestMain(m *testing.M) {
 	agents.UserBrowser.Close()
 	fmt.Println("----------TESTS DONE----------")
 	os.Exit(code)
+}
+
+// TestWebScraperAgent_OpenNewTabAndNavigate tests creating a new tab and navigating.
+func TestWebScraperAgent_OpenNewTabAndNavigate(t *testing.T) {
+	if !agents.UserBrowser.IsConnected() {
+		t.Skip("Skipping remote browser interaction tests as no remote browser is running or connected.")
+	}
+
+	newTabID, err := agents.UserBrowser.CreateTab("https://www.google.com")
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	if newTabID == "" {
+		t.Fatal("CreateTab returned an empty tab ID.")
+	}
+	fmt.Printf("Created new tab with ID: %s\n", newTabID)
+
+	newTabCtx := agents.UserBrowser.SelectTab(newTabID)
+	var title string
+	// Poll the document title until it contains "Google", waiting up to 5 seconds.
+	// This is more reliable than a fixed sleep or just waiting for the body,
+	// as the title is set by JavaScript after the initial load.
+	err = chromedp.Run(newTabCtx, chromedp.Poll(`document.title.includes("Google")`, nil, chromedp.WithPollingTimeout(5*time.Second)))
+	if err != nil {
+		t.Fatalf("Failed to get title: %v", err)
+	}
+	err = chromedp.Run(newTabCtx, chromedp.Title(&title))
+	if !strings.Contains(title, "Google") {
+		t.Errorf("Expected title to contain 'Google', but got '%s'", title)
+	}
+
+	t.Logf("Successfully navigated to Google and read title: '%s'", title)
 }
 
 // TestWebScraperAgent_ReadActiveTabTitle tests reading the active tab title using a remote browser.
@@ -57,6 +91,8 @@ func TestWebScraperAgent_ReadActiveTabTitle(t *testing.T) {
 	if strings.EqualFold(title, "about:blank") {
 		t.Errorf("Expected active tab title not to be 'about:blank', but it was.")
 	}
+
+	assert.Equal(t, "Google", title)
 }
 
 // TestWebScraperAgent_ReadActiveTabContent tests reading the active tab content using a remote browser.
@@ -90,36 +126,4 @@ func TestWebScraperAgent_ReadActiveTabContent(t *testing.T) {
 		t.Error("Expected active tab to have non-empty body content, but it was empty.")
 	}
 	t.Log("Successfully read non-empty body content from the active tab.")
-}
-
-// TestWebScraperAgent_OpenNewTabAndNavigate tests creating a new tab and navigating.
-func TestWebScraperAgent_OpenNewTabAndNavigate(t *testing.T) {
-	if !agents.UserBrowser.IsConnected() {
-		t.Skip("Skipping remote browser interaction tests as no remote browser is running or connected.")
-	}
-
-	newTabID, err := agents.UserBrowser.CreateTab("https://www.google.com")
-	if err != nil {
-		t.Fatal(err.Error())
-	}
-	if newTabID == "" {
-		t.Fatal("CreateTab returned an empty tab ID.")
-	}
-	fmt.Printf("Created new tab with ID: %s\n", newTabID)
-
-	newTabCtx := agents.UserBrowser.SelectTab(newTabID)
-	var title string
-	// Poll the document title until it contains "Google", waiting up to 5 seconds.
-	// This is more reliable than a fixed sleep or just waiting for the body,
-	// as the title is set by JavaScript after the initial load.
-	err = chromedp.Run(newTabCtx, chromedp.Poll(`document.title.includes("Google")`, nil, chromedp.WithPollingTimeout(5*time.Second)))
-	if err != nil {
-		t.Fatalf("Failed to get title: %v", err)
-	}
-	err = chromedp.Run(newTabCtx, chromedp.Title(&title))
-	if !strings.Contains(title, "Google") {
-		t.Errorf("Expected title to contain 'Google', but got '%s'", title)
-	}
-
-	t.Logf("Successfully navigated to Google and read title: '%s'", title)
 }
