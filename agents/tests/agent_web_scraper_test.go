@@ -16,10 +16,14 @@ import (
 
 func TestMain(m *testing.M) {
 	fmt.Println("----------TESTS STARTED----------")
+	// Close any existing browser before running tests to ensure a clean state.
+	agents.UserBrowser.Close()
+
 	if err := agents.UserBrowser.OpenBrowser("https://www.example.com/"); err != nil {
 		fmt.Printf("FATAL: Could not open browser for tests: %v\n", err)
 		os.Exit(1)
 	}
+	agents.UserBrowser.Wipe()
 	code := m.Run()
 	agents.UserBrowser.Close()
 	fmt.Println("----------TESTS DONE----------")
@@ -69,16 +73,19 @@ func TestWebScraperAgent_ReadActiveTabTitle(t *testing.T) {
 		t.Fatalf("Failed to get browser tabs: %v", err)
 	}
 
-	activeTabID := target.ID("")
-	if len(tabs) > 0 {
-		activeTabID = tabs[0].TargetID
+	var exampleTab *target.Info
+	for _, tab := range tabs {
+		if strings.Contains(tab.URL, "example.com") {
+			exampleTab = tab
+			break
+		}
 	}
 
-	if activeTabID == "" {
-		t.Fatal("Could not find an active, visible tab to read the title from.")
+	if exampleTab == nil {
+		t.Fatal("Could not find tab with example.com")
 	}
 
-	taskCtx := agents.UserBrowser.SelectTab(activeTabID)
+	taskCtx := agents.UserBrowser.SelectTab(exampleTab.TargetID)
 
 	var title string
 	if err := chromedp.Run(taskCtx, chromedp.Title(&title)); err != nil {
@@ -109,16 +116,19 @@ func TestWebScraperAgent_ReadActiveTabContent(t *testing.T) {
 		t.Fatalf("Failed to get browser tabs: %v", err)
 	}
 
-	activeTabID := target.ID("")
-	if len(tabs) > 0 {
-		activeTabID = tabs[0].TargetID
+	var exampleTab *target.Info
+	for _, tab := range tabs {
+		if strings.Contains(tab.URL, "example.com") {
+			exampleTab = tab
+			break
+		}
 	}
 
-	if activeTabID == "" {
-		t.Fatal("Could not find an active, visible tab to read content from.")
+	if exampleTab == nil {
+		t.Fatal("Could not find tab with example.com")
 	}
 
-	taskCtx := agents.UserBrowser.SelectTab(activeTabID)
+	taskCtx := agents.UserBrowser.SelectTab(exampleTab.TargetID)
 
 	var content string
 	if err := chromedp.Run(taskCtx, chromedp.OuterHTML("body", &content)); err != nil {

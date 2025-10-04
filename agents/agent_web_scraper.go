@@ -627,6 +627,8 @@ func (a *WebScraperAgent) handleReadActiveTabPage(call *genai.FunctionCall) *gen
 }
 
 // ========================== WEB BROWSER IMPLEMENTATION ================================================================
+// http://localhost:9222/json/version
+
 // User requested wipe on close
 func (b *userBrowser) Wipe() {
 	b.wipe = true
@@ -634,7 +636,7 @@ func (b *userBrowser) Wipe() {
 
 // isRemoteRunning checks if a browser is listening on the remote debugging port.
 func (b *userBrowser) isRemoteRunning() bool {
-	conn, err := net.DialTimeout("tcp", "localhost:9222", 1100*time.Millisecond)
+	conn, err := net.DialTimeout("tcp", "localhost:9222", 500*time.Millisecond)
 	if err != nil {
 		return false
 	}
@@ -674,20 +676,17 @@ func (b *userBrowser) Connect() {
 }
 
 func (b *userBrowser) OpenBrowser(url string) error {
+	// Check for already opened browser
+	if b.isRemoteRunning() {
+		// Check connection status before acquiring the main lock.
+		b.Connect() // do nothing if connected.
+		log.Println("Browser is already connected, opening a new tab.")
+		_, err := b.CreateTab(url)
+		return err
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	if b.isConnected {
-		log.Println("Browser is already connected, closing existing session.")
-		if b.cancel != nil {
-			b.cancel()
-		}
-		// Reset state before re-initializing
-		b.isConnected = false
-		b.context = nil
-		b.cancel = nil
-		b.selectedTabs = nil
-	}
 
 	// The user-data-dir can cause startup errors if a SingletonLock file is left
 	// over from a previous crashed instance. We remove it to ensure a clean start.
@@ -728,21 +727,18 @@ func (b *userBrowser) OpenBrowser(url string) error {
 
 // Close terminates the browser connection.
 func (b *userBrowser) Close() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if !b.isConnected {
 		return
 	}
 
 	if b.wipe && len(b.selectedTabs) > 0 {
 		// Cancel all remaining selected tab contexts
-		for id, tab := range b.selectedTabs {
-			tab.cancel()
-			delete(b.selectedTabs, id)
+		for id := range b.selectedTabs {
+			b.DropTab(id)
 		}
 	}
 
+	// Close browser context
 	if b.cancel != nil {
 		b.cancel()
 	}
@@ -810,8 +806,10 @@ func (b *userBrowser) SelectTab(tabID target.ID) context.Context {
 
 // CreateTab creates a new tab, registers it, and returns its context and ID.
 func (b *userBrowser) CreateTab(url string) (target.ID, error) {
-	if !b.isConnected {
-		return "", fmt.Errorf("browser is not connected")
+	// If the browser isn't connected, open it. OpenBrowser will create the first tab.
+	if !b.IsConnected() {
+		err := b.OpenBrowser(url)
+		return "", err // OpenBrowser doesn't return a tab ID, so we return an empty one.
 	}
 
 	tabs, err := b.Tabs()
@@ -844,14 +842,14 @@ func (b *userBrowser) CreateTab(url string) (target.ID, error) {
 		oldTabIDs[tab.TargetID] = struct{}{}
 	}
 
-	// Get updated tabs with real IDs
+	// Get updated tabs with valid IDs
 	newTabs, err := b.Tabs()
 	if err != nil {
 		return "", err
 	}
 
 	var newlyCreatedTab *target.Info
-	// Find the new tab real ID in the updated list.
+	// Find the new tab valid ID in the updated list.
 	for _, tab := range newTabs {
 		if _, exists := oldTabIDs[tab.TargetID]; !exists {
 			newlyCreatedTab = tab
@@ -873,25 +871,32 @@ func (b *userBrowser) CreateTab(url string) (target.ID, error) {
 }
 
 // DropTab closes a specific tab by its ID.
-func (b *userBrowser) DropTab(tabID target.ID) error {
+func (b *userBrowser) DropTab(tabID target.ID) {
 	if !b.isConnected {
-		return fmt.Errorf("browser is not connected")
+		return
 	}
 
+	// Normal close, not robust, but properly clear context
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if tab, ok := b.selectedTabs[tabID]; ok {
 		tab.cancel()
 		delete(b.selectedTabs, tabID)
 	}
-	b.mu.Unlock()
 
+	// Emergency close, max robust but error prone.
 	// To close a target, we need a context. We can use the main allocator context
 	// to create a temporary one just for this action.
-	taskCtx, cancel := chromedp.NewContext(b.context)
+	taskCtx, cancel := chromedp.NewContext(b.context, chromedp.WithTargetID(tabID))
 	defer cancel()
 
-	if err := chromedp.Run(taskCtx, chromedp.ActionFunc(func(ctx context.Context) error { return target.CloseTarget(tabID).Do(ctx) })); err != nil {
-		return fmt.Errorf("failed to close tab with ID %s: %w", tabID, err)
+	err := chromedp.Run(taskCtx, chromedp.ActionFunc(
+		func(ctx context.Context) error {
+			return target.CloseTarget(tabID).Do(ctx)
+		},
+	))
+	if err != nil {
+		config.DebugPrintf("failed to close tab with ID %s: %v", tabID, err)
 	}
-	return nil
 }
