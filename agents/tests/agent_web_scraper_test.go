@@ -16,17 +16,20 @@ import (
 
 func TestMain(m *testing.M) {
 	fmt.Println("----------TESTS STARTED----------")
-	agents.UserBrowser.Open()
+	if err := agents.UserBrowser.OpenBrowser("https://www.example.com/"); err != nil {
+		fmt.Printf("FATAL: Could not open browser for tests: %v\n", err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	agents.UserBrowser.Close()
 	fmt.Println("----------TESTS DONE----------")
 	os.Exit(code)
 }
 
-// TestWebScraperAgent_OpenNewTabAndNavigate tests creating a new tab and navigating.
-func TestWebScraperAgent_OpenNewTabAndNavigate(t *testing.T) {
+// TestWebScraperAgent_CreateTabAndNavigate tests creating a new tab and navigating.
+func TestWebScraperAgent_CreateTabAndNavigate(t *testing.T) {
 	if !agents.UserBrowser.IsConnected() {
-		t.Skip("Skipping remote browser interaction tests as no remote browser is running or connected.")
+		t.Error("The remote browser interaction tests as no remote browser is running or connected.")
 	}
 
 	newTabID, err := agents.UserBrowser.CreateTab("https://www.google.com")
@@ -58,17 +61,17 @@ func TestWebScraperAgent_OpenNewTabAndNavigate(t *testing.T) {
 // TestWebScraperAgent_ReadActiveTabTitle tests reading the active tab title using a remote browser.
 func TestWebScraperAgent_ReadActiveTabTitle(t *testing.T) {
 	if !agents.UserBrowser.IsConnected() {
-		t.Skip("Skipping remote browser interaction tests as no remote browser is running or connected.")
+		t.Error("The remote browser interaction tests as no remote browser is running or connected.")
 	}
 
-	targets, err := agents.UserBrowser.Tabs()
+	tabs, err := agents.UserBrowser.Tabs()
 	if err != nil {
-		t.Fatalf("Failed to get browser targets: %v", err)
+		t.Fatalf("Failed to get browser tabs: %v", err)
 	}
 
 	activeTabID := target.ID("")
-	if len(targets) > 0 {
-		activeTabID = targets[0].TargetID
+	if len(tabs) > 0 {
+		activeTabID = tabs[0].TargetID
 	}
 
 	if activeTabID == "" {
@@ -92,23 +95,23 @@ func TestWebScraperAgent_ReadActiveTabTitle(t *testing.T) {
 		t.Errorf("Expected active tab title not to be 'about:blank', but it was.")
 	}
 
-	assert.Equal(t, "Google", title)
+	assert.Equal(t, "Example Domain", title)
 }
 
 // TestWebScraperAgent_ReadActiveTabContent tests reading the active tab content using a remote browser.
 func TestWebScraperAgent_ReadActiveTabContent(t *testing.T) {
 	if !agents.UserBrowser.IsConnected() {
-		t.Skip("Skipping remote browser interaction tests as no remote browser is running or connected.")
+		t.Error("The remote browser interaction tests as no remote browser is running or connected.")
 	}
 
-	targets, err := agents.UserBrowser.Tabs()
+	tabs, err := agents.UserBrowser.Tabs()
 	if err != nil {
-		t.Fatalf("Failed to get browser targets: %v", err)
+		t.Fatalf("Failed to get browser tabs: %v", err)
 	}
 
 	activeTabID := target.ID("")
-	if len(targets) > 0 {
-		activeTabID = targets[0].TargetID
+	if len(tabs) > 0 {
+		activeTabID = tabs[0].TargetID
 	}
 
 	if activeTabID == "" {

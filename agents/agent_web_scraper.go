@@ -24,6 +24,11 @@ import (
 
 const AgentWebScraperName = "webScraperAgent"
 
+type Tabulate struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
 type WebScraperAgent struct {
 	*Agent
 	bus *EventBus.Bus
@@ -36,11 +41,8 @@ type userBrowser struct {
 	isRemote     bool
 	isConnected  bool
 	wipe         bool
-	selectedTabs map[target.ID]struct {
-		ctx    context.Context
-		cancel context.CancelFunc
-	}
-	mu sync.Mutex
+	selectedTabs map[target.ID]Tabulate
+	mu           sync.Mutex
 }
 
 var UserBrowser = &userBrowser{}
@@ -145,9 +147,9 @@ To do this, you have access to the following tools. Use them strategically:
 		Behavior: genai.BehaviorNonBlocking,
 	}
 
-	openPageFunc := genai.FunctionDeclaration{
-		Name:        "openPage",
-		Description: "WEB BROWSER: Opens a new tab in the user's browser and navigates to the specified URL.",
+	openPageInTabFunc := genai.FunctionDeclaration{
+		Name:        "openPageInTab",
+		Description: "WEB BROWSER: Opens a new tab in the user's existing browser window and navigates to the specified URL.",
 		Parameters: &genai.Schema{
 			Type: genai.TypeObject,
 			Properties: map[string]*genai.Schema{
@@ -159,6 +161,22 @@ To do this, you have access to the following tools. Use them strategically:
 			Required: []string{"url"},
 		},
 		Behavior: genai.BehaviorBlocking, // Blocking, as the action is immediate.
+	}
+
+	openPageInBrowserFunc := genai.FunctionDeclaration{
+		Name:        "openPageInBrowser",
+		Description: "WEB BROWSER: Opens a new browser window and navigates to the specified URL. Use this when you need to start a fresh browsing session.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"url": {
+					Type:        genai.TypeString,
+					Description: "The full, URL-encoded URL of the web page to open.",
+				},
+			},
+			Required: []string{"url"},
+		},
+		Behavior: genai.BehaviorBlocking,
 	}
 
 	downloadWebFileFunc := genai.FunctionDeclaration{
@@ -190,8 +208,8 @@ To do this, you have access to the following tools. Use them strategically:
 
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations,
 		&analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc,
-		&getRenderedScreenshotFunc, &openPageFunc, &downloadWebFileFunc,
-		&readActivePageFunc,
+		&getRenderedScreenshotFunc, &openPageInTabFunc, &downloadWebFileFunc,
+		&readActivePageFunc, &openPageInBrowserFunc,
 	)
 
 	agentConfig := AgentConfig{
@@ -229,8 +247,10 @@ func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespon
 		return a.handleGetRenderedScreenshotTool(call)
 	case "downloadWebFile":
 		return a.handleDownloadWebFileTool(call)
-	case "openPage":
-		return a.handleOpenPageTool(call)
+	case "openPageInTab":
+		return a.handleOpenPageInTabTool(call)
+	case "openPageInBrowser":
+		return a.handleOpenPageInBrowserTool(call)
 	case "readActiveTabPage":
 		return a.handleReadActiveTabPage(call)
 	default:
@@ -322,7 +342,7 @@ func (a *WebScraperAgent) handleGetRenderedContentTool(call *genai.FunctionCall)
 		var processErr error
 		var htmlContent string
 
-		UserBrowser.Open()
+		UserBrowser.Connect()
 
 		if rawURL != "" {
 			decodedURL, err := url.QueryUnescape(rawURL)
@@ -377,7 +397,7 @@ func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCa
 	rawURL, _ := call.Args["url"].(string) // URL is now optional
 
 	go func() {
-		UserBrowser.Open()
+		UserBrowser.Connect()
 
 		var screenshotBuf []byte
 		var processErr error
@@ -449,7 +469,7 @@ func (a *WebScraperAgent) handleGetRenderedScreenshotTool(call *genai.FunctionCa
 	return a.CreateFunctionResponse(call, map[string]any{"status": "Web page screenshot capture started."}, nil, true)
 }
 
-func (a *WebScraperAgent) handleOpenPageTool(call *genai.FunctionCall) *genai.FunctionResponse {
+func (a *WebScraperAgent) handleOpenPageInTabTool(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.Printf(PrintTemplate, call.Name, call.Args)
 
 	// 1. Parse arguments
@@ -464,10 +484,10 @@ func (a *WebScraperAgent) handleOpenPageTool(call *genai.FunctionCall) *genai.Fu
 		decodedURL = rawURL
 	}
 
-	UserBrowser.Open()
+	UserBrowser.Connect()
 
 	if !UserBrowser.isRemote {
-		return a.CreateFunctionResponse(call, nil, fmt.Errorf("the 'openPage' tool requires a running browser with remote debugging enabled"))
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("the 'openPageInTab' tool requires a running browser with remote debugging enabled"))
 	}
 
 	// Run the navigation in a goroutine so it doesn't block the main thread.
@@ -479,6 +499,30 @@ func (a *WebScraperAgent) handleOpenPageTool(call *genai.FunctionCall) *genai.Fu
 
 	// We don't cancel the context here, allowing the tab to remain open.
 	status := fmt.Sprintf("A new tab should now be opening with the URL: %s", decodedURL)
+	result := map[string]any{"status": status}
+	return a.CreateFunctionResponse(call, result, nil)
+}
+
+func (a *WebScraperAgent) handleOpenPageInBrowserTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	// 1. Parse arguments
+	rawURL, urlOK := call.Args["url"].(string)
+	if !urlOK || rawURL == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'url' argument is required and must be a non-empty string"))
+	}
+
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		a.Printf("WARNING: could not decode web page URL '%s', using it as is. Error: %v", rawURL, err)
+		decodedURL = rawURL
+	}
+
+	if err := UserBrowser.OpenBrowser(decodedURL); err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to open new browser window: %w", err))
+	}
+
+	status := fmt.Sprintf("A new browser window should now be opening with the URL: %s", decodedURL)
 	result := map[string]any{"status": status}
 	return a.CreateFunctionResponse(call, result, nil)
 }
@@ -554,7 +598,7 @@ func (a *WebScraperAgent) handleDownloadWebFileTool(call *genai.FunctionCall) *g
 func (a *WebScraperAgent) handleReadActiveTabPage(call *genai.FunctionCall) *genai.FunctionResponse {
 	a.Printf(PrintTemplate, call.Name, call.Args)
 
-	UserBrowser.Open()
+	UserBrowser.Connect()
 	if !UserBrowser.isRemote {
 		return a.CreateFunctionResponse(call, nil, fmt.Errorf("reading the active tab requires a running browser with remote debugging enabled"))
 	}
@@ -598,8 +642,8 @@ func (b *userBrowser) isRemoteRunning() bool {
 	return true
 }
 
-// Open establishes the connection to the browser. It's designed to be called once.
-func (b *userBrowser) Open() {
+// Connect establishes the connection to the browser. It's designed to be called once.
+func (b *userBrowser) Connect() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -621,39 +665,93 @@ func (b *userBrowser) Open() {
 			chromedp.Flag("disable-gpu", true),
 			chromedp.Flag("no-sandbox", true),
 		)
-		var allocatorCtx context.Context
-		allocatorCtx, b.cancel = chromedp.NewExecAllocator(context.Background(), opts...)
-		b.context = allocatorCtx
+		b.context, b.cancel = chromedp.NewExecAllocator(context.Background(), opts...)
 		b.isRemote = false
 	}
 
 	b.isConnected = true
-	b.selectedTabs = make(map[target.ID]struct {
-		ctx    context.Context
-		cancel context.CancelFunc
-	})
+	b.selectedTabs = make(map[target.ID]Tabulate)
+}
+
+func (b *userBrowser) OpenBrowser(url string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.isConnected {
+		log.Println("Browser is already connected, closing existing session.")
+		if b.cancel != nil {
+			b.cancel()
+		}
+		// Reset state before re-initializing
+		b.isConnected = false
+		b.context = nil
+		b.cancel = nil
+		b.selectedTabs = nil
+	}
+
+	// The user-data-dir can cause startup errors if a SingletonLock file is left
+	// over from a previous crashed instance. We remove it to ensure a clean start.
+	userDataDir := "/home/awdf/.config/google-chrome-debug"
+	if err := os.Remove(filepath.Join(userDataDir, "SingletonLock")); err != nil && !os.IsNotExist(err) {
+		log.Printf("WARNING: could not remove stale SingletonLock: %v", err)
+	}
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", false),
+		chromedp.Flag("start-maximized", true),
+		chromedp.Flag("remote-debugging-port", "9222"),
+		chromedp.Flag("user-data-dir", userDataDir),
+	)
+
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+
+	// Create a new context for the browser instance itself.
+	taskCtx, cancelTask := chromedp.NewContext(allocCtx)
+
+	// Launch the browser and navigate to the initial URL.
+	if err := chromedp.Run(taskCtx, chromedp.Navigate(url)); err != nil {
+		cancelTask()
+		cancelAlloc()
+		return fmt.Errorf("failed to launch browser and navigate: %w", err)
+	}
+
+	// Now that the browser is running, set the state.
+	b.context = taskCtx
+	b.cancel = cancelTask
+	b.isConnected = true
+	b.isRemote = true // This mode effectively makes it a remote-controllable browser.
+	b.selectedTabs = make(map[target.ID]Tabulate)
+
+	log.Printf("Successfully opened a new browser window and navigated to %s.", url)
+	return nil
 }
 
 // Close terminates the browser connection.
 func (b *userBrowser) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if !b.isConnected {
 		return
 	}
 
 	if b.wipe && len(b.selectedTabs) > 0 {
-		b.mu.Lock()
 		// Cancel all remaining selected tab contexts
 		for id, tab := range b.selectedTabs {
 			tab.cancel()
 			delete(b.selectedTabs, id)
 		}
-		b.mu.Unlock()
 	}
 
 	if b.cancel != nil {
 		b.cancel()
 	}
+
+	// Reset the state completely to prevent using a stale context on the next run.
 	b.isConnected = false
+	b.context = nil
+	b.cancel = nil
+	b.selectedTabs = nil
 }
 
 // IsConnected returns the connection status of the browser.
@@ -704,10 +802,7 @@ func (b *userBrowser) SelectTab(tabID target.ID) context.Context {
 	// If a context for this tab doesn't exist, create and store it.
 	if _, ok := b.selectedTabs[tabID]; !ok {
 		taskCtx, cancel := chromedp.NewContext(b.context, chromedp.WithTargetID(tabID))
-		b.selectedTabs[tabID] = struct {
-			ctx    context.Context
-			cancel context.CancelFunc
-		}{ctx: taskCtx, cancel: cancel}
+		b.selectedTabs[tabID] = Tabulate{ctx: taskCtx, cancel: cancel}
 	}
 
 	return b.selectedTabs[tabID].ctx
@@ -726,7 +821,7 @@ func (b *userBrowser) CreateTab(url string) (target.ID, error) {
 
 	taskCtx, _ := chromedp.NewContext(b.context, chromedp.WithTargetID(tabs[0].TargetID))
 
-	// Treate dirty tab
+	// Create dirty tab with broken context
 	var dirtyID target.ID
 	err = chromedp.Run(taskCtx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
