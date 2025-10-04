@@ -64,8 +64,8 @@ func NewWebScraperAgent(ctx context.Context, client *genai.Client, toolset *gena
 	if bus == nil {
 		return nil
 	}
-	systemInstruction := `You are a web page analysis expert with vision capabilities.
-Your goal is to extract as much meaningful information as possible from the provided web page URL.
+	systemInstruction := `You are a web page analysis and interaction expert with vision capabilities.
+Your goal is to extract as much meaningful information as possible from the provided web page URL, and to interact with pages as requested by the user.
 Analyze both the text content and the visual layout/images on the page to generate a comprehensive and detailed report.
 Describe important visual elements like images, charts, and the overall page structure in your analysis.
 
@@ -74,7 +74,11 @@ To do this, you have access to the following tools. Use them strategically:
 - **getRawHTML**: Use this when you need to inspect the raw source code of a page, for example, to find CSS files or specific meta tags.
 - **getRenderedContent**: Use this for modern, JavaScript-heavy websites where content is loaded dynamically. It provides the final HTML after all scripts have run.
 - **getRenderedScreenshot**: This is your most powerful tool for visual analysis. When a user asks about the **layout, style, colors, or visual appearance** of a page, you MUST use this tool to get a screenshot. This will allow you to "see" the page and answer questions about its design accurately.
-- **downloadWebFile**: Use this to download a file from a URL directly into the workspace. It's like using the 'wget' command.`
+- **downloadWebFile**: Use this to download a file from a URL directly into the workspace. It's like using the 'wget' command.
+- **clickElement**: Use this to click on an element on the current page. You need to provide a CSS selector for the element.
+- **fillFormField**: Use this to fill a form field. You need to provide a CSS selector for the field and the value to fill.
+- **submitForm**: Use this to submit a form. You need to provide a CSS selector for the form.
+- **getElementValue**: Use this to get the value of an element. You need to provide a CSS selector for the element.`
 
 	scheme := genai.Schema{
 		Type:        genai.TypeObject,
@@ -206,10 +210,78 @@ To do this, you have access to the following tools. Use them strategically:
 		Behavior:    genai.BehaviorBlocking,
 	}
 
+	clickElementFunc := genai.FunctionDeclaration{
+		Name:        "clickElement",
+		Description: "WEB BROWSER: Clicks on an element on the current page matching the given CSS selector.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"selector": {
+					Type:        genai.TypeString,
+					Description: "The CSS selector of the element to click.",
+				},
+			},
+			Required: []string{"selector"},
+		},
+		Behavior: genai.BehaviorBlocking,
+	}
+
+	fillFormFieldFunc := genai.FunctionDeclaration{
+		Name:        "fillFormField",
+		Description: "WEB BROWSER: Fills a form field on the current page matching the given CSS selector with the provided value.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"selector": {
+					Type:        genai.TypeString,
+					Description: "The CSS selector of the form field to fill.",
+				},
+				"value": {
+					Type:        genai.TypeString,
+					Description: "The value to fill the form field with.",
+				},
+			},
+			Required: []string{"selector", "value"},
+		},
+		Behavior: genai.BehaviorBlocking,
+	}
+
+	submitFormFunc := genai.FunctionDeclaration{
+		Name:        "submitForm",
+		Description: "WEB BROWSER: Submits a form on the current page matching the given CSS selector.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"selector": {
+					Type:        genai.TypeString,
+					Description: "The CSS selector of the form to submit.",
+				},
+			},
+			Required: []string{"selector"},
+		},
+		Behavior: genai.BehaviorBlocking,
+	}
+
+	getElementValueFunc := genai.FunctionDeclaration{
+		Name:        "getElementValue",
+		Description: "WEB BROWSER: Gets the value of an element on the current page matching the given CSS selector.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"selector": {
+					Type:        genai.TypeString,
+					Description: "The CSS selector of the element to get the value from.",
+				},
+			},
+			Required: []string{"selector"},
+		},
+		Behavior: genai.BehaviorBlocking,
+	}
+
 	toolset.FunctionDeclarations = append(toolset.FunctionDeclarations,
 		&analyseFunc, &getRawHTMLFunc, &getRenderedContentFunc,
 		&getRenderedScreenshotFunc, &openPageInTabFunc, &downloadWebFileFunc,
-		&readActivePageFunc, &openPageInBrowserFunc,
+		&readActivePageFunc, &openPageInBrowserFunc, &clickElementFunc, &fillFormFieldFunc, &submitFormFunc, &getElementValueFunc,
 	)
 
 	agentConfig := AgentConfig{
@@ -253,9 +325,154 @@ func (a *WebScraperAgent) Handle(call *genai.FunctionCall) *genai.FunctionRespon
 		return a.handleOpenPageInBrowserTool(call)
 	case "readActiveTabPage":
 		return a.handleReadActiveTabPage(call)
+	case "clickElement":
+		return a.handleClickElementTool(call)
+	case "fillFormField":
+		return a.handleFillFormFieldTool(call)
+	case "submitForm":
+		return a.handleSubmitFormTool(call)
+	case "getElementValue":
+		return a.handleGetElementValueTool(call)
 	default:
 		return a.Agent.Handle(call)
 	}
+}
+
+func (a *WebScraperAgent) handleGetElementValueTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	selector, ok := call.Args["selector"].(string)
+	if !ok || selector == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'selector' argument is required and must be a non-empty string"))
+	}
+
+	UserBrowser.Connect()
+	if !UserBrowser.isRemote {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("getting element value requires a running browser with remote debugging enabled"))
+	}
+
+	tabs, err := UserBrowser.Tabs()
+	if err != nil || len(tabs) == 0 {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("could not get active tab to get element value: %w", err))
+	}
+
+	activeTabID := tabs[0].TargetID
+	taskCtx := UserBrowser.SelectTab(activeTabID)
+	taskCtx, cancel := context.WithTimeout(taskCtx, 1*time.Second)
+	defer cancel()
+
+	value, err := UserBrowser.GetValue(taskCtx, selector)
+	if err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to get value from element with selector '%s': %w", selector, err))
+	}
+
+	a.Printf("Successfully got value from element with selector: '%s'", selector)
+	result := map[string]any{"value": value}
+
+	return a.CreateFunctionResponse(call, result, nil)
+}
+
+func (a *WebScraperAgent) handleSubmitFormTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	selector, ok := call.Args["selector"].(string)
+	if !ok || selector == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'selector' argument is required and must be a non-empty string"))
+	}
+
+	UserBrowser.Connect()
+	if !UserBrowser.isRemote {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("submitting forms requires a running browser with remote debugging enabled"))
+	}
+
+	tabs, err := UserBrowser.Tabs()
+	if err != nil || len(tabs) == 0 {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("could not get active tab to submit form: %w", err))
+	}
+
+	activeTabID := tabs[0].TargetID
+	taskCtx := UserBrowser.SelectTab(activeTabID)
+	taskCtx, cancel := context.WithTimeout(taskCtx, 1*time.Second)
+	defer cancel()
+
+	if err := UserBrowser.Submit(taskCtx, selector); err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to submit form with selector '%s': %w", selector, err))
+	}
+
+	a.Printf("Successfully submitted form with selector: '%s'", selector)
+	result := map[string]any{"status": "form submitted successfully"}
+
+	return a.CreateFunctionResponse(call, result, nil)
+}
+
+func (a *WebScraperAgent) handleFillFormFieldTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	selector, ok := call.Args["selector"].(string)
+	if !ok || selector == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'selector' argument is required and must be a non-empty string"))
+	}
+	value, ok := call.Args["value"].(string)
+	if !ok {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'value' argument is required"))
+	}
+
+	UserBrowser.Connect()
+	if !UserBrowser.isRemote {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("filling form fields requires a running browser with remote debugging enabled"))
+	}
+
+	tabs, err := UserBrowser.Tabs()
+	if err != nil || len(tabs) == 0 {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("could not get active tab to fill form field: %w", err))
+	}
+
+	activeTabID := tabs[0].TargetID
+	taskCtx := UserBrowser.SelectTab(activeTabID)
+	taskCtx, cancel := context.WithTimeout(taskCtx, 1*time.Second)
+	defer cancel()
+
+	if err := UserBrowser.FillFormField(taskCtx, selector, value); err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to fill form field with selector '%s': %w", selector, err))
+	}
+
+	a.Printf("Successfully filled form field with selector: '%s'", selector)
+	result := map[string]any{"status": "form field filled successfully"}
+
+	return a.CreateFunctionResponse(call, result, nil)
+}
+
+func (a *WebScraperAgent) handleClickElementTool(call *genai.FunctionCall) *genai.FunctionResponse {
+	a.Printf(PrintTemplate, call.Name, call.Args)
+
+	selector, ok := call.Args["selector"].(string)
+	if !ok || selector == "" {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("'selector' argument is required and must be a non-empty string"))
+	}
+
+	UserBrowser.Connect()
+	if !UserBrowser.isRemote {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("clicking elements requires a running browser with remote debugging enabled"))
+	}
+
+	tabs, err := UserBrowser.Tabs()
+	if err != nil || len(tabs) == 0 {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("could not get active tab to click element: %w", err))
+	}
+
+	activeTabID := tabs[0].TargetID
+	taskCtx := UserBrowser.SelectTab(activeTabID)
+	taskCtx, cancel := context.WithTimeout(taskCtx, 1*time.Second)
+	defer cancel()
+
+	if err := UserBrowser.ClickElement(taskCtx, selector); err != nil {
+		return a.CreateFunctionResponse(call, nil, fmt.Errorf("failed to click element with selector '%s': %w", selector, err))
+	}
+
+	a.Printf("Successfully clicked element with selector: '%s'", selector)
+	result := map[string]any{"status": "element clicked successfully"}
+
+	return a.CreateFunctionResponse(call, result, nil)
 }
 
 func (a *WebScraperAgent) handleAnalyseWebPageTool(call *genai.FunctionCall) *genai.FunctionResponse {
@@ -863,7 +1080,7 @@ func (b *userBrowser) CreateTab(url string) (target.ID, error) {
 
 	// Introduce a small delay to ensure the browser has fully processed the
 	// new tab creation and is ready to receive commands for it.
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	// Create and store the definitive context for the new tab.
 	b.SelectTab(newlyCreatedTab.TargetID)
@@ -885,13 +1102,23 @@ func (b *userBrowser) DropTab(tabID target.ID) {
 		delete(b.selectedTabs, tabID)
 	}
 
+	// Check if tab is closed, as cancel() fails on some pages
+	tabIDs, err := b.Tabs()
+	if err == nil {
+		for tab := range tabIDs {
+			if tabIDs[tab].TargetID == tabID {
+				return
+			}
+		}
+	}
+
 	// Emergency close, max robust but error prone.
 	// To close a target, we need a context. We can use the main allocator context
 	// to create a temporary one just for this action.
 	taskCtx, cancel := chromedp.NewContext(b.context, chromedp.WithTargetID(tabID))
 	defer cancel()
 
-	err := chromedp.Run(taskCtx, chromedp.ActionFunc(
+	err = chromedp.Run(taskCtx, chromedp.ActionFunc(
 		func(ctx context.Context) error {
 			return target.CloseTarget(tabID).Do(ctx)
 		},
@@ -899,4 +1126,28 @@ func (b *userBrowser) DropTab(tabID target.ID) {
 	if err != nil {
 		config.DebugPrintf("failed to close tab with ID %s: %v", tabID, err)
 	}
+}
+
+// GetValue retrieves the value of an element matching the selector.
+func (b *userBrowser) GetValue(ctx context.Context, selector string) (string, error) {
+	var value string
+	if err := chromedp.Run(ctx, chromedp.Value(selector, &value, chromedp.ByQuery)); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+// Submit triggers a submit action on a form element.
+func (b *userBrowser) Submit(ctx context.Context, selector string) error {
+	return chromedp.Run(ctx, chromedp.Submit(selector, chromedp.ByQuery))
+}
+
+// FillFormField enters text into a form field.
+func (b *userBrowser) FillFormField(ctx context.Context, selector, value string) error {
+	return chromedp.Run(ctx, chromedp.SendKeys(selector, value, chromedp.ByQuery))
+}
+
+// ClickElement simulates a mouse click on an element.
+func (b *userBrowser) ClickElement(ctx context.Context, selector string) error {
+	return chromedp.Run(ctx, chromedp.Click(selector, chromedp.ByQuery))
 }

@@ -22,6 +22,9 @@ import (
 const AgentObjectDetectionName = "objectDetection"
 
 func init() {
+	// Temporary turrned off
+	return
+
 	RegisterFactory(AgentObjectDetectionName, func(ctx context.Context, client *genai.Client, toolset *genai.Tool, bus *EventBus.Bus) Callable {
 		return NewObjectDetectionAgent(ctx, client, toolset, bus)
 	})

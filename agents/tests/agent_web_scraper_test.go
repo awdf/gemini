@@ -1,7 +1,10 @@
 package tests
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -139,4 +142,70 @@ func TestWebScraperAgent_ReadActiveTabContent(t *testing.T) {
 		t.Error("Expected active tab to have non-empty body content, but it was empty.")
 	}
 	t.Log("Successfully read non-empty body content from the active tab.")
+}
+
+func TestWebScraperAgent_TestFormInteractions(t *testing.T) {
+	if !agents.UserBrowser.IsConnected() {
+		t.Skip("Skipping browser interaction tests as no remote browser is running or connected.")
+	}
+
+	// Create a simple HTTP server to serve a test page.
+	server := setupTestServer()
+	defer server.Close()
+
+	// Navigate to the test page.
+	newTabID, err := agents.UserBrowser.CreateTab(server.URL)
+	if err != nil {
+		t.Fatalf("Failed to create tab: %v", err)
+	}
+	ctx := agents.UserBrowser.SelectTab(newTabID)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Test FillFormField and GetValue
+	err = agents.UserBrowser.FillFormField(ctx, "#test-input", "hello world")
+	if err != nil {
+		t.Fatalf("Failed to fill form field: %v", err)
+	}
+
+	value, err := agents.UserBrowser.GetValue(ctx, "#test-input")
+	if err != nil {
+		t.Fatalf("Failed to get value: %v", err)
+	}
+	assert.Equal(t, "hello world", value, "The input value should be 'hello world'")
+
+	// Test ClickElement
+	err = agents.UserBrowser.ClickElement(ctx, "#test-button")
+	if err != nil {
+		t.Fatalf("Failed to click element: %v", err)
+	}
+
+	// After clicking, a new element should be present.
+	var clickResult string
+	err = chromedp.Run(ctx, chromedp.Text("#click-result", &clickResult, chromedp.ByQuery))
+	if err != nil {
+		t.Fatalf("Failed to get click result: %v", err)
+	}
+	assert.Equal(t, "Button clicked!", clickResult, "The click result text should be 'Button clicked!'")
+
+	// Test Submit
+	err = agents.UserBrowser.Submit(ctx, "#test-form")
+	if err != nil {
+		t.Fatalf("Failed to submit form: %v", err)
+	}
+
+	// After submitting, the URL should change.
+	var url string
+	err = chromedp.Run(ctx, chromedp.Location(&url))
+	if err != nil {
+		t.Fatalf("Failed to get URL: %v", err)
+	}
+	assert.Contains(t, url, "?input=hello+world", "The URL should contain the submitted form data")
+}
+
+func setupTestServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintln(w, "<!DOCTYPE html><html><body><form id=\"test-form\" action=\"/\" method=\"get\"><input id=\"test-input\" name=\"input\" type=\"text\"><input id=\"test-submit\" type=\"submit\" value=\"Submit\"></form><button id=\"test-button\">Click me</button><div id=\"click-result\"></div><script>document.getElementById('test-button').addEventListener('click', function() { document.getElementById('click-result').textContent = 'Button clicked!'; });</script></body></html>")
+	}))
 }
